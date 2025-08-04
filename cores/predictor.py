@@ -2,7 +2,7 @@ import os
 import os.path as osp
 import sys
 
-from utils.macros import DIR_BYTE_TRACK
+from utils_peri.macros import DIR_BYTE_TRACK
 
 sys.path.append(os.path.abspath(DIR_BYTE_TRACK))
 

@@ -7,7 +7,7 @@ import time
 import matplotlib
 
 from cores.predictor import Predictor
-from utils.macros import DIR_BYTE_TRACK
+from utils_peri.macros import DIR_BYTE_TRACK
 
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt

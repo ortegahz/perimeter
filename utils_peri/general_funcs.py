@@ -1,7 +1,7 @@
 import os
 import os.path as osp
 
-from utils.macros import IMAGE_EXT
+from utils_peri.macros import IMAGE_EXT
 
 
 def get_image_list(path):
