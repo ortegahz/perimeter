@@ -27,28 +27,45 @@ from yolox.tracker.byte_tracker import BYTETracker
 from yolox.tracking_utils.timer import Timer
 
 
-# -----------------------------------------------------------------
-# fig_obj, img_ax, img_artist = imshow_plt(bgr_img, last_handle=None)
-#  - 第一次调用 last_handle 传 None，会创建窗口并返回三个句柄
-#  - 之后把这三个句柄再传回来，就能做到高速刷新而不重新开窗口
-# -----------------------------------------------------------------
-def imshow_plt(bgr_img, last_handle=None):
-    rgb = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB)
+def imshow_plt(frame_bgr, last_handle=None):
+    """
+    显示一帧 rgb 图像。
+    返回：
+        handle  : (fig, ax, img_artist)
+        quit_f  : 布尔量，若为 True 表示用户按下了 Esc / q / Q
+    """
+    quit_flag = False
 
-    if last_handle is None:
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+    if last_handle is None:  # 第一次调用，创建窗口
         fig, ax = plt.subplots(1, figsize=(8, 6))
         ax.axis("off")
         img_artist = ax.imshow(rgb)
         fig.canvas.manager.set_window_title("ByteTrack (matplotlib)")
         plt.tight_layout()
+
+        # 给 figure 绑一个属性，用来存退出标志
+        fig.quit_flag = False
+
+        # 键盘回调
+        def _on_key(event):
+            if event.key in ('q', 'Q', 'escape'):
+                fig.quit_flag = True  # 设置退出标志
+
+        fig.canvas.mpl_connect('key_press_event', _on_key)
+
         plt.show(block=False)
-        return fig, ax, img_artist
-    else:
-        fig, ax, img_artist = last_handle
-        img_artist.set_data(rgb)
-        fig.canvas.draw_idle()
-        plt.pause(0.001)  # 1 ms 左右即可
-        return last_handle
+        return (fig, ax, img_artist), quit_flag
+
+    # 之后的刷新
+    fig, ax, img_artist = last_handle
+    img_artist.set_data(rgb)
+    fig.canvas.draw_idle()
+    plt.pause(0.001)  # 让 matplotlib 有机会处理事件
+
+    quit_flag = getattr(fig, 'quit_flag', False)
+    return last_handle, quit_flag
 
 
 def make_parser():
@@ -62,7 +79,9 @@ def make_parser():
     parser.add_argument(
         # "--path", default="./datasets/mot/train/MOT17-05-FRCNN/img1", help="path to images or video"
         "--path",
-        default=os.path.join(DIR_BYTE_TRACK, "videos/palace.mp4"),
+        # default=os.path.join(DIR_BYTE_TRACK, "videos/palace.mp4"),
+        # default=os.path.join("/home/manu/tmp/海康-12mm/40m___172.20.20.232_554_cam_realmonitor-.mp4"),
+        default=os.path.join("rtsp://admin:1QAZ2wsx@172.20.20.64"),
         help="path to images or video"
     )
     parser.add_argument("--camid", type=int, default=0, help="webcam demo camera id")
@@ -168,7 +187,7 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
             logger.info('Processing frame {} ({:.2f} fps)'.format(frame_id, 1. / max(1e-5, timer.average_time)))
         ret_val, frame = cap.read()
         frame_id += 1
-        if frame_id % 2 != 0:
+        if frame_id % 6 != 0:
             continue
         if ret_val:
             outputs, img_info = predictor.inference(frame, timer)
@@ -197,9 +216,8 @@ def imageflow_demo(predictor, vis_folder, current_time, args):
                 online_im = img_info['raw_img']
             if args.save_result:
                 vid_writer.write(online_im)
-            vis_handle = imshow_plt(online_im, vis_handle)
-            ch = cv2.waitKey(1)
-            if ch == 27 or ch == ord("q") or ch == ord("Q"):
+            vis_handle, quit_flag = imshow_plt(online_im, vis_handle)
+            if quit_flag:
                 break
         else:
             break
