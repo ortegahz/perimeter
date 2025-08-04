@@ -26,8 +26,6 @@ from yolox.utils.visualize import plot_tracking
 from yolox.tracker.byte_tracker import BYTETracker
 from yolox.tracking_utils.timer import Timer
 
-IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
-
 
 # -----------------------------------------------------------------
 # fig_obj, img_ax, img_artist = imshow_plt(bgr_img, last_handle=None)
@@ -128,17 +126,6 @@ def make_parser():
     parser.add_argument('--min_box_area', type=float, default=10, help='filter out tiny boxes')
     parser.add_argument("--mot20", dest="mot20", default=False, action="store_true", help="test mot20.")
     return parser
-
-
-def get_image_list(path):
-    image_names = []
-    for maindir, subdir, file_name_list in os.walk(path):
-        for filename in file_name_list:
-            apath = osp.join(maindir, filename)
-            ext = osp.splitext(apath)[1]
-            if ext in IMAGE_EXT:
-                image_names.append(apath)
-    return image_names
 
 
 def write_results(filename, results):

@@ -1,1 +1,2 @@
 DIR_BYTE_TRACK = "/home/manu/mnt/ST2000DM005-2U91/workspace/ByteTrack/"
+IMAGE_EXT = [".jpg", ".jpeg", ".webp", ".bmp", ".png"]
