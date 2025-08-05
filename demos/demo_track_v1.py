@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import os
 import random
+import time
 
 import cv2
 import matplotlib
@@ -11,22 +11,20 @@ matplotlib.use("TkAgg")
 plt.ion()
 
 from cores.byteTrackPipeline import ByteTrackPipeline
-from utils_peri.macros import DIR_BYTE_TRACK
 
-SKIP = 6  # 只对每 SKIP 帧做一次推理/跟踪
-id2color = {}  # ---------- id -> BGR 颜色 ----------
+SKIP = 8  # 只对每 SKIP 帧做一次推理/跟踪
+id2color = {}  # tid → BGR 颜色
 
 
 def rand_color():
-    """生成一条亮色 (B, G, R)"""
-    return tuple(int(x) for x in random.sample(range(64, 256), 3))  # 亮色
+    return tuple(int(x) for x in random.sample(range(64, 256), 3))
 
 
 def imshow_plt(frame_bgr, last_handle=None):
     quit_flg = False
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-    if last_handle is None:
+    if last_handle is None:  # 第一次
         fig, ax = plt.subplots(1, figsize=(10, 8))
         ax.axis("off")
         img_artist = ax.imshow(rgb)
@@ -52,12 +50,7 @@ def imshow_plt(frame_bgr, last_handle=None):
 
 
 if __name__ == "__main__":
-    tracker = ByteTrackPipeline(
-        exp_file=os.path.join(DIR_BYTE_TRACK, "exps/example/mot/yolox_s_mix_det.py"),
-        ckpt=os.path.join(DIR_BYTE_TRACK, "pretrained/bytetrack_s_mot17.pth.tar"),
-        device="cuda",
-        fp16=True,
-    )
+    tracker = ByteTrackPipeline()  # ByteTrackPipeline 本身会打印 det/track 耗时
 
     cap = cv2.VideoCapture("rtsp://admin:1QAZ2wsx@172.20.20.64")
 
@@ -65,23 +58,30 @@ if __name__ == "__main__":
     frame_id = 0
 
     while True:
+        # ---------------- 解码计时 ----------------
+        t_decode0 = time.perf_counter()
         ok, frame = cap.read()
+        t_decode = time.perf_counter() - t_decode0
         if not ok:
             print("Video finished or cannot fetch frame.")
             break
 
         frame_id += 1
         if frame_id % SKIP != 0:
-            continue  # 跳过未处理帧
+            continue
 
-        results = tracker.update(frame)
+        # ---------------- 推理计时 ----------------
+        t_update0 = time.perf_counter()
+        results = tracker.update(frame, debug=False)  # debug=False 防止重复打印
+        t_update = time.perf_counter() - t_update0
 
+        # ---------------- 绘图计时 ----------------
+        t_draw0 = time.perf_counter()
         # ---------- 绘制结果 ----------
         for r in results:
             tid = r["id"]
             x, y, w, h = map(int, r["tlwh"])
 
-            # 获取颜色：如果这个 id 第一次出现就随机生成并保存
             if tid not in id2color:
                 id2color[tid] = rand_color()
             color = id2color[tid]
@@ -91,6 +91,14 @@ if __name__ == "__main__":
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
         vis_handle, quit_flag = imshow_plt(frame, vis_handle)
+        t_draw = time.perf_counter() - t_draw0
+
+        # ---------------- 打印三段耗时 --------------
+        print(f"[Frame {frame_id:6d}]  "
+              f"Decode={t_decode * 1e3:6.1f} ms  "
+              f"Update={t_update * 1e3:6.1f} ms  "
+              f"Draw={t_draw * 1e3:6.1f} ms")
+
         if quit_flag:
             print("Quit key pressed, exiting ...")
             break

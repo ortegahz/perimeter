@@ -29,7 +29,6 @@ import cv2
 import numpy as np
 import torch
 from loguru import logger
-from yolox.tracking_utils.timer import Timer
 from yolox.utils.visualize import plot_tracking
 
 # ---------- 你的内部模块 ----------
@@ -93,18 +92,29 @@ class GlobalIDManager:
 
     def match(self,
               face_feat: Optional[np.ndarray],
-              body_feat: np.ndarray) -> str:
+              body_feat: Optional[np.ndarray]) -> str:
+        """
+        返回匹配到的 global_id；如都匹配不到则新建
+        """
+        # --------- 1. 无有效特征直接新建 ----------
+        if face_feat is None and body_feat is None:
+            return self._new(None, None)
+
+        # --------- 2. 先试人脸 ----------
         if face_feat is not None:
             gid = self._match(face_feat, "faces", self.face_thr)
             if gid:
                 self._update(gid, face_feat, body_feat)
                 return gid
 
-        gid = self._match(body_feat, "bodies", self.body_thr)
-        if gid:
-            self._update(gid, face_feat, body_feat)
-            return gid
+        # --------- 3. 再试身体 ----------
+        if body_feat is not None:
+            gid = self._match(body_feat, "bodies", self.body_thr)
+            if gid:
+                self._update(gid, face_feat, body_feat)
+                return gid
 
+        # --------- 4. 都没命中 → 新建 ----------
         return self._new(face_feat, body_feat)
 
     # ---------- 内部 ----------
@@ -189,54 +199,90 @@ class PerimeterExecutor:
     def _inside_roi(self, x: float, y: float) -> bool:
         return True  # TODO: 根据实际 ROI 修改
 
+    # 其他 import 与类成员保持不变 …
+
     # ------------------ 主循环 ------------------
     def run(self, video_src: str):
         cap = cv2.VideoCapture(video_src)
-        frame_id, tmr = 0, Timer()
+        frame_id = 0
+        n_skip = 8
 
         while True:
+            t_loop0 = time.perf_counter()  # ===== 整帧起点 =====
+
+            # ---------- 0. 读帧 ----------
+            t_read0 = time.perf_counter()
             ok, frame = cap.read()
+            t_read = time.perf_counter() - t_read0  # 读帧耗时
             if not ok:
                 break
+
             frame_id += 1
+            if frame_id % n_skip != 0:
+                continue
 
-            # 1) 检测 + 跟踪
+            # ---------- 1. ByteTrack ----------
+            t_bt0 = time.perf_counter()
             results = self.bt_pipe.update(frame)
+            t_bt = time.perf_counter() - t_bt0
 
-            # 2) 抽取特征
+            # ---------- 2. 特征抽取 ----------
+            body_time = 0.0
+            face_time = 0.0
             for det in results:
                 tid = det["id"]
                 x, y, w, h = map(int, det["tlwh"])
-                if tid not in self.trk_pool:
-                    self.trk_pool[tid] = TrackFeatureAggregator()
+                agg = self.trk_pool.setdefault(tid, TrackFeatureAggregator())
 
+                # 2-A 行人特征
+                t0 = time.perf_counter()
                 crop = frame[y:y + h, x:x + w]
                 body_feat = self._get_reid_feat(crop)
+                body_time += time.perf_counter() - t0
                 if body_feat is None:
                     continue
-                self.trk_pool[tid].add_body(body_feat, det["score"], frame_id)
+                agg.add_body(body_feat, det["score"], frame_id)
 
+                # 2-B 人脸特征
+                t0 = time.perf_counter()
                 faces = self.face_app.get(crop)
+                face_time += time.perf_counter() - t0
                 if faces:
                     f = faces[0].embedding.astype(np.float32)
                     f /= np.linalg.norm(f) + 1e-9
-                    self.trk_pool[tid].add_face(f, frame_id)
+                    agg.add_face(f, frame_id)
 
                 if tid not in self.trk_meta and self._inside_roi(x + w / 2, y + h / 2):
                     self.trk_meta[tid] = dict(enter_ts=time.time())
 
-            # 3) 结束的 Track
+            # ---------- 3. Track 回收 ----------
+            t_flush0 = time.perf_counter()
             self._flush(frame_id)
+            t_flush = time.perf_counter() - t_flush0
 
-            # 4) 绘制 & matplotlib 实时刷新
-            tlwhs = [tuple(r["tlwh"]) for r in results]
-            ids = [r["id"] for r in results]
-            vis = plot_tracking(frame, tlwhs, ids,
-                                frame_id=frame_id, fps=1 / max(1e-5, tmr.average_time))
-
+            # ---------- 4. 可视化 ----------
+            t_vis0 = time.perf_counter()
+            vis = plot_tracking(frame,
+                                [tuple(r["tlwh"]) for r in results],
+                                [r["id"] for r in results],
+                                frame_id=frame_id)
             self._plt_handle, quit_flag = imshow_plt(vis, self._plt_handle)
+            t_vis = time.perf_counter() - t_vis0
             if quit_flag:
                 break
+
+            # ---------- 5. 打印耗时 ----------
+            t_total = time.perf_counter() - t_loop0
+            logger.info(
+                f"[Frm {frame_id:>5}] "
+                f"Read={t_read * 1e3:6.1f}ms | "
+                f"Bt={t_bt * 1e3:6.1f}ms | "
+                f"BodyFeat={body_time * 1e3:6.1f}ms | "
+                f"FaceFeat={face_time * 1e3:6.1f}ms | "
+                f"Flush={t_flush * 1e3:6.1f}ms | "
+                f"Vis={t_vis * 1e3:6.1f}ms | "
+                f"Tot={t_total * 1e3:6.1f}ms"
+            )
 
         cap.release()
         plt.close("all")
