@@ -5,10 +5,9 @@ import random
 
 import cv2
 import matplotlib
-
-matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 
+matplotlib.use("TkAgg")
 plt.ion()
 
 from cores.byteTrackPipeline import ByteTrackPipeline
