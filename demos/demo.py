@@ -32,14 +32,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # 1) ByteTrackPipeline
-    bt_pipe = ByteTrackPipeline(
-        exp_file=args.exp_file,
-        ckpt=args.ckpt,
-        device=args.device,
-        fp16=True,
-        fuse=True,
-        fps=30
-    )
+    bt_pipe = ByteTrackPipeline()
 
     # 2) 周界执行器
     executor = PerimeterExecutor(
