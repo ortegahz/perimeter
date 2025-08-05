@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
+import random
 
 import cv2
 import matplotlib
@@ -13,11 +14,14 @@ plt.ion()
 from cores.byteTrackPipeline import ByteTrackPipeline
 from utils_peri.macros import DIR_BYTE_TRACK
 
-# ------------------ 跳帧参数 ------------------
 SKIP = 6  # 只对每 SKIP 帧做一次推理/跟踪
+id2color = {}  # ---------- id -> BGR 颜色 ----------
 
 
-# --------------------------------------------
+def rand_color():
+    """生成一条亮色 (B, G, R)"""
+    return tuple(int(x) for x in random.sample(range(64, 256), 3))  # 亮色
+
 
 def imshow_plt(frame_bgr, last_handle=None):
     quit_flg = False
@@ -31,12 +35,11 @@ def imshow_plt(frame_bgr, last_handle=None):
         plt.tight_layout()
 
         fig.quit_flg = False
+        fig.canvas.mpl_connect(
+            "key_press_event",
+            lambda e: setattr(fig, "quit_flg", e.key in ("q", "Q", "escape")),
+        )
 
-        def _on_key(event):
-            if event.key in ("q", "Q", "escape"):
-                fig.quit_flg = True
-
-        fig.canvas.mpl_connect("key_press_event", _on_key)
         plt.show(block=False)
         return (fig, ax, img_artist), quit_flg
 
@@ -61,28 +64,33 @@ if __name__ == "__main__":
 
     vis_handle = None
     frame_id = 0
-    results = []  # 保存最近一次推理得到的结果
 
     while True:
         ok, frame = cap.read()
-        frame_id += 1
         if not ok:
             print("Video finished or cannot fetch frame.")
             break
 
+        frame_id += 1
         if frame_id % SKIP != 0:
-            continue
+            continue  # 跳过未处理帧
 
         results = tracker.update(frame)
 
-        # 绘制检测/跟踪框（使用最新一次 results）
+        # ---------- 绘制结果 ----------
         for r in results:
+            tid = r["id"]
             x, y, w, h = map(int, r["tlwh"])
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(frame, f'ID:{r["id"]}', (x, y - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # Matplotlib 显示
+            # 获取颜色：如果这个 id 第一次出现就随机生成并保存
+            if tid not in id2color:
+                id2color[tid] = rand_color()
+            color = id2color[tid]
+
+            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            cv2.putText(frame, f'ID:{tid}', (x, y - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
         vis_handle, quit_flag = imshow_plt(frame, vis_handle)
         if quit_flag:
             print("Quit key pressed, exiting ...")
