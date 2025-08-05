@@ -6,3 +6,5 @@ ffplay -fflags nobuffer -flags low_delay \
        -probesize 32 -analyzeduration 0 \
        -framedrop -sync ext \
        udp://127.0.0.1:5000
+
+ffplay -fflags nobuffer -flags low_delay udp://127.0.0.1:5000
