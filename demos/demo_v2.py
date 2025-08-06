@@ -240,8 +240,7 @@ def main():
     parser.add_argument("--udp_host", default="127.0.0.1")
     parser.add_argument("--udp_port", type=int, default=5000)
     parser.add_argument("--fps", type=float, default=25.0)
-    parser.add_argument("--skip", type=int, default=1,
-                        help="Decoder 跳帧间隔，1=不跳")
+    parser.add_argument("--skip", type=int, default=1,)
     args = parser.parse_args()
 
     # 队列 / 事件
