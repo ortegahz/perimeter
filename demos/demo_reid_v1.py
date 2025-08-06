@@ -16,12 +16,12 @@ if __name__ == '__main__':
     import glob
 
     gallery_imgs = glob.glob(
-        "/home/manu/mnt/ST2000DM005-2U91/workspace/Market/bounding_box_test/-1_c1s1_011426_05.*")
+        "/home/manu/tmp/perimeter/G00002/bodies/*")
     reid_obj.build_gallery(gallery_imgs)
 
     # 查询
-    query_img = "/home/manu/mnt/ST2000DM005-2U91/workspace/Market/bounding_box_test/-1_c1s1_011526_06.jpg"
-    top_paths, scores = reid_obj.compare(query_img, topk=10)
+    query_img = "/home/manu/tmp/perimeter/G00001/bodies/00000.jpg"
+    top_paths, scores = reid_obj.compare(query_img, topk=64)
 
     print('Top-K 相似图：')
     for p, s in zip(top_paths, scores):

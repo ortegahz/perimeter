@@ -1,5 +1,6 @@
 import os
 import os.path as osp
+import shutil
 
 import cv2
 import matplotlib
@@ -62,3 +63,11 @@ def imshow_plt(frame_bgr: np.ndarray,
     plt.pause(0.001)
 
     return last_handle, getattr(fig, "quit_flag", False)
+
+
+def make_dirs(dir_root, reset=False):
+    if dir_root is None:
+        return
+    if os.path.exists(dir_root) and reset:
+        shutil.rmtree(dir_root)
+    os.makedirs(os.path.join(dir_root), exist_ok=True)
