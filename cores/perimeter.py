@@ -197,7 +197,7 @@ class PerimeterExecutor:
         return feat.astype(np.float32)
 
     def _inside_roi(self, x: float, y: float) -> bool:
-        return True  # TODO: 根据实际 ROI 修改
+        return True
 
     # 其他 import 与类成员保持不变 …
 
