@@ -81,7 +81,7 @@ class LatestQueue(mpq.Queue):
 # ======================================================
 class TrackAgg:
 
-    def __init__(self, max_body=32, max_face=3):
+    def __init__(self, max_body=16, max_face=8):
         self.body: deque[Tuple[np.ndarray, float, np.ndarray]] = deque(maxlen=max_body)
         self.face: deque[Tuple[np.ndarray, np.ndarray]] = deque(maxlen=max_face)
         self.last_fid = -1
@@ -144,7 +144,7 @@ class GlobalID:
     """
 
     def __init__(self,
-                 max_proto=16,
+                 max_proto=8,
                  w_face=W_FACE, w_body=W_BODY, thr=MATCH_THR):
         self.max_proto = max_proto
         self.w_face, self.w_body, self.thr = w_face, w_body, thr
@@ -311,7 +311,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
         # ---------- 2) Face ----------
         for det, patch in zip(dets, patches):
             faces = face_app.get(patch)
-            if not faces:
+            if len(faces) != 1:
                 continue
             f_emb = normv(faces[0].embedding)
             tid = det["id"]
@@ -323,15 +323,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
         realtime_map: Dict[int, Tuple[str, float, int]] = {}
         for tid, agg in list(agg_pool.items()):
 
-            if tid in tid2gid:
-                gid = tid2gid[tid]
-                n_tid = len(gid_mgr.tid_hist.get(gid, []))
-                realtime_map[tid] = (gid, 1.0, n_tid)
-                if len(agg.body) >= MIN_BODY4GID and agg.face_feat() is not None:
-                    gid_mgr.bind(gid, agg.face_feat(),
-                                 agg.body_feat(), agg, tid=tid)
-
-            if len(agg.body) < MIN_BODY4GID or agg.face_feat() is None:
+            if len(agg.body) < MIN_BODY4GID or len(agg.face) == 0:
                 realtime_map.setdefault(tid, ("-1", -1.0, 0))
                 continue
 
@@ -353,18 +345,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
         # ---------- 4) Flush ----------
         for tid in list(last_seen.keys()):
             if fid - last_seen[tid] >= MAX_TID_GAP:
-                agg = agg_pool.pop(tid)
                 last_seen.pop(tid)
-                if tid in tid2gid:
-                    continue
-                if len(agg.body) >= MIN_BODY4GID and agg.face_feat() is not None:
-                    face_feat, body_feat = agg.face_feat(), agg.body_feat()
-                    new_gid = gid_mgr.new_gid()
-                    gid_mgr.bind(new_gid, face_feat,
-                                 body_feat, agg, tid=tid)
-                    tid2gid[tid] = new_gid
-                    n_tid = len(gid_mgr.tid_hist[new_gid])
-                    realtime_map[tid] = (new_gid, -1.0, n_tid)
 
         # ---------- 5) Send ----------
         q_map2disp.put(realtime_map)
