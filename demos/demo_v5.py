@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-周界安全 Demo :  “快显慢算” + tid|gid+score 实时调试版
+周界安全 Demo :  “快显慢算” + tid|gid|count|score 实时调试版
 
-特性：
-1) 每帧都会把当前所有 tid 的最优 (gid, score) 发送给显示进程；
-2) Display 进程同步刷新，库里无匹配显示 -1。
+显示内容：
+tid | gid | n(该 gid 历史 tid 数) | score
 """
 
 from __future__ import annotations
@@ -41,8 +40,8 @@ MAX_TID_GAP = 60
 QUEUE_SIZE = 8
 SENTINEL = None
 
-MIN_HW_RATIO = 2.0  # 仅长条 patch 进入人体 ReID
-MIN_BODY4GID = 4  # 创建 / 比对前，至少需要的 body patch 数
+MIN_HW_RATIO = 1.5
+MIN_BODY4GID = 4
 
 W_FACE, W_BODY = 0.6, 0.4
 MATCH_THR = 0.5
@@ -52,7 +51,6 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 make_dirs(SAVE_DIR, reset=True)
 
 
-# --------------------------------------  工具函数
 def is_long_patch(patch: np.ndarray, thr: float = MIN_HW_RATIO) -> bool:
     if patch is None or patch.size == 0:
         return False
@@ -82,23 +80,20 @@ class LatestQueue(mpq.Queue):
 #   2. TrackAgg / GlobalID
 # ======================================================
 class TrackAgg:
-    """聚合同一个 tid 的历史特征与 patch"""
 
     def __init__(self, max_body=32, max_face=3):
-        self.body: deque[Tuple[np.ndarray, float, np.ndarray]] = deque(maxlen=max_body)  # (feat, score, patch)
-        self.face: deque[Tuple[np.ndarray, np.ndarray]] = deque(maxlen=max_face)  # (feat, patch)
+        self.body: deque[Tuple[np.ndarray, float, np.ndarray]] = deque(maxlen=max_body)
+        self.face: deque[Tuple[np.ndarray, np.ndarray]] = deque(maxlen=max_face)
         self.last_fid = -1
 
-    # --------- 添加 ----------
-    def add_body(self, feat: np.ndarray, scr: float, fid: int, patch: np.ndarray):
+    def add_body(self, feat, scr, fid, patch):
         self.body.append((feat, scr, patch))
         self.last_fid = fid
 
-    def add_face(self, feat: np.ndarray, fid: int, patch: np.ndarray):
+    def add_face(self, feat, fid, patch):
         self.face.append((feat, patch))
         self.last_fid = fid
 
-    # --------- 表征 ----------
     def body_feat(self):
         if not self.body:
             return None
@@ -117,7 +112,6 @@ class TrackAgg:
         rep /= np.linalg.norm(rep) + 1e-9
         return rep
 
-    # --------- Patch 列表 ----------
     def body_patches(self):
         return [p for *_r, p in self.body]
 
@@ -125,9 +119,6 @@ class TrackAgg:
         return [p for _f, p in self.face]
 
 
-# ======================================================
-#   3. Patch 保存
-# ======================================================
 def save_patches(gid: str, agg: TrackAgg):
     gid_root = os.path.join(SAVE_DIR, gid)
     dir_body = os.path.join(gid_root, "bodies")
@@ -149,6 +140,7 @@ def save_patches(gid: str, agg: TrackAgg):
 class GlobalID:
     """
     face + body 联合比对：score = 0.6 * sim_face + 0.4 * sim_body
+    记录 self.tid_hist[gid] 保存与该 gid 绑定过的所有 tid。
     """
 
     def __init__(self,
@@ -157,18 +149,18 @@ class GlobalID:
         self.max_proto = max_proto
         self.w_face, self.w_body, self.thr = w_face, w_body, thr
         self.bank: Dict[str, Dict[str, List[np.ndarray]]] = {}
+        self.tid_hist: Dict[str, List[int]] = {}
 
-    # ---------------- 小工具 ----------------
+    # -------- 内部工具 --------
     @staticmethod
     def _sim(a: np.ndarray, b: np.ndarray) -> float:
         return float(a @ b)
 
     def _avg(self, feats: List[np.ndarray]) -> np.ndarray:
-        rep = np.mean(np.stack(feats, axis=0), axis=0)
+        rep = np.mean(np.stack(feats, axis=0), 0)
         return rep / (np.linalg.norm(rep) + 1e-9)
 
     def _add(self, lst: List[np.ndarray], feat: np.ndarray):
-        """向原型池添加新特征（简单 FIFO+更新）"""
         if len(lst) < self.max_proto:
             lst.append(feat)
         else:
@@ -177,7 +169,7 @@ class GlobalID:
             lst[idx] = 0.7 * lst[idx] + 0.3 * feat
             lst[idx] /= np.linalg.norm(lst[idx]) + 1e-9
 
-    # ---------------- 核心匹配 ----------------
+    # -------- 匹配 / 查询 --------
     def _best_match(self, face: np.ndarray, body: np.ndarray) -> Tuple[str | None, float]:
         gid_best, score_best = None, -1.0
         for gid, pool in self.bank.items():
@@ -191,28 +183,38 @@ class GlobalID:
         return gid_best, score_best
 
     def probe(self, face: np.ndarray, body: np.ndarray) -> Tuple[str | None, float]:
-        """只做比对，不更新 bank；无论是否过阈值都返回最优 (gid, score)"""
         return self._best_match(face, body)
 
-    # ---------------- 真正分配 ----------------
-    def bind(self, gid: str, face: np.ndarray, body: np.ndarray, agg: TrackAgg | None = None):
-        """把 (face, body) 绑定 / 更新到给定 gid 中"""
+    # -------- 分配 / 更新 --------
+    def bind(self,
+             gid: str,
+             face: np.ndarray,
+             body: np.ndarray,
+             agg: TrackAgg | None = None,
+             tid: int | None = None):
         if face is not None:
             self._add(self.bank[gid]['faces'], face)
         if body is not None:
             self._add(self.bank[gid]['bodies'], body)
+
+        if tid is not None:
+            lst = self.tid_hist.setdefault(gid, [])
+            if tid not in lst:
+                lst.append(tid)
+
         if agg:
             save_patches(gid, agg)
 
     def new_gid(self) -> str:
         gid = f"G{len(self.bank) + 1:05d}"
         self.bank[gid] = dict(faces=[], bodies=[])
+        self.tid_hist[gid] = []
         logger.info(f"[GlobalID] new {gid}")
         return gid
 
 
 # ======================================================
-#   4. ReID 前处理
+#   3. ReID 前处理
 # ======================================================
 @torch.inference_mode()
 def prep_patch(patch: np.ndarray) -> torch.Tensor:
@@ -230,7 +232,7 @@ def normv(v):
 
 
 # ======================================================
-#   5. 进程函数
+#   4. 进程函数
 # ======================================================
 def dec_det_proc(src, q_det2feat, q_det2disp, stop_evt, skip):
     cap = cv2.VideoCapture(src)
@@ -278,7 +280,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
 
     agg_pool: dict[int, TrackAgg] = {}
     last_seen: dict[int, int] = {}
-    tid2gid: Dict[int, str] = {}  # 已绑定成功的 tid → gid
+    tid2gid: Dict[int, str] = {}
 
     while not stop_evt.is_set():
         pkt = q_det2feat.get()
@@ -286,7 +288,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
             break
         fid, patches, dets = pkt
 
-        # =============== 1) Body ReID ==================
+        # ---------- 1) Body ----------
         tensors, metas, keep_patches = [], [], []
         for det, patch in zip(dets, patches):
             if not is_long_patch(patch):
@@ -306,7 +308,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                 agg.add_body(feat, score, fid, img_patch)
                 last_seen[tid] = fid
 
-        # =============== 2) Face =======================
+        # ---------- 2) Face ----------
         for det, patch in zip(dets, patches):
             faces = face_app.get(patch)
             if not faces:
@@ -317,60 +319,54 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
             agg.add_face(f_emb, fid, patch)
             last_seen[tid] = fid
 
-        # =============== 3) 比对 / 绑定 =================
-        realtime_map: Dict[int, Tuple[str, float]] = {}
+        # ---------- 3) Match / Bind ----------
+        realtime_map: Dict[int, Tuple[str, float, int]] = {}
         for tid, agg in list(agg_pool.items()):
 
-            # --------- 已经绑定过 ----------
             if tid in tid2gid:
                 gid = tid2gid[tid]
-                realtime_map[tid] = (gid, 1.0)
-                # 可选：把新的表征写回库，增强鲁棒
+                n_tid = len(gid_mgr.tid_hist.get(gid, []))
+                realtime_map[tid] = (gid, 1.0, n_tid)
                 if len(agg.body) >= MIN_BODY4GID and agg.face_feat() is not None:
-                    gid_mgr.bind(gid, agg.face_feat(), agg.body_feat())
-                # continue
+                    gid_mgr.bind(gid, agg.face_feat(),
+                                 agg.body_feat(), agg, tid=tid)
 
-            # --------- 信息尚不足 ----------
             if len(agg.body) < MIN_BODY4GID or agg.face_feat() is None:
-                realtime_map[tid] = ("-1", -1.0)
+                realtime_map.setdefault(tid, ("-1", -1.0, 0))
                 continue
 
-            # --------- 有脸 + 足够 body ----------
             face_feat, body_feat = agg.face_feat(), agg.body_feat()
             cand_gid, cand_score = gid_mgr.probe(face_feat, body_feat)
 
-            # a) 命中库而且 ≥ 阈值
             if cand_gid and cand_score >= MATCH_THR:
-                gid_mgr.bind(cand_gid, face_feat, body_feat, agg)
+                gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid)
                 tid2gid[tid] = cand_gid
-                realtime_map[tid] = (cand_gid, cand_score)
-                logger.debug(f"[GlobalID] bind {cand_gid} ({cand_score:.3f})")
-
-            # b) 与库匹配不上 / 分数不够：立刻新建
+                n_tid = len(gid_mgr.tid_hist[cand_gid])
+                realtime_map[tid] = (cand_gid, cand_score, n_tid)
             else:
                 new_gid = gid_mgr.new_gid()
-                gid_mgr.bind(new_gid, face_feat, body_feat, agg)
+                gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid)
                 tid2gid[tid] = new_gid
-                realtime_map[tid] = (new_gid, cand_score)
-                logger.debug(f"[GlobalID] new+bind {new_gid} for TID {tid}")
+                n_tid = len(gid_mgr.tid_hist[new_gid])
+                realtime_map[tid] = (new_gid, cand_score, n_tid)
 
-        # =============== 4) Flush 过期轨迹 ===============
+        # ---------- 4) Flush ----------
         for tid in list(last_seen.keys()):
             if fid - last_seen[tid] >= MAX_TID_GAP:
                 agg = agg_pool.pop(tid)
                 last_seen.pop(tid)
-                if tid in tid2gid:  # 已绑定，直接丢弃
+                if tid in tid2gid:
                     continue
-
-                # 轨迹结束前一直没满足条件，但到结束时条件满足
                 if len(agg.body) >= MIN_BODY4GID and agg.face_feat() is not None:
                     face_feat, body_feat = agg.face_feat(), agg.body_feat()
                     new_gid = gid_mgr.new_gid()
-                    gid_mgr.bind(new_gid, face_feat, body_feat, agg)
+                    gid_mgr.bind(new_gid, face_feat,
+                                 body_feat, agg, tid=tid)
                     tid2gid[tid] = new_gid
-                    realtime_map[tid] = (new_gid, -1.0)
+                    n_tid = len(gid_mgr.tid_hist[new_gid])
+                    realtime_map[tid] = (new_gid, -1.0, n_tid)
 
-        # =============== 5) 发送实时映射 ================
+        # ---------- 5) Send ----------
         q_map2disp.put(realtime_map)
 
     q_map2disp.put(SENTINEL)
@@ -394,10 +390,10 @@ def init_gst(W, H, fps, host, port):
 def display_proc(q_det2disp, q_map2disp, stop_evt, host, port, fps_exp):
     logger.info(f"[Display] push → udp://{host}:{port}")
     gst, first = None, True
-    tid2info: Dict[int, Tuple[str, float]] = {}  # tid → (gid, score)
+    tid2info: Dict[int, Tuple[str, float, int]] = {}
 
     while not stop_evt.is_set():
-        # 优先拿取最新 mapping；若队列暂时为空就沿用上一帧
+        # ------------- 1. 取最新 gid 映射 -------------
         try:
             latest_map = q_map2disp.get_nowait()
             if latest_map is SENTINEL:
@@ -407,26 +403,35 @@ def display_proc(q_det2disp, q_map2disp, stop_evt, host, port, fps_exp):
         except queue.Empty:
             pass
 
+        # ------------- 2. 取最新帧 ----------------------
         pkt = q_det2disp.get()
         if pkt is SENTINEL:
             break
         fid, frame, dets = pkt
 
+        # ------------- 3. 画框 + 文本 -------------------
         for d in dets:
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
-            gid, score = tid2info.get(d["id"], ("-1", -1.0))
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            gid, score, n_tid = tid2info.get(d["id"], ("-1", -1.0, 0))
+
+            # 根据 n_tid 选择颜色：n_tid ≥ 2 → 红色；否则绿色
+            color = (0, 0, 255) if n_tid >= 2 else (0, 255, 0)
+
+            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             cv2.putText(frame,
-                        f"{d['id']}|{gid} s={score:.2f}",
+                        f"{d['id']}|{gid} n={n_tid} s={score:.2f}",
                         (x, max(y - 3, 0)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (0, 255, 255), 1)
 
+        # ------------- 4. 首帧初始化 GST -----------------
         if first:
             H, W = frame.shape[:2]
             gst = init_gst(W, H, fps_exp, host, port)
             first = False
             logger.info(f"[Display] GST ready ({W}x{H}@{fps_exp})")
+
+        # ------------- 5. 推送到管道 ---------------------
         try:
             if gst and gst.poll() is None:
                 gst.stdin.write(frame.tobytes())
@@ -434,6 +439,7 @@ def display_proc(q_det2disp, q_map2disp, stop_evt, host, port, fps_exp):
             logger.warning("[Display] GST pipe closed")
             gst = None
 
+    # ------------- 6. 清理 -----------------------------
     if gst:
         gst.stdin.close()
         gst.wait()
@@ -441,7 +447,7 @@ def display_proc(q_det2disp, q_map2disp, stop_evt, host, port, fps_exp):
 
 
 # ======================================================
-#   6. Main
+#   5. Main
 # ======================================================
 def main():
     mp.set_start_method("spawn", force=True)
@@ -455,7 +461,7 @@ def main():
 
     q_det2feat = LatestQueue(1)
     q_det2disp = LatestQueue(1)
-    q_map2disp = LatestQueue(1)  # 改为覆盖式队列，保证实时
+    q_map2disp = LatestQueue(1)
 
     stop_evt = mp.Event()
 
