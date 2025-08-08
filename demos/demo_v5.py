@@ -80,6 +80,9 @@ class LatestQueue(mpq.Queue):
 #   2. TrackAgg / GlobalID
 # ======================================================
 class TrackAgg:
+    """
+    收集轨迹中出现的 body / face patch 及特征
+    """
 
     def __init__(self, max_body=16, max_face=8):
         self.body: deque[Tuple[np.ndarray, float, np.ndarray]] = deque(maxlen=max_body)
@@ -119,28 +122,10 @@ class TrackAgg:
         return [p for _f, p in self.face]
 
 
-def save_patches(gid: str, agg: TrackAgg):
-    gid_root = os.path.join(SAVE_DIR, gid)
-    dir_body = os.path.join(gid_root, "bodies")
-    dir_face = os.path.join(gid_root, "faces")
-    os.makedirs(dir_body, exist_ok=True)
-    os.makedirs(dir_face, exist_ok=True)
-
-    idx_body = len(os.listdir(dir_body))
-    idx_face = len(os.listdir(dir_face))
-
-    for p in agg.body_patches():
-        cv2.imwrite(os.path.join(dir_body, f"{idx_body:05d}.jpg"), p)
-        idx_body += 1
-    for p in agg.face_patches():
-        cv2.imwrite(os.path.join(dir_face, f"{idx_face:05d}.jpg"), p)
-        idx_face += 1
-
-
 class GlobalID:
     """
     face + body 联合比对：score = 0.6 * sim_face + 0.4 * sim_body
-    记录 self.tid_hist[gid] 保存与该 gid 绑定过的所有 tid。
+    每个 gid 仅保存 8 张人脸 + 8 张人体 patch（覆盖写，不会无限增长）。
     """
 
     def __init__(self,
@@ -160,14 +145,28 @@ class GlobalID:
         rep = np.mean(np.stack(feats, axis=0), 0)
         return rep / (np.linalg.norm(rep) + 1e-9)
 
-    def _add(self, lst: List[np.ndarray], feat: np.ndarray):
-        if len(lst) < self.max_proto:
+    def _add(self,
+             lst: List[np.ndarray],
+             feat: np.ndarray,
+             patch: np.ndarray,
+             dir_path: str):
+        """
+        更新原型并把 patch 落盘（覆盖写，只占一个编号）。
+        """
+        if feat is None or patch is None:
+            return
+
+        if len(lst) < self.max_proto:  # 未满
+            idx = len(lst)
             lst.append(feat)
-        else:
+        else:  # 已满，用最相似的一张做 moving average
             sims = [self._sim(feat, x) for x in lst]
             idx = int(np.argmax(sims))
             lst[idx] = 0.7 * lst[idx] + 0.3 * feat
             lst[idx] /= np.linalg.norm(lst[idx]) + 1e-9
+
+        # 覆盖写文件 00.jpg~07.jpg
+        cv2.imwrite(os.path.join(dir_path, f"{idx:02d}.jpg"), patch)
 
     # -------- 匹配 / 查询 --------
     def _best_match(self, face: np.ndarray, body: np.ndarray) -> Tuple[str | None, float]:
@@ -192,23 +191,32 @@ class GlobalID:
              body: np.ndarray,
              agg: TrackAgg | None = None,
              tid: int | None = None):
-        if face is not None:
-            self._add(self.bank[gid]['faces'], face)
-        if body is not None:
-            self._add(self.bank[gid]['bodies'], body)
+        root = os.path.join(SAVE_DIR, gid)
 
+        # 从 agg 中拿最新一张 patch
+        face_patch = agg.face_patches()[-1] if (agg and agg.face) else None
+        body_patch = agg.body_patches()[-1] if (agg and agg.body) else None
+
+        # 更新 proto + 覆盖写文件
+        self._add(self.bank[gid]['faces'], face, face_patch, os.path.join(root, "faces"))
+        self._add(self.bank[gid]['bodies'], body, body_patch, os.path.join(root, "bodies"))
+
+        # 记录历史 tid
         if tid is not None:
             lst = self.tid_hist.setdefault(gid, [])
             if tid not in lst:
                 lst.append(tid)
 
-        if agg:
-            save_patches(gid, agg)
-
     def new_gid(self) -> str:
         gid = f"G{len(self.bank) + 1:05d}"
         self.bank[gid] = dict(faces=[], bodies=[])
         self.tid_hist[gid] = []
+
+        # 为 proto 文件建立目录
+        root = os.path.join(SAVE_DIR, gid)
+        os.makedirs(os.path.join(root, "faces"), exist_ok=True)
+        os.makedirs(os.path.join(root, "bodies"), exist_ok=True)
+
         logger.info(f"[GlobalID] new {gid}")
         return gid
 
@@ -288,7 +296,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
             break
         fid, patches, dets = pkt
 
-        # ---------- 1) Body ----------
+        # ---------- 1) Body Feat ----------
         tensors, metas, keep_patches = [], [], []
         for det, patch in zip(dets, patches):
             if not is_long_patch(patch):
@@ -308,7 +316,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                 agg.add_body(feat, score, fid, img_patch)
                 last_seen[tid] = fid
 
-        # ---------- 2) Face ----------
+        # ---------- 2) Face Feat ----------
         for det, patch in zip(dets, patches):
             faces = face_app.get(patch)
             if len(faces) != 1:
