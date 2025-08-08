@@ -45,6 +45,8 @@ MIN_BODY4GID = 4
 
 W_FACE, W_BODY = 0.6, 0.4
 MATCH_THR = 0.5
+THR_NEW_GID = 0.3
+FACE_DET_MIN_SCORE = 0.60
 
 SAVE_DIR = "/home/manu/tmp/perimeter"
 os.makedirs(SAVE_DIR, exist_ok=True)
@@ -84,7 +86,7 @@ class TrackAgg:
     收集轨迹中出现的 body / face patch 及特征
     """
 
-    def __init__(self, max_body=16, max_face=8):
+    def __init__(self, max_body=MIN_BODY4GID, max_face=MIN_BODY4GID):
         self.body: deque[Tuple[np.ndarray, float, np.ndarray]] = deque(maxlen=max_body)
         self.face: deque[Tuple[np.ndarray, np.ndarray]] = deque(maxlen=max_face)
         self.last_fid = -1
@@ -135,6 +137,10 @@ class GlobalID:
         self.w_face, self.w_body, self.thr = w_face, w_body, thr
         self.bank: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self.tid_hist: Dict[str, List[int]] = {}
+
+    def __len__(self) -> int:
+        """返回当前已注册的 gid 数量"""
+        return len(self.bank)
 
     # -------- 内部工具 --------
     @staticmethod
@@ -321,6 +327,13 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
             faces = face_app.get(patch)
             if len(faces) != 1:
                 continue
+            face_obj = faces[0]
+            if getattr(face_obj, "det_score", 1.0) < FACE_DET_MIN_SCORE:
+                continue
+            if patch.shape[0] < 120 or patch.shape[1] < 120:
+                continue
+            if cv2.Laplacian(patch, cv2.CV_64F).var() < 100:
+                continue
             f_emb = normv(faces[0].embedding)
             tid = det["id"]
             agg = agg_pool.setdefault(tid, TrackAgg())
@@ -343,7 +356,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                 tid2gid[tid] = cand_gid
                 n_tid = len(gid_mgr.tid_hist[cand_gid])
                 realtime_map[tid] = (cand_gid, cand_score, n_tid)
-            else:
+            elif len(gid_mgr) < 1 or (cand_gid and cand_score < THR_NEW_GID):
                 new_gid = gid_mgr.new_gid()
                 gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid)
                 tid2gid[tid] = new_gid
