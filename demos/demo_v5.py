@@ -2,11 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 周界安全 Demo :  “快显慢算” + tid|gid|count|score 实时调试版
-
-显示内容：
-tid | gid | n(该 gid 历史 tid 数) | score
+防 proto 污染增强版 + detach 修复
 """
-
 from __future__ import annotations
 
 import argparse
@@ -41,7 +38,7 @@ QUEUE_SIZE = 8
 SENTINEL = None
 
 MIN_HW_RATIO = 1.5
-MIN_BODY4GID = 4
+MIN_BODY4GID = 8
 
 W_FACE, W_BODY = 0.6, 0.4
 MATCH_THR = 0.5
@@ -52,6 +49,17 @@ SAVE_DIR = "/home/manu/tmp/perimeter"
 os.makedirs(SAVE_DIR, exist_ok=True)
 make_dirs(SAVE_DIR, reset=True)
 
+# -------- 防污染增强参数（新增） ----------
+CANDIDATE_FRAMES = 5  # 候选期帧数
+UPDATE_THR = 0.65  # proto 更新最低相似度
+BIND_LOCK_FRAMES = 30  # tid 绑定锁帧数
+FACE_THR_STRICT = 0.6  # 二次验证阈值 face
+BODY_THR_STRICT = 0.55  # 二次验证阈值 body
+NEW_GID_MIN_FRAMES = 3  # 至少连续多少帧低分才能创建新 GID
+NEW_GID_TIME_WINDOW = 50  # 同一个 tid 创建 new_gid 的最小间隔帧数
+
+
+# ----------------------------------------
 
 def is_long_patch(patch: np.ndarray, thr: float = MIN_HW_RATIO) -> bool:
     if patch is None or patch.size == 0:
@@ -60,12 +68,7 @@ def is_long_patch(patch: np.ndarray, thr: float = MIN_HW_RATIO) -> bool:
     return h / (w + 1e-9) >= thr
 
 
-# ======================================================
-#   1. 覆盖型队列
-# ======================================================
 class LatestQueue(mpq.Queue):
-    """放入新元素时清空旧元素（确保消费者只拿到最新数据）"""
-
     def __init__(self, maxsize=1, *, ctx=None):
         super().__init__(maxsize, ctx=ctx or mp.get_context())
 
@@ -78,14 +81,7 @@ class LatestQueue(mpq.Queue):
         super().put(obj, block, timeout)
 
 
-# ======================================================
-#   2. TrackAgg / GlobalID
-# ======================================================
 class TrackAgg:
-    """
-    收集轨迹中出现的 body / face patch 及特征
-    """
-
     def __init__(self, max_body=MIN_BODY4GID, max_face=MIN_BODY4GID):
         self.body: deque[Tuple[np.ndarray, float, np.ndarray]] = deque(maxlen=max_body)
         self.face: deque[Tuple[np.ndarray, np.ndarray]] = deque(maxlen=max_face)
@@ -100,8 +96,7 @@ class TrackAgg:
         self.last_fid = fid
 
     def body_feat(self):
-        if not self.body:
-            return None
+        if not self.body: return None
         feats, scores, _ = zip(*self.body)
         w = np.clip(np.float32(scores), 1e-2, None)
         w /= w.sum()
@@ -110,8 +105,7 @@ class TrackAgg:
         return rep
 
     def face_feat(self):
-        if not self.face:
-            return None
+        if not self.face: return None
         feats, _ = zip(*self.face)
         rep = np.mean(np.stack(feats, axis=0), 0)
         rep /= np.linalg.norm(rep) + 1e-9
@@ -125,24 +119,15 @@ class TrackAgg:
 
 
 class GlobalID:
-    """
-    face + body 联合比对：score = 0.6 * sim_face + 0.4 * sim_body
-    每个 gid 仅保存 8 张人脸 + 8 张人体 patch（覆盖写，不会无限增长）。
-    """
-
-    def __init__(self,
-                 max_proto=8,
-                 w_face=W_FACE, w_body=W_BODY, thr=MATCH_THR):
+    def __init__(self, max_proto=8, w_face=W_FACE, w_body=W_BODY, thr=MATCH_THR):
         self.max_proto = max_proto
         self.w_face, self.w_body, self.thr = w_face, w_body, thr
         self.bank: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self.tid_hist: Dict[str, List[int]] = {}
 
     def __len__(self) -> int:
-        """返回当前已注册的 gid 数量"""
         return len(self.bank)
 
-    # -------- 内部工具 --------
     @staticmethod
     def _sim(a: np.ndarray, b: np.ndarray) -> float:
         return float(a @ b)
@@ -151,30 +136,35 @@ class GlobalID:
         rep = np.mean(np.stack(feats, axis=0), 0)
         return rep / (np.linalg.norm(rep) + 1e-9)
 
-    def _add(self,
-             lst: List[np.ndarray],
-             feat: np.ndarray,
-             patch: np.ndarray,
-             dir_path: str):
-        """
-        更新原型并把 patch 落盘（覆盖写，只占一个编号）。
-        """
+    def can_update_proto(self, gid: str, face_feat: np.ndarray, body_feat: np.ndarray) -> bool:
+        pool = self.bank[gid]
+        if pool['faces']:
+            sim_f = self._sim(face_feat, self._avg(pool['faces']))
+            if sim_f < FACE_THR_STRICT:
+                return False
+        if pool['bodies']:
+            sim_b = self._sim(body_feat, self._avg(pool['bodies']))
+            if sim_b < BODY_THR_STRICT:
+                return False
+        return True
+
+    def _add(self, lst: List[np.ndarray], feat: np.ndarray, patch: np.ndarray, dir_path: str):
         if feat is None or patch is None:
             return
-
-        if len(lst) < self.max_proto:  # 未满
+        if len(lst) > 0:
+            sims = [self._sim(feat, x) for x in lst]
+            if max(sims) < UPDATE_THR:
+                return
+        if len(lst) < self.max_proto:
             idx = len(lst)
             lst.append(feat)
-        else:  # 已满，用最相似的一张做 moving average
+        else:
             sims = [self._sim(feat, x) for x in lst]
             idx = int(np.argmax(sims))
             lst[idx] = 0.7 * lst[idx] + 0.3 * feat
             lst[idx] /= np.linalg.norm(lst[idx]) + 1e-9
-
-        # 覆盖写文件 00.jpg~07.jpg
         cv2.imwrite(os.path.join(dir_path, f"{idx:02d}.jpg"), patch)
 
-    # -------- 匹配 / 查询 --------
     def _best_match(self, face: np.ndarray, body: np.ndarray) -> Tuple[str | None, float]:
         gid_best, score_best = None, -1.0
         for gid, pool in self.bank.items():
@@ -190,24 +180,12 @@ class GlobalID:
     def probe(self, face: np.ndarray, body: np.ndarray) -> Tuple[str | None, float]:
         return self._best_match(face, body)
 
-    # -------- 分配 / 更新 --------
-    def bind(self,
-             gid: str,
-             face: np.ndarray,
-             body: np.ndarray,
-             agg: TrackAgg | None = None,
-             tid: int | None = None):
+    def bind(self, gid: str, face: np.ndarray, body: np.ndarray, agg: TrackAgg | None = None, tid: int | None = None):
         root = os.path.join(SAVE_DIR, gid)
-
-        # 从 agg 中拿最新一张 patch
         face_patch = agg.face_patches()[-1] if (agg and agg.face) else None
         body_patch = agg.body_patches()[-1] if (agg and agg.body) else None
-
-        # 更新 proto + 覆盖写文件
         self._add(self.bank[gid]['faces'], face, face_patch, os.path.join(root, "faces"))
         self._add(self.bank[gid]['bodies'], body, body_patch, os.path.join(root, "bodies"))
-
-        # 记录历史 tid
         if tid is not None:
             lst = self.tid_hist.setdefault(gid, [])
             if tid not in lst:
@@ -217,19 +195,12 @@ class GlobalID:
         gid = f"G{len(self.bank) + 1:05d}"
         self.bank[gid] = dict(faces=[], bodies=[])
         self.tid_hist[gid] = []
-
-        # 为 proto 文件建立目录
-        root = os.path.join(SAVE_DIR, gid)
-        os.makedirs(os.path.join(root, "faces"), exist_ok=True)
-        os.makedirs(os.path.join(root, "bodies"), exist_ok=True)
-
+        os.makedirs(os.path.join(SAVE_DIR, gid, "faces"), exist_ok=True)
+        os.makedirs(os.path.join(SAVE_DIR, gid, "bodies"), exist_ok=True)
         logger.info(f"[GlobalID] new {gid}")
         return gid
 
 
-# ======================================================
-#   3. ReID 前处理
-# ======================================================
 @torch.inference_mode()
 def prep_patch(patch: np.ndarray) -> torch.Tensor:
     im = cv2.resize(patch, (128, 256))
@@ -245,9 +216,6 @@ def normv(v):
     return v / (np.linalg.norm(v) + 1e-9)
 
 
-# ======================================================
-#   4. 进程函数
-# ======================================================
 def dec_det_proc(src, q_det2feat, q_det2disp, stop_evt, skip):
     cap = cv2.VideoCapture(src)
     if not cap.isOpened():
@@ -260,16 +228,12 @@ def dec_det_proc(src, q_det2feat, q_det2disp, stop_evt, skip):
     fid = 0
     while not stop_evt.is_set():
         ok, frm = cap.read()
-        if not ok:
-            break
+        if not ok: break
         fid += 1
-        if fid % skip:
-            continue
+        if fid % skip: continue
         dets = bt.update(frm, debug=False)
-
         small = cv2.resize(frm, None, fx=SHOW_SCALE, fy=SHOW_SCALE)
         q_det2disp.put((fid, small, dets))
-
         patches, H, W = [], *frm.shape[:2]
         for d in dets:
             x, y, w, h = d["tlwh"]
@@ -277,36 +241,31 @@ def dec_det_proc(src, q_det2feat, q_det2disp, stop_evt, skip):
             x2, y2 = min(int(x + w), W - 1), min(int(y + h), H - 1)
             patches.append(frm[y1:y2, x1:x2].copy())
         q_det2feat.put((fid, patches, dets))
-
     cap.release()
     q_det2feat.put(SENTINEL)
     q_det2disp.put(SENTINEL)
     logger.info("[DecDet] finished")
 
 
-# ------------ P2 Feature ------------------------------
 def feature_proc(q_det2feat, q_map2disp, stop_evt):
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    reid = PersonReid(DIR_REID_MODEL, which_epoch="last",
-                      gpu="0" if dev.type == "cuda" else "")
+    reid = PersonReid(DIR_REID_MODEL, which_epoch="last", gpu="0" if dev.type == "cuda" else "")
     face_app = FaceSearcher(provider="CUDAExecutionProvider").app
     gid_mgr = GlobalID()
-
     agg_pool: dict[int, TrackAgg] = {}
     last_seen: dict[int, int] = {}
     tid2gid: Dict[int, str] = {}
+    candidate_state: Dict[int, dict] = {}
 
     while not stop_evt.is_set():
         pkt = q_det2feat.get()
-        if pkt is SENTINEL:
-            break
+        if pkt is SENTINEL: break
         fid, patches, dets = pkt
 
-        # ---------- 1) Body Feat ----------
+        # 1) Body Feat
         tensors, metas, keep_patches = [], [], []
         for det, patch in zip(dets, patches):
-            if not is_long_patch(patch):
-                continue
+            if not is_long_patch(patch): continue
             tensors.append(prep_patch(patch))
             metas.append((det["id"], det["score"]))
             keep_patches.append(patch)
@@ -316,75 +275,87 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
             with torch.no_grad():
                 outputs = reid.model(batch)
                 outputs = torch.nn.functional.normalize(outputs, dim=1)
-            feats = outputs.cpu().numpy()
+            feats = outputs.detach().cpu().numpy()
             for (tid, score), feat, img_patch in zip(metas, feats, keep_patches):
                 agg = agg_pool.setdefault(tid, TrackAgg())
                 agg.add_body(feat, score, fid, img_patch)
                 last_seen[tid] = fid
 
-        # ---------- 2) Face Feat ----------
+        # 2) Face Feat
         for det, patch in zip(dets, patches):
             faces = face_app.get(patch)
-            if len(faces) != 1:
-                continue
+            if len(faces) != 1: continue
             face_obj = faces[0]
-            if getattr(face_obj, "det_score", 1.0) < FACE_DET_MIN_SCORE:
-                continue
-            if patch.shape[0] < 120 or patch.shape[1] < 120:
-                continue
-            if cv2.Laplacian(patch, cv2.CV_64F).var() < 100:
-                continue
+            if getattr(face_obj, "det_score", 1.0) < FACE_DET_MIN_SCORE: continue
+            if patch.shape[0] < 120 or patch.shape[1] < 120: continue
+            if cv2.Laplacian(patch, cv2.CV_64F).var() < 100: continue
             f_emb = normv(faces[0].embedding)
             tid = det["id"]
             agg = agg_pool.setdefault(tid, TrackAgg())
             agg.add_face(f_emb, fid, patch)
             last_seen[tid] = fid
 
-        # ---------- 3) Match / Bind ----------
+        # 3) Match / Bind 防污染
         realtime_map: Dict[int, Tuple[str, float, int]] = {}
         for tid, agg in list(agg_pool.items()):
-
             if len(agg.body) < MIN_BODY4GID or len(agg.face) == 0:
                 realtime_map.setdefault(tid, ("-1", -1.0, 0))
                 continue
-
             face_feat, body_feat = agg.face_feat(), agg.body_feat()
             cand_gid, cand_score = gid_mgr.probe(face_feat, body_feat)
 
+            if tid in tid2gid:
+                bound_gid = tid2gid[tid]
+                lock_elapsed = fid - candidate_state.get(tid, {}).get("last_bind_fid", 0)
+                if cand_gid != bound_gid and lock_elapsed < BIND_LOCK_FRAMES:
+                    n_tid = len(gid_mgr.tid_hist[bound_gid])
+                    realtime_map[tid] = (bound_gid, cand_score, n_tid)
+                    continue
+
+            state = candidate_state.setdefault(tid, {"cand_gid": None, "count": 0, "last_bind_fid": 0})
             if cand_gid and cand_score >= MATCH_THR:
-                gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid)
-                tid2gid[tid] = cand_gid
-                n_tid = len(gid_mgr.tid_hist[cand_gid])
-                realtime_map[tid] = (cand_gid, cand_score, n_tid)
+                if state["cand_gid"] == cand_gid:
+                    state["count"] += 1
+                else:
+                    state["cand_gid"] = cand_gid
+                    state["count"] = 1
+                if state["count"] >= CANDIDATE_FRAMES and gid_mgr.can_update_proto(cand_gid, face_feat, body_feat):
+                    gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid)
+                    tid2gid[tid] = cand_gid
+                    state["last_bind_fid"] = fid
+                    n_tid = len(gid_mgr.tid_hist[cand_gid])
+                    realtime_map[tid] = (cand_gid, cand_score, n_tid)
+                else:
+                    realtime_map[tid] = ("-1", -1.0, 0)
             elif len(gid_mgr) < 1 or (cand_gid and cand_score < THR_NEW_GID):
                 new_gid = gid_mgr.new_gid()
                 gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid)
                 tid2gid[tid] = new_gid
+                state["cand_gid"] = new_gid
+                state["count"] = CANDIDATE_FRAMES
+                state["last_bind_fid"] = fid
                 n_tid = len(gid_mgr.tid_hist[new_gid])
                 realtime_map[tid] = (new_gid, cand_score, n_tid)
+            else:
+                realtime_map[tid] = ("-1", -1.0, 0)
 
-        # ---------- 4) Flush ----------
         for tid in list(last_seen.keys()):
             if fid - last_seen[tid] >= MAX_TID_GAP:
                 last_seen.pop(tid)
+                candidate_state.pop(tid, None)
+                tid2gid.pop(tid, None)
 
-        # ---------- 5) Send ----------
         q_map2disp.put(realtime_map)
 
     q_map2disp.put(SENTINEL)
     logger.info("[Feature] finished")
 
 
-# ------------ P3 Display ------------------------------
 def init_gst(W, H, fps, host, port):
-    cmd = ["gst-launch-1.0", "-q",
-           "fdsrc", "!", "videoparse",
-           f"width={W}", f"height={H}", "format=bgr",
-           f"framerate={int(fps)}/1", "!",
-           "videoconvert", "!",
-           "x264enc", "tune=zerolatency", "speed-preset=ultrafast", "!",
-           "h264parse", "!", "mpegtsmux", "!",
-           "udpsink", f"host={host}", f"port={port}",
+    cmd = ["gst-launch-1.0", "-q", "fdsrc", "!", "videoparse",
+           f"width={W}", f"height={H}", "format=bgr", f"framerate={int(fps)}/1", "!",
+           "videoconvert", "!", "x264enc", "tune=zerolatency", "speed-preset=ultrafast", "!",
+           "h264parse", "!", "mpegtsmux", "!", "udpsink", f"host={host}", f"port={port}",
            "sync=false", "async=false"]
     return subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
@@ -393,9 +364,7 @@ def display_proc(q_det2disp, q_map2disp, stop_evt, host, port, fps_exp):
     logger.info(f"[Display] push → udp://{host}:{port}")
     gst, first = None, True
     tid2info: Dict[int, Tuple[str, float, int]] = {}
-
     while not stop_evt.is_set():
-        # ------------- 1. 取最新 gid 映射 -------------
         try:
             latest_map = q_map2disp.get_nowait()
             if latest_map is SENTINEL:
@@ -404,53 +373,34 @@ def display_proc(q_det2disp, q_map2disp, stop_evt, host, port, fps_exp):
             tid2info = latest_map
         except queue.Empty:
             pass
-
-        # ------------- 2. 取最新帧 ----------------------
         pkt = q_det2disp.get()
-        if pkt is SENTINEL:
-            break
+        if pkt is SENTINEL: break
         fid, frame, dets = pkt
-
-        # ------------- 3. 画框 + 文本 -------------------
         for d in dets:
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
             gid, score, n_tid = tid2info.get(d["id"], ("-1", -1.0, 0))
-
-            # 根据 n_tid 选择颜色：n_tid ≥ 2 → 红色；否则绿色
             color = (0, 0, 255) if n_tid >= 2 else (0, 255, 0)
-
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-            cv2.putText(frame,
-                        f"{d['id']}|{gid} n={n_tid} s={score:.2f}",
-                        (x, max(y - 3, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+            cv2.putText(frame, f"{d['id']}|{gid} n={n_tid} s={score:.2f}",
+                        (x, max(y - 3, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (0, 255, 255), 1)
-
-        # ------------- 4. 首帧初始化 GST -----------------
         if first:
             H, W = frame.shape[:2]
             gst = init_gst(W, H, fps_exp, host, port)
             first = False
             logger.info(f"[Display] GST ready ({W}x{H}@{fps_exp})")
-
-        # ------------- 5. 推送到管道 ---------------------
         try:
             if gst and gst.poll() is None:
                 gst.stdin.write(frame.tobytes())
         except (BrokenPipeError, IOError):
             logger.warning("[Display] GST pipe closed")
             gst = None
-
-    # ------------- 6. 清理 -----------------------------
     if gst:
         gst.stdin.close()
         gst.wait()
     logger.info("[Display] finished")
 
 
-# ======================================================
-#   5. Main
-# ======================================================
 def main():
     mp.set_start_method("spawn", force=True)
     pa = argparse.ArgumentParser()
@@ -460,28 +410,17 @@ def main():
     pa.add_argument("--udp_port", type=int, default=5000)
     pa.add_argument("--fps", type=float, default=25.0)
     args = pa.parse_args()
-
     q_det2feat = LatestQueue(1)
     q_det2disp = LatestQueue(1)
     q_map2disp = LatestQueue(1)
-
     stop_evt = mp.Event()
-
     procs = [
-        mp.Process(target=dec_det_proc,
-                   args=(args.video, q_det2feat, q_det2disp,
-                         stop_evt, args.skip),
-                   name="DecDet"),
-        mp.Process(target=feature_proc,
-                   args=(q_det2feat, q_map2disp, stop_evt),
-                   name="Feature"),
-        mp.Process(target=display_proc,
-                   args=(q_det2disp, q_map2disp, stop_evt,
-                         args.udp_host, args.udp_port, args.fps),
+        mp.Process(target=dec_det_proc, args=(args.video, q_det2feat, q_det2disp, stop_evt, args.skip), name="DecDet"),
+        mp.Process(target=feature_proc, args=(q_det2feat, q_map2disp, stop_evt), name="Feature"),
+        mp.Process(target=display_proc, args=(q_det2disp, q_map2disp, stop_evt, args.udp_host, args.udp_port, args.fps),
                    name="Display")
     ]
     [p.start() for p in procs]
-
     signal.signal(signal.SIGINT, lambda s, f: stop_evt.set())
     try:
         while any(p.is_alive() for p in procs):
