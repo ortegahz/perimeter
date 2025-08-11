@@ -7,6 +7,7 @@ ffplay -fflags nobuffer -flags low_delay \
        udp://127.0.0.1:5000
 
 ffplay -fflags nobuffer -flags low_delay udp://127.0.0.1:5000
+ffplay -fflags nobuffer -flags low_delay udp://127.0.0.1:5001
 
 # insightface
 pip install nvidia-cudnn-cu12==9.0.0.312 
