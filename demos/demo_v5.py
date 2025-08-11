@@ -255,7 +255,8 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
     agg_pool: dict[int, TrackAgg] = {}
     last_seen: dict[int, int] = {}
     tid2gid: Dict[int, str] = {}
-    candidate_state: Dict[int, dict] = {}
+    candidate_state: Dict[int, dict] = {}  # 用于已有 GID 匹配
+    new_gid_state: Dict[int, dict] = {}  # 新 GID 候选状态
 
     while not stop_evt.is_set():
         pkt = q_det2feat.get()
@@ -304,6 +305,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
             face_feat, body_feat = agg.face_feat(), agg.body_feat()
             cand_gid, cand_score = gid_mgr.probe(face_feat, body_feat)
 
+            # 已绑定 GID 有锁定保护
             if tid in tid2gid:
                 bound_gid = tid2gid[tid]
                 lock_elapsed = fid - candidate_state.get(tid, {}).get("last_bind_fid", 0)
@@ -312,6 +314,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                     realtime_map[tid] = (bound_gid, cand_score, n_tid)
                     continue
 
+            # 已知 GID 匹配路径
             state = candidate_state.setdefault(tid, {"cand_gid": None, "count": 0, "last_bind_fid": 0})
             if cand_gid and cand_score >= MATCH_THR:
                 if state["cand_gid"] == cand_gid:
@@ -327,23 +330,51 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                     realtime_map[tid] = (cand_gid, cand_score, n_tid)
                 else:
                     realtime_map[tid] = ("-1", -1.0, 0)
-            elif len(gid_mgr) < 1 or (cand_gid and cand_score < THR_NEW_GID):
-                new_gid = gid_mgr.new_gid()
-                gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid)
-                tid2gid[tid] = new_gid
-                state["cand_gid"] = new_gid
-                state["count"] = CANDIDATE_FRAMES
-                state["last_bind_fid"] = fid
-                n_tid = len(gid_mgr.tid_hist[new_gid])
-                realtime_map[tid] = (new_gid, cand_score, n_tid)
-            else:
-                realtime_map[tid] = ("-1", -1.0, 0)
 
+            else:
+                # 新 GID 创建逻辑 (改进版，带限制)
+                time_since_last_new = fid - new_gid_state.get(tid, {}).get("last_new_fid", -1)
+                ng_state = new_gid_state.setdefault(tid, {"count": 0, "last_new_fid": -NEW_GID_TIME_WINDOW})
+
+                if len(gid_mgr) < 1:
+                    new_gid = gid_mgr.new_gid()
+                    gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid)
+                    tid2gid[tid] = new_gid
+                    state["cand_gid"] = new_gid
+                    state["count"] = CANDIDATE_FRAMES
+                    state["last_bind_fid"] = fid
+                    ng_state["last_new_fid"] = fid
+                    n_tid = len(gid_mgr.tid_hist[new_gid])
+                    realtime_map[tid] = (new_gid, cand_score, n_tid)
+
+                elif cand_gid is None or cand_score < THR_NEW_GID:
+                    if time_since_last_new >= NEW_GID_TIME_WINDOW:
+                        ng_state["count"] += 1
+                        if ng_state["count"] >= NEW_GID_MIN_FRAMES:
+                            new_gid = gid_mgr.new_gid()
+                            gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid)
+                            tid2gid[tid] = new_gid
+                            state["cand_gid"] = new_gid
+                            state["count"] = CANDIDATE_FRAMES
+                            state["last_bind_fid"] = fid
+                            ng_state["last_new_fid"] = fid
+                            ng_state["count"] = 0
+                            n_tid = len(gid_mgr.tid_hist[new_gid])
+                            realtime_map[tid] = (new_gid, cand_score, n_tid)
+                        else:
+                            realtime_map[tid] = ("-1", -1.0, 0)
+                    else:
+                        realtime_map[tid] = ("-1", -1.0, 0)
+                else:
+                    realtime_map[tid] = ("-1", -1.0, 0)
+
+        # 清理过期轨迹
         for tid in list(last_seen.keys()):
             if fid - last_seen[tid] >= MAX_TID_GAP:
                 last_seen.pop(tid)
                 candidate_state.pop(tid, None)
                 tid2gid.pop(tid, None)
+                new_gid_state.pop(tid, None)
 
         q_map2disp.put(realtime_map)
 
