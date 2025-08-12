@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 双路视频 + 全局GID
-- 恢复候选检测、多帧确认、防抖逻辑
+- 使用严格候选检测、多帧确认、防抖&锁定机制
 - 第一个GID：有人脸+body -> 立即创建
 """
 
@@ -17,7 +17,7 @@ import signal
 import subprocess
 import time
 from collections import deque
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
@@ -50,9 +50,11 @@ FACE_THR_STRICT = 0.6
 BODY_THR_STRICT = 0.55
 NEW_GID_MIN_FRAMES = 3
 NEW_GID_TIME_WINDOW = 50
+BIND_LOCK_FRAMES = 15
+CANDIDATE_FRAMES = 2
+MAX_TID_GAP = 60
 
 
-# ---- 工具函数 ----
 def is_long_patch(patch: np.ndarray, thr: float = MIN_HW_RATIO) -> bool:
     if patch is None or patch.size == 0: return False
     h, w = patch.shape[:2]
@@ -65,7 +67,8 @@ class LatestQueue(mpq.Queue):
 
     def put(self, obj, block=True, timeout=None):
         try:
-            while True: self.get_nowait()
+            while True:
+                self.get_nowait()
         except queue.Empty:
             pass
         super().put(obj, block, timeout)
@@ -78,17 +81,17 @@ class TrackAgg:
         self.last_fid = -1
 
     def add_body(self, feat, scr, fid, patch):
-        self.body.append((feat, scr, patch));
+        self.body.append((feat, scr, patch))
         self.last_fid = fid
 
     def add_face(self, feat, fid, patch):
-        self.face.append((feat, patch));
+        self.face.append((feat, patch))
         self.last_fid = fid
 
     def body_feat(self):
         if not self.body: return None
         feats, scores, _ = zip(*self.body)
-        w = np.clip(np.float32(scores), 1e-2, None);
+        w = np.clip(np.float32(scores), 1e-2, None)
         w /= w.sum()
         rep = (np.stack(feats) * w[:, None]).sum(0)
         return rep / (np.linalg.norm(rep) + 1e-9)
@@ -130,7 +133,7 @@ class GlobalID:
         if feat is None or patch is None: return
         if lst and max(self._sim(feat, x) for x in lst) < UPDATE_THR: return
         if len(lst) < self.max_proto:
-            idx = len(lst);
+            idx = len(lst)
             lst.append(feat)
         else:
             idx = int(np.argmax([self._sim(feat, x) for x in lst]))
@@ -141,7 +144,8 @@ class GlobalID:
     def _best_match(self, face, body):
         gid_best, score_best = None, -1.0
         for gid, pool in self.bank.items():
-            if not pool['faces'] or not pool['bodies']: continue
+            if not pool['faces'] or not pool['bodies']:
+                continue
             score = self.w_face * self._sim(face, self._avg(pool['faces'])) + \
                     self.w_body * self._sim(body, self._avg(pool['bodies']))
             if score > score_best:
@@ -152,28 +156,16 @@ class GlobalID:
         return self._best_match(face, body)
 
     def bind(self, gid, face, body, agg: TrackAgg | None = None, tid=None):
-        """
-        绑定一个轨迹到全局ID，并更新人脸/人体特征库和历史tid列表
-        """
         root = os.path.join(SAVE_DIR, gid)
+        self._add(self.bank[gid]['faces'],
+                  face,
+                  agg.face_patches()[-1] if agg and agg.face else None,
+                  os.path.join(root, "faces"))
+        self._add(self.bank[gid]['bodies'],
+                  body,
+                  agg.body_patches()[-1] if agg and agg.body else None,
+                  os.path.join(root, "bodies"))
 
-        # 添加人脸特征
-        self._add(
-            self.bank[gid]['faces'],
-            face,
-            agg.face_patches()[-1] if agg and agg.face else None,
-            os.path.join(root, "faces")
-        )
-
-        # 添加人体特征
-        self._add(
-            self.bank[gid]['bodies'],
-            body,
-            agg.body_patches()[-1] if agg and agg.body else None,
-            os.path.join(root, "bodies")
-        )
-
-        # 记录tid，去重防止重复累计
         if tid:
             self.tid_hist.setdefault(gid, [])
             if tid not in self.tid_hist[gid]:
@@ -219,12 +211,13 @@ def dec_det_proc(stream_id, src, q_det2feat, q_det2disp, stop_evt, skip):
         fid += 1
         if fid % skip: continue
         dets = bt.update(frm, debug=False)
-        # if q_det2disp.full() or q_det2feat.full(): continue
         small = cv2.resize(frm, None, fx=SHOW_SCALE, fy=SHOW_SCALE)
         q_det2disp.put((stream_id, fid, small, dets))
         H, W = frm.shape[:2]
-        patches = [frm[max(int(y), 0):min(int(y + h), H), max(int(x), 0):min(int(x + w), W)].copy()
-                   for x, y, w, h in (d["tlwh"] for d in dets)]
+        patches = [
+            frm[max(int(y), 0):min(int(y + h), H), max(int(x), 0):min(int(x + w), W)].copy()
+            for x, y, w, h in (d["tlwh"] for d in dets)
+        ]
         q_det2feat.put((stream_id, fid, patches, dets))
     cap.release()
     q_det2feat.put(SENTINEL)
@@ -236,77 +229,135 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     reid = PersonReid(DIR_REID_MODEL, which_epoch="last", gpu="0" if dev.type == "cuda" else "")
     face_app = FaceSearcher(provider="CUDAExecutionProvider").app
-    gid_mgr, agg_pool, last_seen, tid2gid, new_gid_state = GlobalID(), {}, {}, {}, {}
+    gid_mgr = GlobalID()
+    agg_pool: Dict[str, TrackAgg] = {}
+    last_seen: Dict[str, int] = {}
+    tid2gid: Dict[str, str] = {}
+    candidate_state: Dict[str, dict] = {}
+    new_gid_state: Dict[str, dict] = {}
+
     while not stop_evt.is_set():
         pkt = q_det2feat.get()
         if pkt is SENTINEL: break
         stream_id, fid, patches, dets = pkt
-        body_inputs, meta_info = [], []
+
+        tensors, metas, keep_patches = [], [], []
         for det, patch in zip(dets, patches):
             if not is_long_patch(patch): continue
-            body_inputs.append(prep_patch(patch))
-            meta_info.append((f"{stream_id}_{det['id']}", det["score"], patch))
-        if body_inputs:
+            tensors.append(prep_patch(patch))
+            metas.append((f"{stream_id}_{det['id']}", det["score"]))
+            keep_patches.append(patch)
+
+        if tensors:
+            batch = torch.stack(tensors).to(dev).float()
             with torch.no_grad():
-                batch = torch.stack(body_inputs).to(dev)
-                outputs = torch.nn.functional.normalize(reid.model(batch), dim=1)
+                outputs = reid.model(batch)
+                outputs = torch.nn.functional.normalize(outputs, dim=1)
             feats = outputs.detach().cpu().numpy()
-            for (gid_tid, score, img_patch), feat in zip(meta_info, feats):
-                agg_pool.setdefault(gid_tid, TrackAgg()).add_body(feat, score, fid, img_patch)
-                last_seen[gid_tid] = fid
+            for (tid, score), feat, img_patch in zip(metas, feats, keep_patches):
+                agg = agg_pool.setdefault(tid, TrackAgg())
+                agg.add_body(feat, score, fid, img_patch)
+                last_seen[tid] = fid
+
         for det, patch in zip(dets, patches):
             faces = face_app.get(patch)
             if len(faces) != 1: continue
-            if getattr(faces[0], "det_score", 1.0) < FACE_DET_MIN_SCORE: continue
+            face_obj = faces[0]
+            if getattr(face_obj, "det_score", 1.0) < FACE_DET_MIN_SCORE: continue
             if patch.shape[0] < 120 or patch.shape[1] < 120: continue
             if cv2.Laplacian(patch, cv2.CV_64F).var() < 100: continue
-            agg_pool.setdefault(f"{stream_id}_{det['id']}", TrackAgg()).add_face(normv(faces[0].embedding), fid, patch)
-            last_seen[f"{stream_id}_{det['id']}"] = fid
+            f_emb = normv(face_obj.embedding)
+            tid = f"{stream_id}_{det['id']}"
+            agg = agg_pool.setdefault(tid, TrackAgg())
+            agg.add_face(f_emb, fid, patch)
+            last_seen[tid] = fid
 
-        realtime_map: Dict[str, Dict[int, tuple]] = {}
-        for gid_tid, agg in list(agg_pool.items()):
-            tid_stream, tid_num = gid_tid.split("_", 1)
-            tid_num = int(tid_num)
+        realtime_map: Dict[str, Dict[int, Tuple[str, float, int]]] = {}
+        for tid, agg in list(agg_pool.items()):
+            if len(agg.body) < MIN_BODY4GID or len(agg.face) == 0:
+                tid_stream, tid_num = tid.split("_", 1)
+                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+                continue
             face_feat, body_feat = agg.face_feat(), agg.body_feat()
-
-            ng_state = new_gid_state.setdefault(gid_tid, {"count": 0, "last_new_fid": -NEW_GID_TIME_WINDOW})
-
-            # 第一个GID: 宽松 -> 有人脸+身体直接建
-            if not gid_mgr.bank:
-                if face_feat is not None and body_feat is not None:
-                    new_gid = gid_mgr.new_gid()
-                    gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=gid_tid)
-                    tid2gid[gid_tid] = new_gid
-                    ng_state["last_new_fid"] = fid
-                    ng_state["count"] = 0
-                    realtime_map.setdefault(tid_stream, {})[tid_num] = (new_gid, 1.0, len(gid_mgr.tid_hist[new_gid]))
-                continue
-
-            # 有GID了 => 严格逻辑
-            if len(agg.body) < MIN_BODY4GID or not agg.face:
-                continue
             cand_gid, cand_score = gid_mgr.probe(face_feat, body_feat)
-            if cand_gid is None or cand_score < THR_NEW_GID:
-                if fid - ng_state["last_new_fid"] >= NEW_GID_TIME_WINDOW:
-                    ng_state["count"] += 1
-                    if ng_state["count"] >= NEW_GID_MIN_FRAMES:
-                        new_gid = gid_mgr.new_gid()
-                        gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=gid_tid)
-                        tid2gid[gid_tid] = new_gid
-                        ng_state["last_new_fid"] = fid
-                        ng_state["count"] = 0
-                        realtime_map.setdefault(tid_stream, {})[tid_num] = (
-                            new_gid, cand_score, len(gid_mgr.tid_hist[new_gid])
-                        )
+
+            if tid in tid2gid:
+                bound_gid = tid2gid[tid]
+                lock_elapsed = fid - candidate_state.get(tid, {}).get("last_bind_fid", 0)
+                if cand_gid != bound_gid and lock_elapsed < BIND_LOCK_FRAMES:
+                    n_tid = len(gid_mgr.tid_hist[bound_gid])
+                    tid_stream, tid_num = tid.split("_", 1)
+                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (bound_gid, cand_score, n_tid)
+                    continue
+
+            state = candidate_state.setdefault(tid, {"cand_gid": None, "count": 0, "last_bind_fid": 0})
+            if cand_gid and cand_score >= MATCH_THR:
+                if state["cand_gid"] == cand_gid:
+                    state["count"] += 1
+                else:
+                    state["cand_gid"] = cand_gid
+                    state["count"] = 1
+                if state["count"] >= CANDIDATE_FRAMES and gid_mgr.can_update_proto(cand_gid, face_feat, body_feat):
+                    gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid)
+                    tid2gid[tid] = cand_gid
+                    state["last_bind_fid"] = fid
+                    n_tid = len(gid_mgr.tid_hist[cand_gid])
+                    tid_stream, tid_num = tid.split("_", 1)
+                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (cand_gid, cand_score, n_tid)
+                else:
+                    tid_stream, tid_num = tid.split("_", 1)
+                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+
             else:
-                if gid_mgr.can_update_proto(cand_gid, face_feat, body_feat):
-                    gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=gid_tid)
-                    tid2gid[gid_tid] = cand_gid
-                    realtime_map.setdefault(tid_stream, {})[tid_num] = (
-                        cand_gid, cand_score, len(gid_mgr.tid_hist[cand_gid])
-                    )
+                time_since_last_new = fid - new_gid_state.get(tid, {}).get("last_new_fid", -1)
+                ng_state = new_gid_state.setdefault(tid, {"count": 0, "last_new_fid": -NEW_GID_TIME_WINDOW})
+
+                if len(gid_mgr.bank) < 1:
+                    new_gid = gid_mgr.new_gid()
+                    gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid)
+                    tid2gid[tid] = new_gid
+                    state["cand_gid"] = new_gid
+                    state["count"] = CANDIDATE_FRAMES
+                    state["last_bind_fid"] = fid
+                    ng_state["last_new_fid"] = fid
+                    n_tid = len(gid_mgr.tid_hist[new_gid])
+                    tid_stream, tid_num = tid.split("_", 1)
+                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
+
+                elif cand_gid is None or cand_score < THR_NEW_GID:
+                    if time_since_last_new >= NEW_GID_TIME_WINDOW:
+                        ng_state["count"] += 1
+                        if ng_state["count"] >= NEW_GID_MIN_FRAMES:
+                            new_gid = gid_mgr.new_gid()
+                            gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid)
+                            tid2gid[tid] = new_gid
+                            state["cand_gid"] = new_gid
+                            state["count"] = CANDIDATE_FRAMES
+                            state["last_bind_fid"] = fid
+                            ng_state["last_new_fid"] = fid
+                            ng_state["count"] = 0
+                            n_tid = len(gid_mgr.tid_hist[new_gid])
+                            tid_stream, tid_num = tid.split("_", 1)
+                            realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
+                        else:
+                            tid_stream, tid_num = tid.split("_", 1)
+                            realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+                    else:
+                        tid_stream, tid_num = tid.split("_", 1)
+                        realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+                else:
+                    tid_stream, tid_num = tid.split("_", 1)
+                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+
+        for tid in list(last_seen.keys()):
+            if fid - last_seen[tid] >= MAX_TID_GAP:
+                last_seen.pop(tid)
+                candidate_state.pop(tid, None)
+                tid2gid.pop(tid, None)
+                new_gid_state.pop(tid, None)
 
         q_map2disp.put(realtime_map)
+
     q_map2disp.put(SENTINEL)
     logger.info("[Feature] finished")
 
@@ -320,9 +371,9 @@ def init_gst(W, H, fps, host, port, use_nvenc=True):
     else:
         cmd = ["gst-launch-1.0", "-q", "fdsrc", "!", "videoparse", f"width={W}", f"height={H}",
                "format=bgr", f"framerate={int(fps)}/1", "!", "videoconvert", "!", "x264enc", "tune=zerolatency",
-               "speed-preset=ultrafast", "!",
-               "h264parse", "!", "mpegtsmux", "!", "udpsink", f"host={host}", f"port={port}", "sync=false",
-               "async=false"]
+               "speed-preset=ultrafast", "!", "h264parse", "!", "mpegtsmux", "!", "udpsink", f"host={host}",
+               f"port={port}",
+               "sync=false", "async=false"]
     return subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
 
@@ -333,7 +384,7 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
         try:
             m = q_map2disp.get_nowait()
             if m is SENTINEL:
-                q_det2disp.put(SENTINEL);
+                q_det2disp.put(SENTINEL)
                 break
             tid2info = m.get(my_stream_id, {})
         except queue.Empty:
@@ -356,7 +407,9 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
                 gst.stdin.write(frame.tobytes())
             except (BrokenPipeError, IOError):
                 break
-    if gst: gst.stdin.close(); gst.wait()
+    if gst:
+        gst.stdin.close()
+        gst.wait()
     logger.info(f"[Display-{my_stream_id}] finished")
 
 
@@ -381,7 +434,8 @@ def main():
     [p.start() for p in procs]
     signal.signal(signal.SIGINT, lambda s, f: stop_evt.set())
     try:
-        while any(p.is_alive() for p in procs): time.sleep(.5)
+        while any(p.is_alive() for p in procs):
+            time.sleep(.5)
     finally:
         stop_evt.set()
         for q in (q_det2feat, q_map2disp):
