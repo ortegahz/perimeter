@@ -17,6 +17,7 @@ import signal
 import subprocess
 import time
 from collections import deque
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import cv2
@@ -110,28 +111,61 @@ class TrackAgg:
 
 
 class GlobalID:
-    def __init__(self, max_proto=8, w_face=W_FACE, w_body=W_BODY, thr=MATCH_THR):
-        self.max_proto, self.w_face, self.w_body, self.thr = max_proto, w_face, w_body, thr
-        self.bank: Dict[str, Dict[str, List[np.ndarray]]] = {}
-        self.tid_hist: Dict[str, List[str]] = {}
+    def __init__(self, max_proto=8, w_face=0.6, w_body=0.4, thr=0.5, outlier_thresh=3.0):
+        """
+        max_proto: 每类特征最多保留的原型数量
+        w_face, w_body: face/body 匹配权重
+        thr: 匹配阈值
+        outlier_thresh: 异常值剔除的Z分数阈值
+        """
+        self.max_proto = max_proto
+        self.w_face = w_face
+        self.w_body = w_body
+        self.thr = thr
+        self.outlier_thresh = outlier_thresh
+
+        self.bank: Dict[str, Dict[str, List[np.ndarray]]] = {}  # {gid: {"faces": [], "bodies": []}}
+        self.tid_hist: Dict[str, List[str]] = {}  # {gid: [tid1, tid2...]}
 
     @staticmethod
     def _sim(a, b):
         return float(a @ b)
 
-    def _avg(self, feats):
+    @staticmethod
+    def _avg(feats):
         rep = np.mean(np.stack(feats, axis=0), 0)
         return rep / (np.linalg.norm(rep) + 1e-9)
 
+    @staticmethod
+    def remove_outliers(embeddings: list[np.ndarray], thresh: float = 1.2):
+        """
+        embeddings: list of np.ndarray, 已 L2 归一化
+        thresh: z-score 阈值
+        返回: (清理后的特征列表, 保留标记 mask)
+        """
+        if len(embeddings) < 3:  # 样本太少时不删，防止误杀
+            return embeddings, [True] * len(embeddings)
+        arr = np.stack(embeddings, axis=0)
+        mean_vec = arr.mean(axis=0)
+        dist = np.linalg.norm(arr - mean_vec, axis=1)
+        z_scores = (dist - dist.mean()) / (dist.std() + 1e-8)
+        keep_mask = np.abs(z_scores) < thresh
+        new_list = [embeddings[i] for i in range(len(embeddings)) if keep_mask[i]]
+        return new_list, keep_mask.tolist()
+
     def can_update_proto(self, gid, face_feat, body_feat):
         pool = self.bank[gid]
-        if pool['faces'] and self._sim(face_feat, self._avg(pool['faces'])) < FACE_THR_STRICT: return False
-        if pool['bodies'] and self._sim(body_feat, self._avg(pool['bodies'])) < BODY_THR_STRICT: return False
+        if pool['faces'] and self._sim(face_feat, self._avg(pool['faces'])) < FACE_THR_STRICT:
+            return False
+        if pool['bodies'] and self._sim(body_feat, self._avg(pool['bodies'])) < BODY_THR_STRICT:
+            return False
         return True
 
     def _add(self, lst, feat, patch, dir_path):
-        if feat is None or patch is None: return
-        if lst and max(self._sim(feat, x) for x in lst) < UPDATE_THR: return
+        if feat is None or patch is None:
+            return
+        if lst and max(self._sim(feat, x) for x in lst) < UPDATE_THR:
+            return
         if len(lst) < self.max_proto:
             idx = len(lst)
             lst.append(feat)
@@ -139,7 +173,21 @@ class GlobalID:
             idx = int(np.argmax([self._sim(feat, x) for x in lst]))
             lst[idx] = 0.7 * lst[idx] + 0.3 * feat
             lst[idx] /= np.linalg.norm(lst[idx]) + 1e-9
+
+        # 保存对应的 patch 图片
         cv2.imwrite(os.path.join(dir_path, f"{idx:02d}.jpg"), patch)
+
+        # ==== 新增：做一次异常值剔除 ====
+        new_lst, keep_mask = self.remove_outliers(lst, self.outlier_thresh)
+        if len(new_lst) != len(lst):
+            logger.info(f"[GlobalID] Outlier removed: {len(lst) - len(new_lst)} from {dir_path}")
+            lst.clear()
+            lst.extend(new_lst)
+            # 删除未保留的图片文件
+            img_files = sorted(Path(dir_path).glob("*.jpg"))
+            for i, img_path in enumerate(img_files):
+                if i >= len(keep_mask) or not keep_mask[i]:
+                    img_path.unlink(missing_ok=True)
 
     def _best_match(self, face, body):
         gid_best, score_best = None, -1.0
@@ -155,7 +203,7 @@ class GlobalID:
     def probe(self, face, body):
         return self._best_match(face, body)
 
-    def bind(self, gid, face, body, agg: TrackAgg | None = None, tid=None):
+    def bind(self, gid, face, body, agg=None, tid=None):
         root = os.path.join(SAVE_DIR, gid)
         self._add(self.bank[gid]['faces'],
                   face,
