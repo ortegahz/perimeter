@@ -381,12 +381,13 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
         for tid, agg in list(agg_pool.items()):
             if len(agg.body) < MIN_BODY4GID or len(agg.face) == 0:
                 tid_stream, tid_num = tid.split("_", 1)
-                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)  # insufficient number
                 continue
             face_feat, body_feat = agg.face_feat(), agg.body_feat()
             if face_feat is None or body_feat is None:
                 tid_stream, tid_num = tid.split("_", 1)
-                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = \
+                    ("-2_f", -1.0, 0) if face_feat is None else ("-2_b", -1.0, 0)  # consistency check failed
                 continue
             cand_gid, cand_score = gid_mgr.probe(face_feat, body_feat)
 
@@ -396,7 +397,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                 if cand_gid != bound_gid and lock_elapsed < BIND_LOCK_FRAMES:
                     n_tid = len(gid_mgr.tid_hist[bound_gid])
                     tid_stream, tid_num = tid.split("_", 1)
-                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (bound_gid, cand_score, n_tid)
+                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-3", cand_score, n_tid)  # gid switch
                     continue
 
             state = candidate_state.setdefault(tid, {"cand_gid": None, "count": 0, "last_bind_fid": 0})
@@ -415,7 +416,9 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                     realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (cand_gid, cand_score, n_tid)
                 else:
                     tid_stream, tid_num = tid.split("_", 1)
-                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = \
+                        ("-4_u", -1.0, 0) if not gid_mgr.can_update_proto(cand_gid, face_feat, body_feat) \
+                            else ("-4_c", -1.0, 0)  # candidate and can't update
 
             else:
                 time_since_last_new = fid - new_gid_state.get(tid, {}).get("last_new_fid", -1)
@@ -450,13 +453,14 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                             realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
                         else:
                             tid_stream, tid_num = tid.split("_", 1)
-                            realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+                            realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (
+                                "-5", -1.0, 0)  # new gid min frames
                     else:
                         tid_stream, tid_num = tid.split("_", 1)
-                        realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+                        realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-6", -1.0, 0)  # time last new
                 else:
                     tid_stream, tid_num = tid.split("_", 1)
-                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-7", -1.0, 0)  # others
 
         for tid in list(last_seen.keys()):
             if fid - last_seen[tid] >= MAX_TID_GAP:
