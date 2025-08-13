@@ -502,9 +502,26 @@ def init_gst(W, H, fps, host, port, use_nvenc=True):
     return subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
 
+COMMON_COLORS = [
+    (255, 0, 0), (0, 255, 0),
+    (255, 255, 0), (0, 255, 255), (255, 0, 255),
+    (128, 0, 0), (0, 128, 0), (0, 0, 128),
+    (128, 128, 0), (0, 128, 128), (128, 0, 128),
+    (64, 64, 255), (255, 64, 64), (64, 255, 64)
+]
+
+
+def get_tid_color(tid, tid2color, cmap=COMMON_COLORS):
+    if tid not in tid2color:
+        color = cmap[len(tid2color) % len(cmap)]
+        tid2color[tid] = color
+    return tid2color[tid]
+
+
 def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps_exp):
     gst, first = None, True
     tid2info = {}
+    tid2color = {}
     while not stop_evt.is_set():
         try:
             m = q_map2disp.get_nowait()
@@ -522,9 +539,11 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
         for d in dets:
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
             gid, score, n_tid = tid2info.get(d["id"], ("-1", -1.0, 0))
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255) if n_tid >= 2 else (0, 255, 0), 2)
+            tid = d['id']
+            color = get_tid_color(tid, tid2color)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255) if n_tid >= 2 else color, 2)
             cv2.putText(frame, f"{d['id']}|{gid} n={n_tid} s={score:.2f}", (x, max(y - 3, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
         # ==== 新增：全帧画all_faces
         for face in all_faces:
             x1, y1, x2, y2 = [int(v * SHOW_SCALE) for v in face["bbox"]]
