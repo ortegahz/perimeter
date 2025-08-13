@@ -27,7 +27,7 @@ from loguru import logger
 
 # ------------ 内部模块 ------------
 from cores.byteTrackPipeline import ByteTrackPipeline
-from cores.faceSearcher import FaceSearcher
+from cores.faceSearcher import FaceSearcher  # ==== 改动1：导入
 from cores.personReid import PersonReid
 from utils_peri.general_funcs import make_dirs
 from utils_peri.macros import DIR_REID_MODEL
@@ -308,6 +308,7 @@ def dec_det_proc(stream_id, src, q_det2feat, q_det2disp, stop_evt, skip):
         q_det2disp.put(SENTINEL)
         return
     bt = ByteTrackPipeline(device="cuda")
+    face_app = FaceSearcher(provider="CUDAExecutionProvider").app  # 仅初始化一次
     logger.info(f"[{stream_id}] ready")
     fid = 0
     while not stop_evt.is_set():
@@ -317,12 +318,23 @@ def dec_det_proc(stream_id, src, q_det2feat, q_det2disp, stop_evt, skip):
         if fid % skip: continue
         dets = bt.update(frm, debug=False)
         small = cv2.resize(frm, None, fx=SHOW_SCALE, fy=SHOW_SCALE)
-        q_det2disp.put((stream_id, fid, small, dets))
         H, W = frm.shape[:2]
         patches = [
             frm[max(int(y), 0):min(int(y + h), H), max(int(x), 0):min(int(x + w), W)].copy()
             for x, y, w, h in (d["tlwh"] for d in dets)
         ]
+        faces_bboxes, faces_kpss = face_app.det_model.detect(small, max_num=0, metric='default')
+        face_info = []
+        if faces_bboxes is not None and faces_bboxes.shape[0] > 0:
+            for i in range(faces_bboxes.shape[0]):
+                bi = faces_bboxes[i, :4].astype(int)
+                x1, y1, x2, y2 = [int(b / SHOW_SCALE) for b in bi]
+                score = float(faces_bboxes[i, 4])
+                kps = faces_kpss[i].astype(int).tolist() if faces_kpss is not None else None
+                if kps is not None:
+                    kps = [[int(kp[0] / SHOW_SCALE), int(kp[1] / SHOW_SCALE)] for kp in kps]
+                face_info.append({"bbox": [x1, y1, x2, y2], "score": score, "kps": kps})
+        q_det2disp.put((stream_id, fid, small, dets, face_info))
         q_det2feat.put((stream_id, fid, patches, dets))
     cap.release()
     q_det2feat.put(SENTINEL)
@@ -504,13 +516,28 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
             pass
         pkt = q_det2disp.get()
         if pkt is SENTINEL: break
-        stream_id, fid, frame, dets = pkt
+        # ==== 新参数解包
+        stream_id, fid, frame, dets, all_faces = pkt
+
         for d in dets:
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
             gid, score, n_tid = tid2info.get(d["id"], ("-1", -1.0, 0))
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255) if n_tid >= 2 else (0, 255, 0), 2)
             cv2.putText(frame, f"{d['id']}|{gid} n={n_tid} s={score:.2f}", (x, max(y - 3, 0)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        # ==== 新增：全帧画all_faces
+        for face in all_faces:
+            x1, y1, x2, y2 = [int(v * SHOW_SCALE) for v in face["bbox"]]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            cv2.putText(frame, f"{face['score']:.2f}", (x1, max(y1 - 2, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (255, 128, 0), 1)
+            # 若要画关键点
+            if "kps" in face:
+                for kx, ky in face["kps"]:
+                    kx = int(kx * SHOW_SCALE)
+                    ky = int(ky * SHOW_SCALE)
+                    cv2.circle(frame, (kx, ky), 1, (0, 0, 255), 2)
+
         if first:
             H, W = frame.shape[:2]
             gst = init_gst(W, H, fps_exp, host, port, use_nvenc=False)
