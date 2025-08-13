@@ -47,8 +47,8 @@ os.makedirs(SAVE_DIR, exist_ok=True)
 make_dirs(SAVE_DIR, reset=True)
 
 UPDATE_THR = 0.65
-FACE_THR_STRICT = 0.6
-BODY_THR_STRICT = 0.55
+FACE_THR_STRICT = 0.5
+BODY_THR_STRICT = 0.4
 NEW_GID_MIN_FRAMES = 3
 NEW_GID_TIME_WINDOW = 50
 BIND_LOCK_FRAMES = 15
@@ -472,7 +472,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                         realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-6", -1.0, 0)  # time last new
                 else:
                     tid_stream, tid_num = tid.split("_", 1)
-                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-7", -1.0, 0)  # others
+                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-7", -1.0, 0)  # [THR_NEW_GID, MATCH_THR)
 
         for tid in list(last_seen.keys()):
             if fid - last_seen[tid] >= MAX_TID_GAP:
