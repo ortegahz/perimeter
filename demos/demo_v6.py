@@ -76,37 +76,94 @@ class LatestQueue(mpq.Queue):
 
 
 class TrackAgg:
+    """
+    聚合当前 track 在多帧内的 body/face 特征，并提供一致性检测。
+    - body: 存 (feat, score, patch)
+    - face: 存 (feat, patch)
+    """
+
     def __init__(self, max_body=MIN_BODY4GID, max_face=MIN_BODY4GID):
         self.body: deque = deque(maxlen=max_body)
         self.face: deque = deque(maxlen=max_face)
         self.last_fid = -1
 
     def add_body(self, feat, scr, fid, patch):
-        self.body.append((feat, scr, patch))
+        """新增一帧 body 特征"""
+        if feat is None:
+            return
+        self.body.append((np.asarray(feat, dtype=np.float32), scr, patch))
         self.last_fid = fid
 
     def add_face(self, feat, fid, patch):
-        self.face.append((feat, patch))
+        """新增一帧 face 特征"""
+        if feat is None:
+            return
+        self.face.append((np.asarray(feat, dtype=np.float32), patch))
         self.last_fid = fid
 
+    @staticmethod
+    def _check_consistency(feats, thr=0.35):
+        """
+        检查一组特征的一致性。
+        如果平均 pairwise(1 - cos_sim) 大于 thr，则认为不一致。
+        feats 必须是 L2-normalized。
+        """
+        if len(feats) < 2:
+            return True  # 样本太少，默认通过
+        sims = []
+        for i in range(len(feats)):
+            for j in range(i + 1, len(feats)):
+                sims.append(float(feats[i] @ feats[j]))
+        mean_diff = 1.0 - np.mean(sims)  # 平均 1 - cos_sim
+        return mean_diff <= thr
+
     def body_feat(self):
-        if not self.body: return None
+        """
+        返回聚合后的 body 特征; 如果一致性不过关或数量不足返回 None
+        """
+        if not self.body:
+            return None
         feats, scores, _ = zip(*self.body)
+        feats = list(feats)
+
+        # 一致性检测
+        if not self._check_consistency(feats, thr=0.35):
+            return None
+
+        # 置信度加权平均
         w = np.clip(np.float32(scores), 1e-2, None)
         w /= w.sum()
         rep = (np.stack(feats) * w[:, None]).sum(0)
-        return rep / (np.linalg.norm(rep) + 1e-9)
+        norm = np.linalg.norm(rep)
+        if norm < 1e-9:  # 避免除 0
+            return None
+        return rep / norm
 
     def face_feat(self):
-        if not self.face: return None
+        """
+        返回聚合后的 face 特征; 如果一致性不过关或数量不足返回 None
+        """
+        if not self.face:
+            return None
         feats, _ = zip(*self.face)
-        rep = np.mean(np.stack(feats, axis=0), 0)
-        return rep / (np.linalg.norm(rep) + 1e-9)
+        feats = list(feats)
+
+        # 一致性检测（更严格）
+        if not self._check_consistency(feats, thr=0.25):
+            return None
+
+        rep = np.mean(np.stack(feats, axis=0), axis=0)
+        norm = np.linalg.norm(rep)
+        if norm < 1e-9:
+            return None
+        return rep / norm
 
     def body_patches(self):
+        """返回所有缓存的 body patch 图像"""
         return [p for *_r, p in self.body]
 
     def face_patches(self):
+        """返回所有缓存的 face patch 图像"""
         return [p for _f, p in self.face]
 
 
@@ -327,6 +384,10 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                 realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
                 continue
             face_feat, body_feat = agg.face_feat(), agg.body_feat()
+            if face_feat is None or body_feat is None:
+                tid_stream, tid_num = tid.split("_", 1)
+                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)
+                continue
             cand_gid, cand_score = gid_mgr.probe(face_feat, body_feat)
 
             if tid in tid2gid:
