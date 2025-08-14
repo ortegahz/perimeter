@@ -40,6 +40,7 @@ SHOW_SCALE = 0.5
 SENTINEL = None
 MIN_HW_RATIO = 1.5
 MIN_BODY4GID = 8
+MIN_FACE4GID = 8
 W_FACE, W_BODY = 0.6, 0.4
 MATCH_THR = 0.5
 THR_NEW_GID = 0.3
@@ -91,6 +92,38 @@ class TrackAgg:
         self.face: deque = deque(maxlen=max_face)
         self.last_fid = -1
 
+    def _main_representation(self, feats, patches, outlier_thr=1.5):
+        if len(feats) == 0: return None, None
+        arr = np.stack(feats)
+        mean_f = arr.mean(axis=0)
+        mean_f /= (np.linalg.norm(mean_f) + 1e-9)
+        dists = np.linalg.norm(arr - mean_f, axis=1)
+        keep = dists < (dists.mean() + outlier_thr * dists.std())
+        kept_arr = arr[keep]
+        kept_patches = [p for k, p in zip(keep, patches) if k]
+        if kept_arr.shape[0] == 0:
+            kept_arr = arr
+            kept_patches = patches
+        mean_f = kept_arr.mean(axis=0)
+        mean_f /= (np.linalg.norm(mean_f) + 1e-9)
+        sims = kept_arr @ mean_f
+        idx = int(np.argmax(sims))
+        return kept_arr[idx], kept_patches[idx]
+
+    def main_body_feat_and_patch(self):
+        if not self.body: return None, None
+        feats, scores, patches = zip(*self.body)
+        if not self._check_consistency(list(feats), thr=0.5):
+            return None, None
+        return self._main_representation(feats, patches, outlier_thr=1.5)
+
+    def main_face_feat_and_patch(self):
+        if not self.face: return None, None
+        feats, patches = zip(*self.face)
+        if not self._check_consistency(list(feats), thr=0.5):
+            return None, None
+        return self._main_representation(feats, patches, outlier_thr=1.5)
+
     def add_body(self, feat, scr, fid, patch):
         """新增一帧 body 特征"""
         if feat is None:
@@ -131,7 +164,7 @@ class TrackAgg:
         feats = list(feats)
 
         # 一致性检测
-        if not self._check_consistency(feats, thr=0.35):
+        if not self._check_consistency(feats, thr=0.5):
             return None
 
         # 置信度加权平均
@@ -153,7 +186,7 @@ class TrackAgg:
         feats = list(feats)
 
         # 一致性检测（更严格）
-        if not self._check_consistency(feats, thr=0.25):
+        if not self._check_consistency(feats, thr=0.5):
             return None
 
         rep = np.mean(np.stack(feats, axis=0), axis=0)
@@ -261,13 +294,19 @@ class GlobalID:
 
     def bind(self, gid, face, body, agg=None, tid=None, current_fid=None):
         root = os.path.join(SAVE_DIR, gid)
+        if agg is not None:
+            f_feat, f_patch = agg.main_face_feat_and_patch()
+            b_feat, b_patch = agg.main_body_feat_and_patch()
+        else:
+            f_feat, f_patch = face, None
+            b_feat, b_patch = body, None
         self._add(self.bank[gid]['faces'],
-                  face,
-                  agg.face_patches()[-1] if agg and agg.face else None,
+                  f_feat,
+                  f_patch,
                   os.path.join(root, "faces"))
         self._add(self.bank[gid]['bodies'],
-                  body,
-                  agg.body_patches()[-1] if agg and agg.body else None,
+                  b_feat,
+                  b_patch,
                   os.path.join(root, "bodies"))
 
         if tid:
@@ -394,15 +433,17 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
 
         realtime_map: Dict[str, Dict[int, Tuple[str, float, int]]] = {}
         for tid, agg in list(agg_pool.items()):
-            if len(agg.body) < MIN_BODY4GID or len(agg.face) == 0:
+            if len(agg.body) < MIN_BODY4GID or len(agg.face) < MIN_FACE4GID:
                 tid_stream, tid_num = tid.split("_", 1)
-                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-1", -1.0, 0)  # insufficient number
+                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = \
+                    ("-1_b", len(agg.body), 0) if len(agg.body) < MIN_BODY4GID else ("-1_f", len(agg.face), 0)
                 continue
-            face_feat, body_feat = agg.face_feat(), agg.body_feat()
+            face_feat, _ = agg.main_face_feat_and_patch()
+            body_feat, _ = agg.main_body_feat_and_patch()
             if face_feat is None or body_feat is None:
                 tid_stream, tid_num = tid.split("_", 1)
                 realtime_map.setdefault(tid_stream, {})[int(tid_num)] = \
-                    ("-2_f", -1.0, 0) if face_feat is None else ("-2_b", -1.0, 0)  # consistency check failed
+                    ("-2_f", -1.0, 0) if face_feat is None else ("-2_b", -1.0, 0)
                 continue
             cand_gid, cand_score = gid_mgr.probe(face_feat, body_feat)
 
@@ -554,25 +595,23 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
             pass
         pkt = q_det2disp.get()
         if pkt is SENTINEL: break
-        # ==== 新参数解包
         stream_id, fid, frame, dets, all_faces = pkt
 
         for d in dets:
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
             gid, score, n_tid = tid2info.get(d["id"], ("-1", -1.0, 0))
             tid = d['id']
-            # color = get_tid_color(tid, tid2color)
-            color = (255, 0, 0)
+            color = (0, 255, 0)
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255) if n_tid >= 2 else color, 2)
-            cv2.putText(frame, f"{d['id']}|{gid} n={n_tid} s={score:.2f}", (x, max(y - 3, 0)),
+            cv2.putText(frame, f"{gid}", (x, max(y + 15, 0)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 4, color, 1)
+            cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 0)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-        # ==== 新增：全帧画all_faces
         for face in all_faces:
             x1, y1, x2, y2 = [int(v * SHOW_SCALE) for v in face["bbox"]]
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
             cv2.putText(frame, f"{face['score']:.2f}", (x1, max(y1 - 2, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (255, 128, 0), 1)
-            # 若要画关键点
             if "kps" in face:
                 for kx, ky in face["kps"]:
                     kx = int(kx * SHOW_SCALE)
