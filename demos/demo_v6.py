@@ -4,6 +4,8 @@
 双路视频 + 全局GID
 - 使用严格候选检测、多帧确认、防抖&锁定机制
 - 第一个GID：有人脸+body -> 立即创建
+
+- 新增功能：长时间没有更新的gid会被自动删除（包含内存和磁盘数据）
 """
 
 from __future__ import annotations
@@ -54,6 +56,8 @@ NEW_GID_TIME_WINDOW = 50
 BIND_LOCK_FRAMES = 15
 CANDIDATE_FRAMES = 2
 MAX_TID_GAP = 60
+
+GID_MAX_IDLE = 25 / 2 * 60 * 30
 
 
 def is_long_patch(patch: np.ndarray, thr: float = MIN_HW_RATIO) -> bool:
@@ -180,9 +184,10 @@ class GlobalID:
         self.w_body = w_body
         self.thr = thr
         self.outlier_thresh = outlier_thresh
-
         self.bank: Dict[str, Dict[str, List[np.ndarray]]] = {}  # {gid: {"faces": [], "bodies": []}}
         self.tid_hist: Dict[str, List[str]] = {}  # {gid: [tid1, tid2...]}
+        self.last_update: Dict[str, int] = {}  # ==== 新增，记录每个gid的最近更新时间
+        self.gid_next = 1  # <<< 新增唯一自增编号变量
 
     @staticmethod
     def _sim(a, b):
@@ -195,12 +200,7 @@ class GlobalID:
 
     @staticmethod
     def remove_outliers(embeddings: list[np.ndarray], thresh: float = 1.2):
-        """
-        embeddings: list of np.ndarray, 已 L2 归一化
-        thresh: z-score 阈值
-        返回: (清理后的特征列表, 保留标记 mask)
-        """
-        if len(embeddings) < 3:  # 样本太少时不删，防止误杀
+        if len(embeddings) < 3:
             return embeddings, [True] * len(embeddings)
         arr = np.stack(embeddings, axis=0)
         mean_vec = arr.mean(axis=0)
@@ -234,13 +234,12 @@ class GlobalID:
         # 保存对应的 patch 图片
         cv2.imwrite(os.path.join(dir_path, f"{idx:02d}.jpg"), patch)
 
-        # ==== 新增：做一次异常值剔除 ====
+        # 新增：做一次异常值剔除
         new_lst, keep_mask = self.remove_outliers(lst, self.outlier_thresh)
         if len(new_lst) != len(lst):
             logger.info(f"[GlobalID] Outlier removed: {len(lst) - len(new_lst)} from {dir_path}")
             lst.clear()
             lst.extend(new_lst)
-            # 删除未保留的图片文件
             img_files = sorted(Path(dir_path).glob("*.jpg"))
             for i, img_path in enumerate(img_files):
                 if i >= len(keep_mask) or not keep_mask[i]:
@@ -260,7 +259,7 @@ class GlobalID:
     def probe(self, face, body):
         return self._best_match(face, body)
 
-    def bind(self, gid, face, body, agg=None, tid=None):
+    def bind(self, gid, face, body, agg=None, tid=None, current_fid=None):
         root = os.path.join(SAVE_DIR, gid)
         self._add(self.bank[gid]['faces'],
                   face,
@@ -276,8 +275,12 @@ class GlobalID:
             if tid not in self.tid_hist[gid]:
                 self.tid_hist[gid].append(tid)
 
+        if current_fid is not None:
+            self.last_update[gid] = current_fid
+
     def new_gid(self):
-        gid = f"G{len(self.bank) + 1:05d}"
+        gid = f"G{self.gid_next:05d}"  # <<< 改这里，永远用gid_next，不重复
+        self.gid_next += 1  # <<< 新建立即+1
         self.bank[gid] = dict(faces=[], bodies=[])
         self.tid_hist[gid] = []
         os.makedirs(os.path.join(SAVE_DIR, gid, "faces"), exist_ok=True)
@@ -420,7 +423,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                     state["cand_gid"] = cand_gid
                     state["count"] = 1
                 if state["count"] >= CANDIDATE_FRAMES and gid_mgr.can_update_proto(cand_gid, face_feat, body_feat):
-                    gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid)
+                    gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)  # === 新：加current_fid
                     tid2gid[tid] = cand_gid
                     state["last_bind_fid"] = fid
                     n_tid = len(gid_mgr.tid_hist[cand_gid])
@@ -438,7 +441,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
 
                 if len(gid_mgr.bank) < 1:
                     new_gid = gid_mgr.new_gid()
-                    gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid)
+                    gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)  # === 新：加current_fid
                     tid2gid[tid] = new_gid
                     state["cand_gid"] = new_gid
                     state["count"] = CANDIDATE_FRAMES
@@ -453,7 +456,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                         ng_state["count"] += 1
                         if ng_state["count"] >= NEW_GID_MIN_FRAMES:
                             new_gid = gid_mgr.new_gid()
-                            gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid)
+                            gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)
                             tid2gid[tid] = new_gid
                             state["cand_gid"] = new_gid
                             state["count"] = CANDIDATE_FRAMES
@@ -480,6 +483,24 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                 candidate_state.pop(tid, None)
                 tid2gid.pop(tid, None)
                 new_gid_state.pop(tid, None)
+
+        # ==== 新增: 自动清理长时间未绑定的gid ====
+        to_delete = []
+        for gid, last_f in list(gid_mgr.last_update.items()):
+            if fid - last_f >= GID_MAX_IDLE:
+                to_delete.append(gid)
+        for gid in to_delete:
+            logger.info(f"[GlobalID] GID {gid} timeout ({fid - gid_mgr.last_update[gid]} frames), removing")
+            gid_mgr.bank.pop(gid, None)
+            gid_mgr.tid_hist.pop(gid, None)
+            gid_mgr.last_update.pop(gid, None)
+            dir_path = os.path.join(SAVE_DIR, gid)
+            try:
+                import shutil
+                shutil.rmtree(dir_path)
+                logger.info(f"[GlobalID] GID {gid} data at {dir_path} deleted")
+            except Exception as e:
+                logger.warning(f"[GlobalID] Error removing directory {dir_path}: {e}")
 
         q_map2disp.put(realtime_map)
 
@@ -540,7 +561,8 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
             gid, score, n_tid = tid2info.get(d["id"], ("-1", -1.0, 0))
             tid = d['id']
-            color = get_tid_color(tid, tid2color)
+            # color = get_tid_color(tid, tid2color)
+            color = (255, 0, 0)
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255) if n_tid >= 2 else color, 2)
             cv2.putText(frame, f"{d['id']}|{gid} n={n_tid} s={score:.2f}", (x, max(y - 3, 0)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
