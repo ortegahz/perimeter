@@ -555,6 +555,7 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                 candidate_state.pop(tid, None)
                 tid2gid.pop(tid, None)
                 new_gid_state.pop(tid, None)
+                agg_pool.pop(tid, None)
 
         # ==== 新增: 自动清理长时间未绑定的gid ====
         to_delete = []
