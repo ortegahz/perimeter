@@ -58,7 +58,8 @@ BIND_LOCK_FRAMES = 15
 CANDIDATE_FRAMES = 2
 MAX_TID_GAP = 60
 
-GID_MAX_IDLE = 25 / 2 * 60 * 30
+GID_MAX_IDLE = 25 / 2 * 60 * 5
+WAIT_FRAMES_AMBIGUOUS = 10
 
 
 def is_long_patch(patch: np.ndarray, thr: float = MIN_HW_RATIO) -> bool:
@@ -246,10 +247,10 @@ class GlobalID:
     def can_update_proto(self, gid, face_feat, body_feat):
         pool = self.bank[gid]
         if pool['faces'] and self._sim(face_feat, self._avg(pool['faces'])) < FACE_THR_STRICT:
-            return False
+            return -1
         if pool['bodies'] and self._sim(body_feat, self._avg(pool['bodies'])) < BODY_THR_STRICT:
-            return False
-        return True
+            return -2
+        return 0
 
     def _add(self, lst, feat, patch, dir_path):
         if feat is None or patch is None:
@@ -457,14 +458,20 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                     continue
 
             state = candidate_state.setdefault(tid, {"cand_gid": None, "count": 0, "last_bind_fid": 0})
+            time_since_last_new = fid - new_gid_state.get(tid, {}).get("last_new_fid", -1)
+            ng_state = \
+                new_gid_state.setdefault(tid, {"count": 0, "last_new_fid": -NEW_GID_TIME_WINDOW, "ambig_count": 0})
+
+            # ----------- 绑定正式候选 -----------
             if cand_gid and cand_score >= MATCH_THR:
+                ng_state["ambig_count"] = 0  # 正式绑定时观望区清零
                 if state["cand_gid"] == cand_gid:
                     state["count"] += 1
                 else:
                     state["cand_gid"] = cand_gid
                     state["count"] = 1
-                if state["count"] >= CANDIDATE_FRAMES and gid_mgr.can_update_proto(cand_gid, face_feat, body_feat):
-                    gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)  # === 新：加current_fid
+                if state["count"] >= CANDIDATE_FRAMES and gid_mgr.can_update_proto(cand_gid, face_feat, body_feat) == 0:
+                    gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)
                     tid2gid[tid] = cand_gid
                     state["last_bind_fid"] = fid
                     n_tid = len(gid_mgr.tid_hist[cand_gid])
@@ -473,50 +480,74 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
                 else:
                     tid_stream, tid_num = tid.split("_", 1)
                     realtime_map.setdefault(tid_stream, {})[int(tid_num)] = \
-                        ("-4_u", -1.0, 0) if not gid_mgr.can_update_proto(cand_gid, face_feat, body_feat) \
-                            else ("-4_c", -1.0, 0)  # candidate and can't update
+                        ("-4_ud_f", -1.0, 0) if gid_mgr.can_update_proto(cand_gid, face_feat, body_feat) == -1 \
+                            else ("-4_ud_b", -1.0, 0) if gid_mgr.can_update_proto(cand_gid, face_feat, body_feat) == -2 \
+                            else ("-4_c", -1.0, 0)  # candidate or can't update
 
-            else:
-                time_since_last_new = fid - new_gid_state.get(tid, {}).get("last_new_fid", -1)
-                ng_state = new_gid_state.setdefault(tid, {"count": 0, "last_new_fid": -NEW_GID_TIME_WINDOW})
+            # ----------- 新建GID的初始化情形 -----------
+            elif len(gid_mgr.bank) < 1:
+                ng_state["ambig_count"] = 0
+                new_gid = gid_mgr.new_gid()
+                gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)
+                tid2gid[tid] = new_gid
+                state["cand_gid"] = new_gid
+                state["count"] = CANDIDATE_FRAMES
+                state["last_bind_fid"] = fid
+                ng_state["last_new_fid"] = fid
+                n_tid = len(gid_mgr.tid_hist[new_gid])
+                tid_stream, tid_num = tid.split("_", 1)
+                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
 
-                if len(gid_mgr.bank) < 1:
+            # ----------- -7区间观望 -----------
+            elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR:
+                ng_state["ambig_count"] = ng_state.get("ambig_count", 0) + 1
+                if ng_state["ambig_count"] >= WAIT_FRAMES_AMBIGUOUS and time_since_last_new >= NEW_GID_TIME_WINDOW:
                     new_gid = gid_mgr.new_gid()
-                    gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)  # === 新：加current_fid
+                    gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)
                     tid2gid[tid] = new_gid
                     state["cand_gid"] = new_gid
                     state["count"] = CANDIDATE_FRAMES
                     state["last_bind_fid"] = fid
                     ng_state["last_new_fid"] = fid
+                    ng_state["count"] = 0
+                    ng_state["ambig_count"] = 0  # 观望计数清零
                     n_tid = len(gid_mgr.tid_hist[new_gid])
                     tid_stream, tid_num = tid.split("_", 1)
                     realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
-
-                elif cand_gid is None or cand_score < THR_NEW_GID:
-                    if time_since_last_new >= NEW_GID_TIME_WINDOW:
-                        ng_state["count"] += 1
-                        if ng_state["count"] >= NEW_GID_MIN_FRAMES:
-                            new_gid = gid_mgr.new_gid()
-                            gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)
-                            tid2gid[tid] = new_gid
-                            state["cand_gid"] = new_gid
-                            state["count"] = CANDIDATE_FRAMES
-                            state["last_bind_fid"] = fid
-                            ng_state["last_new_fid"] = fid
-                            ng_state["count"] = 0
-                            n_tid = len(gid_mgr.tid_hist[new_gid])
-                            tid_stream, tid_num = tid.split("_", 1)
-                            realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
-                        else:
-                            tid_stream, tid_num = tid.split("_", 1)
-                            realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (
-                                "-5", -1.0, 0)  # new gid min frames
-                    else:
-                        tid_stream, tid_num = tid.split("_", 1)
-                        realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-6", -1.0, 0)  # time last new
                 else:
                     tid_stream, tid_num = tid.split("_", 1)
-                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-7", -1.0, 0)  # [THR_NEW_GID, MATCH_THR)
+                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-7", cand_score, 0)
+
+            # ----------- 没有合适gid分配/低分新建GID，但依然要采用原有多帧机制 ----------
+            elif cand_gid is None or cand_score < THR_NEW_GID:
+                ng_state["ambig_count"] = 0  # 离开-7区间，计0
+                if time_since_last_new >= NEW_GID_TIME_WINDOW:
+                    ng_state["count"] += 1
+                    if ng_state["count"] >= NEW_GID_MIN_FRAMES:
+                        new_gid = gid_mgr.new_gid()
+                        gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)
+                        tid2gid[tid] = new_gid
+                        state["cand_gid"] = new_gid
+                        state["count"] = CANDIDATE_FRAMES
+                        state["last_bind_fid"] = fid
+                        ng_state["last_new_fid"] = fid
+                        ng_state["count"] = 0
+                        n_tid = len(gid_mgr.tid_hist[new_gid])
+                        tid_stream, tid_num = tid.split("_", 1)
+                        realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
+                    else:
+                        tid_stream, tid_num = tid.split("_", 1)
+                        realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-5", -1.0, 0)  # new gid min frames
+                else:
+                    tid_stream, tid_num = tid.split("_", 1)
+                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-6", -1.0, 0)  # time last new
+
+            # ----------- 兜底 -----------
+            else:
+                # 理论上不会进入，保险起见
+                ng_state["ambig_count"] = 0
+                tid_stream, tid_num = tid.split("_", 1)
+                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-unknown-", cand_score, 0)
 
         for tid in list(last_seen.keys()):
             if fid - last_seen[tid] >= MAX_TID_GAP:
