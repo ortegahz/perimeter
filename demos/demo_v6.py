@@ -56,7 +56,7 @@ NEW_GID_MIN_FRAMES = 3
 NEW_GID_TIME_WINDOW = 50
 BIND_LOCK_FRAMES = 15
 CANDIDATE_FRAMES = 2
-MAX_TID_GAP = 60
+MAX_TID_GAP = 256
 
 GID_MAX_IDLE = 25 / 2 * 60 * 5
 WAIT_FRAMES_AMBIGUOUS = 10
@@ -437,7 +437,8 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
             if len(agg.body) < MIN_BODY4GID or len(agg.face) < MIN_FACE4GID:
                 tid_stream, tid_num = tid.split("_", 1)
                 realtime_map.setdefault(tid_stream, {})[int(tid_num)] = \
-                    ("-1_b", len(agg.body), 0) if len(agg.body) < MIN_BODY4GID else ("-1_f", len(agg.face), 0)
+                    (f"{tid_num}_-1_b_{len(agg.body)}", len(agg.body), 0) if len(agg.body) < MIN_BODY4GID else \
+                        (f"{tid_num}_-1_f_{len(agg.face)}", len(agg.face), 0)
                 continue
             face_feat, _ = agg.main_face_feat_and_patch()
             body_feat, _ = agg.main_body_feat_and_patch()
@@ -563,6 +564,16 @@ def feature_proc(q_det2feat, q_map2disp, stop_evt):
             if fid - last_f >= GID_MAX_IDLE:
                 to_delete.append(gid)
         for gid in to_delete:
+            tids_left = [tid for tid, g in tid2gid.items() if g == gid]
+            if tids_left:
+                logger.warning(f"GID {gid} to be deleted, but still bound to tids: {tids_left}")
+                # 清理掉这些TID的状态，避免残留
+                for tid in tids_left:
+                    tid2gid.pop(tid, None)
+                    candidate_state.pop(tid, None)
+                    new_gid_state.pop(tid, None)
+                    # 是否清理 agg_pool[tid] 取决于你要不要保留已积累特征
+                    agg_pool.pop(tid, None)
             logger.info(f"[GlobalID] GID {gid} timeout ({fid - gid_mgr.last_update[gid]} frames), removing")
             gid_mgr.bank.pop(gid, None)
             gid_mgr.tid_hist.pop(gid, None)
@@ -616,6 +627,8 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
     gst, first = None, True
     tid2info = {}
     tid2color = {}
+    videowriter = None
+
     while not stop_evt.is_set():
         try:
             m = q_map2disp.get_nowait()
@@ -626,7 +639,8 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
         except queue.Empty:
             pass
         pkt = q_det2disp.get()
-        if pkt is SENTINEL: break
+        if pkt is SENTINEL:
+            break
         stream_id, fid, frame, dets, all_faces = pkt
 
         for d in dets:
@@ -636,7 +650,7 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
             color = (0, 255, 0)
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255) if n_tid >= 2 else color, 2)
             cv2.putText(frame, f"{gid}", (x, max(y + 15, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 4, color, 1)
+                        cv2.FONT_HERSHEY_SIMPLEX, 2, color, 1)
             cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 0)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
         for face in all_faces:
@@ -653,15 +667,26 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
         if first:
             H, W = frame.shape[:2]
             gst = init_gst(W, H, fps_exp, host, port, use_nvenc=False)
+            save_path = f'/home/manu/tmp/{my_stream_id}.mp4'
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            videowriter = cv2.VideoWriter(save_path, fourcc, fps_exp, (W, H))
             first = False
+
+        # if videowriter:
+        #     videowriter.write(frame)
+
         if gst and gst.poll() is None:
             try:
                 gst.stdin.write(frame.tobytes())
             except (BrokenPipeError, IOError):
                 break
+
+    # 资源释放
     if gst:
         gst.stdin.close()
         gst.wait()
+    if videowriter:
+        videowriter.release()
     logger.info(f"[Display-{my_stream_id}] finished")
 
 
