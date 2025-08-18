@@ -29,9 +29,3 @@ target_include_directories(feature_logic PRIVATE ${PYBIND11_INCLUDE_DIRS})
 target_link_libraries(feature_logic PRIVATE Python3::Python)
 set_target_properties(feature_logic PROPERTIES PREFIX "" SUFFIX ".so")
 
-add_custom_command(TARGET feature_logic POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy
-        $<TARGET_FILE:feature_logic>
-        ${PROJECT_SOURCE_DIR}
-        COMMENT "复制 feature_logic.so 到源码目录以便 Python import"
-)

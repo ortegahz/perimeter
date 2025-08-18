@@ -1,4 +1,6 @@
-# sys.path.append("/media/manu/ST2000DM005-2U91/workspace/perimeter/cpp/cmake-build-debug")
+import sys
+
+sys.path.append("/media/manu/ST2000DM005-2U91/workspace/perimeter/cpp/cmake-build-debug")
 import feature_logic
 
 pkt1 = feature_logic.TrackInput()
