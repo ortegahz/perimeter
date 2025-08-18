@@ -33,7 +33,8 @@ def main():
     # ===== 配置部分 =====
     video_path = "/home/manu/tmp/64.mp4"
     output_path = "/home/manu/tmp/output_result.mp4"
-    skip = 2  # 抽帧间隔
+    results_txt = "/home/manu/tmp/output_result.txt"  # <-- 变化: 输出txt路径
+    skip = 5  # 抽帧间隔
 
     logger = logging.getLogger("SingleVideo")
     logging.basicConfig(level=logging.INFO)
@@ -49,36 +50,34 @@ def main():
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) * SHOW_SCALE)
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) * SHOW_SCALE)
 
-    # 初始化写视频
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_writer = cv2.VideoWriter(output_path, fourcc, fps, (W, H))
     logger.info(f"输出视频: {output_path} size=({W},{H}) fps={fps} 总帧:{total_frames}")
 
-    # 功能初始化
     bt = ByteTrackPipeline(device="cuda")
     face_app = FaceSearcher(provider="CUDAExecutionProvider").app
     processor = FeatureProcessor(device="cuda")
     tid2color = {}
 
     fid = 0
-
-    # 创建进度条
     pbar = tqdm(total=total_frames, desc="Processing", unit="frame")
+
+    # <-- 变化: 打开结果txt文件
+    f_results = open(results_txt, "w", encoding="utf-8")
+    f_results.write("frame_id,cam_id,tid,gid,score,n_tid\n")  # 表头
 
     while True:
         ok, frame = cap.read()
         if not ok:
             break
         fid += 1
-        pbar.update(1)  # 每读一帧更新一次进度条
+        pbar.update(1)
 
         if fid % skip != 0:
             continue
 
-        # 检测和跟踪
         dets = bt.update(frame, debug=False)
 
-        # 小图人脸检测
         small = cv2.resize(frame, None, fx=SHOW_SCALE, fy=SHOW_SCALE)
         H0, W0 = frame.shape[:2]
         patches = [
@@ -101,7 +100,12 @@ def main():
         # 特征处理
         realtime_map = processor.process_packet(("cam1", fid, patches, dets))
 
-        # 绘制检测框和信息
+        # <-- 变化: 保存 realtime_map 到 txt
+        for cam_id, tid_map in realtime_map.items():
+            for tid, (gid, score, n_tid) in tid_map.items():
+                f_results.write(f"{fid},{cam_id},{tid},{gid},{score:.4f},{n_tid}\n")
+
+        # 绘制检测框
         for d in dets:
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
             gid, score, n_tid = realtime_map.get("cam1", {}).get(d["id"], ("-1", -1.0, 0))
@@ -123,13 +127,13 @@ def main():
                     ky = int(ky * SHOW_SCALE)
                     cv2.circle(small, (kx, ky), 1, (0, 0, 255), 2)
 
-        # 保存到视频
         video_writer.write(small)
 
     cap.release()
     video_writer.release()
+    f_results.close()  # <-- 变化: 关闭结果txt
     pbar.close()
-    logger.info("处理完成")
+    logger.info(f"处理完成，结果已保存到 {results_txt}")
 
 
 if __name__ == "__main__":
