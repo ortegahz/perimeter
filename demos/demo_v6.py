@@ -17,14 +17,10 @@ import queue
 import signal
 import subprocess
 import time
-from typing import Tuple
 
 # ------------ 内部模块 ------------
 from cores.byteTrackPipeline import ByteTrackPipeline
-from cores.faceSearcher import FaceSearcher  # ==== 改动1：导入
 from cores.featureProcessor import *
-from cores.personReid import PersonReid
-from utils_peri.macros import DIR_REID_MODEL
 
 
 # ---------------------------------
@@ -86,208 +82,13 @@ def dec_det_proc(stream_id, src, q_det2feat, q_det2disp, stop_evt, skip):
 
 
 def feature_proc(q_det2feat, q_map2disp, stop_evt):
-    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    reid = PersonReid(DIR_REID_MODEL, which_epoch="last", gpu="0" if dev.type == "cuda" else "")
-    face_app = FaceSearcher(provider="CUDAExecutionProvider").app
-    gid_mgr = GlobalID()
-    agg_pool: Dict[str, TrackAgg] = {}
-    last_seen: Dict[str, int] = {}
-    tid2gid: Dict[str, str] = {}
-    candidate_state: Dict[str, dict] = {}
-    new_gid_state: Dict[str, dict] = {}
-
+    processor = FeatureProcessor(device="cuda")
     while not stop_evt.is_set():
         pkt = q_det2feat.get()
-        if pkt is SENTINEL: break
-        stream_id, fid, patches, dets = pkt
-
-        tensors, metas, keep_patches = [], [], []
-        for det, patch in zip(dets, patches):
-            if not is_long_patch(patch): continue
-            tensors.append(prep_patch(patch))
-            metas.append((f"{stream_id}_{det['id']}", det["score"]))
-            keep_patches.append(patch)
-
-        if tensors:
-            batch = torch.stack(tensors).to(dev).float()
-            with torch.no_grad():
-                outputs = reid.model(batch)
-                outputs = torch.nn.functional.normalize(outputs, dim=1)
-            feats = outputs.detach().cpu().numpy()
-            for (tid, score), feat, img_patch in zip(metas, feats, keep_patches):
-                agg = agg_pool.setdefault(tid, TrackAgg())
-                agg.add_body(feat, score, fid, img_patch)
-                last_seen[tid] = fid
-
-        for det, patch in zip(dets, patches):
-            faces = face_app.get(patch)
-            if len(faces) != 1: continue
-            face_obj = faces[0]
-            if getattr(face_obj, "det_score", 1.0) < FACE_DET_MIN_SCORE: continue
-            if patch.shape[0] < 120 or patch.shape[1] < 120: continue
-            if cv2.Laplacian(patch, cv2.CV_64F).var() < 100: continue
-            f_emb = normv(face_obj.embedding)
-            tid = f"{stream_id}_{det['id']}"
-            agg = agg_pool.setdefault(tid, TrackAgg())
-            agg.add_face(f_emb, fid, patch)
-            last_seen[tid] = fid
-
-        realtime_map: Dict[str, Dict[int, Tuple[str, float, int]]] = {}
-        for tid, agg in list(agg_pool.items()):
-            if len(agg.body) < MIN_BODY4GID or len(agg.face) < MIN_FACE4GID:
-                tid_stream, tid_num = tid.split("_", 1)
-                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = \
-                    (f"{tid_num}_-1_b_{len(agg.body)}", len(agg.body), 0) if len(agg.body) < MIN_BODY4GID else \
-                        (f"{tid_num}_-1_f_{len(agg.face)}", len(agg.face), 0)
-                continue
-            face_feat, _ = agg.main_face_feat_and_patch()
-            body_feat, _ = agg.main_body_feat_and_patch()
-            if face_feat is None or body_feat is None:
-                tid_stream, tid_num = tid.split("_", 1)
-                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = \
-                    ("-2_f", -1.0, 0) if face_feat is None else ("-2_b", -1.0, 0)
-                continue
-            cand_gid, cand_score = gid_mgr.probe(face_feat, body_feat)
-
-            if tid in tid2gid:
-                bound_gid = tid2gid[tid]
-                lock_elapsed = fid - candidate_state.get(tid, {}).get("last_bind_fid", 0)
-                if cand_gid != bound_gid and lock_elapsed < BIND_LOCK_FRAMES:
-                    n_tid = len(gid_mgr.tid_hist[bound_gid])
-                    tid_stream, tid_num = tid.split("_", 1)
-                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-3", cand_score, n_tid)  # gid switch
-                    continue
-
-            state = candidate_state.setdefault(tid, {"cand_gid": None, "count": 0, "last_bind_fid": 0})
-            time_since_last_new = fid - new_gid_state.get(tid, {}).get("last_new_fid", -1)
-            ng_state = \
-                new_gid_state.setdefault(tid, {"count": 0, "last_new_fid": -NEW_GID_TIME_WINDOW, "ambig_count": 0})
-
-            # ----------- 绑定正式候选 -----------
-            if cand_gid and cand_score >= MATCH_THR:
-                ng_state["ambig_count"] = 0  # 正式绑定时观望区清零
-                if state["cand_gid"] == cand_gid:
-                    state["count"] += 1
-                else:
-                    state["cand_gid"] = cand_gid
-                    state["count"] = 1
-                if state["count"] >= CANDIDATE_FRAMES and gid_mgr.can_update_proto(cand_gid, face_feat, body_feat) == 0:
-                    gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)
-                    tid2gid[tid] = cand_gid
-                    state["last_bind_fid"] = fid
-                    n_tid = len(gid_mgr.tid_hist[cand_gid])
-                    tid_stream, tid_num = tid.split("_", 1)
-                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (cand_gid, cand_score, n_tid)
-                else:
-                    tid_stream, tid_num = tid.split("_", 1)
-                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = \
-                        ("-4_ud_f", -1.0, 0) if gid_mgr.can_update_proto(cand_gid, face_feat, body_feat) == -1 \
-                            else ("-4_ud_b", -1.0, 0) if gid_mgr.can_update_proto(cand_gid, face_feat, body_feat) == -2 \
-                            else ("-4_c", -1.0, 0)  # candidate or can't update
-
-            # ----------- 新建GID的初始化情形 -----------
-            elif len(gid_mgr.bank) < 1:
-                ng_state["ambig_count"] = 0
-                new_gid = gid_mgr.new_gid()
-                gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)
-                tid2gid[tid] = new_gid
-                state["cand_gid"] = new_gid
-                state["count"] = CANDIDATE_FRAMES
-                state["last_bind_fid"] = fid
-                ng_state["last_new_fid"] = fid
-                n_tid = len(gid_mgr.tid_hist[new_gid])
-                tid_stream, tid_num = tid.split("_", 1)
-                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
-
-            # ----------- -7区间观望 -----------
-            elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR:
-                ng_state["ambig_count"] = ng_state.get("ambig_count", 0) + 1
-                if ng_state["ambig_count"] >= WAIT_FRAMES_AMBIGUOUS and time_since_last_new >= NEW_GID_TIME_WINDOW:
-                    new_gid = gid_mgr.new_gid()
-                    gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)
-                    tid2gid[tid] = new_gid
-                    state["cand_gid"] = new_gid
-                    state["count"] = CANDIDATE_FRAMES
-                    state["last_bind_fid"] = fid
-                    ng_state["last_new_fid"] = fid
-                    ng_state["count"] = 0
-                    ng_state["ambig_count"] = 0  # 观望计数清零
-                    n_tid = len(gid_mgr.tid_hist[new_gid])
-                    tid_stream, tid_num = tid.split("_", 1)
-                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
-                else:
-                    tid_stream, tid_num = tid.split("_", 1)
-                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-7", cand_score, 0)
-
-            # ----------- 没有合适gid分配/低分新建GID，但依然要采用原有多帧机制 ----------
-            elif cand_gid is None or cand_score < THR_NEW_GID:
-                ng_state["ambig_count"] = 0  # 离开-7区间，计0
-                if time_since_last_new >= NEW_GID_TIME_WINDOW:
-                    ng_state["count"] += 1
-                    if ng_state["count"] >= NEW_GID_MIN_FRAMES:
-                        new_gid = gid_mgr.new_gid()
-                        gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_fid=fid)
-                        tid2gid[tid] = new_gid
-                        state["cand_gid"] = new_gid
-                        state["count"] = CANDIDATE_FRAMES
-                        state["last_bind_fid"] = fid
-                        ng_state["last_new_fid"] = fid
-                        ng_state["count"] = 0
-                        n_tid = len(gid_mgr.tid_hist[new_gid])
-                        tid_stream, tid_num = tid.split("_", 1)
-                        realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
-                    else:
-                        tid_stream, tid_num = tid.split("_", 1)
-                        realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-5", -1.0, 0)  # new gid min frames
-                else:
-                    tid_stream, tid_num = tid.split("_", 1)
-                    realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-6", -1.0, 0)  # time last new
-
-            # ----------- 兜底 -----------
-            else:
-                # 理论上不会进入，保险起见
-                ng_state["ambig_count"] = 0
-                tid_stream, tid_num = tid.split("_", 1)
-                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-unknown-", cand_score, 0)
-
-        for tid in list(last_seen.keys()):
-            if fid - last_seen[tid] >= MAX_TID_GAP:
-                last_seen.pop(tid)
-                candidate_state.pop(tid, None)
-                tid2gid.pop(tid, None)
-                new_gid_state.pop(tid, None)
-                agg_pool.pop(tid, None)
-
-        # ==== 新增: 自动清理长时间未绑定的gid ====
-        to_delete = []
-        for gid, last_f in list(gid_mgr.last_update.items()):
-            if fid - last_f >= GID_MAX_IDLE:
-                to_delete.append(gid)
-        for gid in to_delete:
-            tids_left = [tid for tid, g in tid2gid.items() if g == gid]
-            if tids_left:
-                logger.warning(f"GID {gid} to be deleted, but still bound to tids: {tids_left}")
-                # 清理掉这些TID的状态，避免残留
-                for tid in tids_left:
-                    tid2gid.pop(tid, None)
-                    candidate_state.pop(tid, None)
-                    new_gid_state.pop(tid, None)
-                    # 是否清理 agg_pool[tid] 取决于你要不要保留已积累特征
-                    agg_pool.pop(tid, None)
-            logger.info(f"[GlobalID] GID {gid} timeout ({fid - gid_mgr.last_update[gid]} frames), removing")
-            gid_mgr.bank.pop(gid, None)
-            gid_mgr.tid_hist.pop(gid, None)
-            gid_mgr.last_update.pop(gid, None)
-            dir_path = os.path.join(SAVE_DIR, gid)
-            try:
-                import shutil
-                shutil.rmtree(dir_path)
-                logger.info(f"[GlobalID] GID {gid} data at {dir_path} deleted")
-            except Exception as e:
-                logger.warning(f"[GlobalID] Error removing directory {dir_path}: {e}")
-
+        if pkt is SENTINEL:
+            break
+        realtime_map = processor.process_packet(pkt)
         q_map2disp.put(realtime_map)
-
     q_map2disp.put(SENTINEL)
     logger.info("[Feature] finished")
 
