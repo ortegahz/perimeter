@@ -502,6 +502,7 @@ class FeatureProcessor:
                     self.candidate_state.pop(tid, None)
                     self.new_gid_state.pop(tid, None)
                     self.agg_pool.pop(tid, None)
+                    self.last_seen.pop(tid, None)
             logger.info(f"[GlobalID] GID {gid} timeout ({fid - self.gid_mgr.last_update[gid]} frames), removing")
             self.gid_mgr.bank.pop(gid, None)
             self.gid_mgr.tid_hist.pop(gid, None)
