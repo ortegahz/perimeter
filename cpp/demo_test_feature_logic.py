@@ -1,7 +1,7 @@
 import os
 import sys
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "build"))
+sys.path.append(os.path.join(os.path.dirname(__file__), "cmake-build-debug"))
 import feature_logic
 
 pkt1 = feature_logic.TrackInput()
