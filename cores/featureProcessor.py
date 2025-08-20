@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-import time  # <<<<<<<<<<<<<<<<<<<<<<  新增
+import shutil
+import time
 from collections import deque
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -19,7 +20,9 @@ from utils_peri.macros import DIR_REID_MODEL
 
 # ---------------------------------
 
-# =================== 原本的常量 ===================
+# ===============================================================
+# 常量区
+# ===============================================================
 SHOW_SCALE = 0.5
 SENTINEL = None
 MIN_HW_RATIO = 1.5
@@ -29,9 +32,14 @@ W_FACE, W_BODY = 0.6, 0.4
 MATCH_THR = 0.5
 THR_NEW_GID = 0.3
 FACE_DET_MIN_SCORE = 0.60
-SAVE_DIR = "/home/manu/tmp/perimeter"
+
+SAVE_DIR = "/home/manu/tmp/perimeter"  # 原始数据目录
 os.makedirs(SAVE_DIR, exist_ok=True)
 make_dirs(SAVE_DIR, reset=True)
+
+ALARM_DIR = "/home/manu/tmp/perimeter_alarm"  # 报警目录
+os.makedirs(ALARM_DIR, exist_ok=True)
+make_dirs(ALARM_DIR, reset=True)
 
 UPDATE_THR = 0.65
 FACE_THR_STRICT = 0.5
@@ -40,18 +48,16 @@ NEW_GID_MIN_FRAMES = 3
 NEW_GID_TIME_WINDOW = 50
 BIND_LOCK_FRAMES = 15
 CANDIDATE_FRAMES = 2
-MAX_TID_GAP = 256  # 以帧为单位的旧阈值
-
-GID_MAX_IDLE = 25 / 2 * 60 * 5  # 以帧为单位的旧阈值
+MAX_TID_GAP = 256  # 以帧为单位
+GID_MAX_IDLE = 25 / 2 * 60 * 5
 WAIT_FRAMES_AMBIGUOUS = 10
 
-# =================== 秒级阈值 =====================
-FPS = 25 / 2  # 如果已知准确 FPS, 改成实际帧率
+FPS = 25 / 2
 MAX_TID_IDLE_SEC = MAX_TID_GAP / FPS
 GID_MAX_IDLE_SEC = GID_MAX_IDLE / FPS
 
 
-# =================================================
+# ===============================================================
 
 def is_long_patch(patch: np.ndarray, thr: float = MIN_HW_RATIO) -> bool:
     if patch is None or patch.size == 0:
@@ -60,21 +66,32 @@ def is_long_patch(patch: np.ndarray, thr: float = MIN_HW_RATIO) -> bool:
     return h / (w + 1e-9) >= thr
 
 
+# ===============================================================
+# TrackAgg
+# ===============================================================
 class TrackAgg:
     """
-    聚合当前 track 在多帧内的 body/face 特征，并提供一致性检测。
-    - body: 存 (feat, score, patch)
-    - face: 存 (feat, patch)
+    聚合单个 track 在多帧上的 body/face 特征
+    body 存储 (feat, score, patch)；face 存储 (feat, patch)
     """
 
-    def __init__(self, max_body=MIN_BODY4GID, max_face=MIN_BODY4GID):
+    def __init__(self, max_body=MIN_BODY4GID, max_face=MIN_FACE4GID):
         self.body: deque = deque(maxlen=max_body)
         self.face: deque = deque(maxlen=max_face)
         self.last_fid = -1
 
-    # ----------------------------------------------------------
-    # TrackAgg 下面的方法与原版完全一致，没有改动
-    # ----------------------------------------------------------
+    # ------------ representation & consistency -----------------
+    @staticmethod
+    def _check_consistency(feats, thr=0.35):
+        if len(feats) < 2:
+            return True
+        sims = []
+        for i in range(len(feats)):
+            for j in range(i + 1, len(feats)):
+                sims.append(float(feats[i] @ feats[j]))
+        mean_diff = 1.0 - np.mean(sims)
+        return mean_diff <= thr
+
     def _main_representation(self, feats, patches, outlier_thr=1.5):
         if len(feats) == 0:
             return None, None
@@ -94,6 +111,19 @@ class TrackAgg:
         idx = int(np.argmax(sims))
         return kept_arr[idx], kept_patches[idx]
 
+    # ------------ add & get interfaces -------------------------
+    def add_body(self, feat, scr, fid, patch):
+        if feat is None:
+            return
+        self.body.append((np.asarray(feat, dtype=np.float32), scr, patch))
+        self.last_fid = fid
+
+    def add_face(self, feat, fid, patch):
+        if feat is None:
+            return
+        self.face.append((np.asarray(feat, dtype=np.float32), patch))
+        self.last_fid = fid
+
     def main_body_feat_and_patch(self):
         if not self.body:
             return None, None
@@ -110,35 +140,11 @@ class TrackAgg:
             return None, None
         return self._main_representation(feats, patches, outlier_thr=1.5)
 
-    def add_body(self, feat, scr, fid, patch):
-        if feat is None:
-            return
-        self.body.append((np.asarray(feat, dtype=np.float32), scr, patch))
-        self.last_fid = fid
-
-    def add_face(self, feat, fid, patch):
-        if feat is None:
-            return
-        self.face.append((np.asarray(feat, dtype=np.float32), patch))
-        self.last_fid = fid
-
-    @staticmethod
-    def _check_consistency(feats, thr=0.35):
-        if len(feats) < 2:
-            return True
-        sims = []
-        for i in range(len(feats)):
-            for j in range(i + 1, len(feats)):
-                sims.append(float(feats[i] @ feats[j]))
-        mean_diff = 1.0 - np.mean(sims)
-        return mean_diff <= thr
-
     def body_feat(self):
         if not self.body:
             return None
         feats, scores, _ = zip(*self.body)
-        feats = list(feats)
-        if not self._check_consistency(feats, thr=0.5):
+        if not self._check_consistency(list(feats), thr=0.5):
             return None
         w = np.clip(np.float32(scores), 1e-2, None)
         w /= w.sum()
@@ -152,8 +158,7 @@ class TrackAgg:
         if not self.face:
             return None
         feats, _ = zip(*self.face)
-        feats = list(feats)
-        if not self._check_consistency(feats, thr=0.5):
+        if not self._check_consistency(list(feats), thr=0.5):
             return None
         rep = np.mean(np.stack(feats, axis=0), axis=0)
         norm = np.linalg.norm(rep)
@@ -168,6 +173,9 @@ class TrackAgg:
         return [p for _f, p in self.face]
 
 
+# ===============================================================
+# 一些工具函数
+# ===============================================================
 @torch.inference_mode()
 def prep_patch(patch: np.ndarray) -> torch.Tensor:
     im = cv2.resize(patch, (128, 256))
@@ -182,6 +190,9 @@ def normv(v):
     return v / (np.linalg.norm(v) + 1e-9)
 
 
+# ===============================================================
+# GlobalID
+# ===============================================================
 class GlobalID:
     """
     管理全局身份库
@@ -195,10 +206,10 @@ class GlobalID:
         self.outlier_thresh = outlier_thresh
         self.bank: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self.tid_hist: Dict[str, List[str]] = {}
-        self.last_update: Dict[str, float] = {}  # 保存时间戳
+        self.last_update: Dict[str, float] = {}
         self.gid_next = 1
 
-    # ---------- 与原版一致的静态工具函数 ----------
+    # ---------- 静态工具 ----------
     @staticmethod
     def _sim(a, b):
         return float(a @ b)
@@ -220,8 +231,7 @@ class GlobalID:
         new_list = [embeddings[i] for i in range(len(embeddings)) if keep_mask[i]]
         return new_list, keep_mask.tolist()
 
-    # ---------------------------------------------
-
+    # ---------- 接口 ----------
     def can_update_proto(self, gid, face_feat, body_feat):
         pool = self.bank[gid]
         if pool['faces'] and self._sim(face_feat, self._avg(pool['faces'])) < FACE_THR_STRICT:
@@ -270,8 +280,7 @@ class GlobalID:
 
     def bind(self, gid, face, body, agg=None, tid=None, current_ts=None):
         """
-        更新身份库，同时可把 tid 绑定到 gid
-        current_ts : float(time.time())  当前时间戳
+        更新库并可绑定 tid
         """
         root = os.path.join(SAVE_DIR, gid)
         if agg is not None:
@@ -303,24 +312,73 @@ class GlobalID:
         return gid
 
 
+# ===============================================================
+# FeatureProcessor
+# ===============================================================
 class FeatureProcessor:
+    """
+    核心逻辑：检测 → 提取特征 → 绑定 / 新建 GID → 报警 & 清理
+    """
+
     def __init__(self, device="cuda"):
         dev = torch.device(device if torch.cuda.is_available() else "cpu")
         self.device = dev
-        self.reid = PersonReid(DIR_REID_MODEL, which_epoch="last", gpu="0" if dev.type == "cuda" else "")
+        self.reid = PersonReid(DIR_REID_MODEL, which_epoch="last",
+                               gpu="0" if dev.type == "cuda" else "")
         self.face_app = FaceSearcher(provider="CUDAExecutionProvider").app
+
         self.gid_mgr = GlobalID()
         self.agg_pool: Dict[str, TrackAgg] = {}
-        self.last_seen: Dict[str, float] = {}  # 保存时间戳
+        self.last_seen: Dict[str, float] = {}
         self.tid2gid: Dict[str, str] = {}
         self.candidate_state: Dict[str, dict] = {}
         self.new_gid_state: Dict[str, dict] = {}
 
-    def process_packet(self, pkt):
-        stream_id, fid, patches, dets = pkt
-        now_ts = time.time()  # 当前包的时间戳
+        # 报警去重
+        self.alarmed: set[str] = set()
 
-        # ---------------- 1. 行人重识别 ----------------
+    # ---------------- 报警函数 ----------------
+    def trigger_alarm(self, gid: str, agg: TrackAgg):
+        """
+        将目录拷贝到报警目录，并把当前 agg 内的 patch 保存到 agg_sequence
+        """
+        if gid in self.alarmed:
+            return
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        src_dir = os.path.join(SAVE_DIR, gid)
+        dst_dir = os.path.join(ALARM_DIR, f"{gid}_{ts}")
+
+        try:
+            # 1) 拷贝已有数据
+            shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+
+            # 2) 保存 agg 内的 patch 序列
+            seq_face_dir = os.path.join(dst_dir, "agg_sequence", "face")
+            seq_body_dir = os.path.join(dst_dir, "agg_sequence", "body")
+            os.makedirs(seq_face_dir, exist_ok=True)
+            os.makedirs(seq_body_dir, exist_ok=True)
+
+            for i, img in enumerate(agg.face_patches()):
+                cv2.imwrite(os.path.join(seq_face_dir, f"{i:03d}.jpg"), img)
+            for i, img in enumerate(agg.body_patches()):
+                cv2.imwrite(os.path.join(seq_body_dir, f"{i:03d}.jpg"), img)
+
+            logger.warning(f"[ALARM] GID {gid} 关联 tid ≥ 2，已备份至 {dst_dir}")
+            self.alarmed.add(gid)
+        except Exception as e:
+            logger.error(f"[ALARM] 处理 {gid} 失败: {e}")
+
+    # ---------------- 主处理函数 ----------------
+    def process_packet(self, pkt):
+        """
+        pkt = (stream_id, fid, patches, dets)
+        返回 realtime_map 以供显示进程使用
+        """
+        stream_id, fid, patches, dets = pkt
+        now_ts = time.time()
+
+        # 1 -------- 行人 ReID ----------
         tensors, metas, keep_patches = [], [], []
         for det, patch in zip(dets, patches):
             if not is_long_patch(patch):
@@ -332,15 +390,15 @@ class FeatureProcessor:
         if tensors:
             batch = torch.stack(tensors).to(self.device).float()
             with torch.no_grad():
-                outputs = self.reid.model(batch)
-                outputs = torch.nn.functional.normalize(outputs, dim=1)
-            feats = outputs.detach().cpu().numpy()
-            for (tid, score), feat, img_patch in zip(metas, feats, keep_patches):
+                out = self.reid.model(batch)
+                out = torch.nn.functional.normalize(out, dim=1)
+            feats = out.cpu().numpy()
+            for (tid, scr), f, p in zip(metas, feats, keep_patches):
                 agg = self.agg_pool.setdefault(tid, TrackAgg())
-                agg.add_body(feat, score, fid, img_patch)
+                agg.add_body(f, scr, fid, p)
                 self.last_seen[tid] = now_ts
 
-        # ---------------- 2. 人脸特征 ------------------
+        # 2 -------- 人脸特征 ----------
         for det, patch in zip(dets, patches):
             faces = self.face_app.get(patch)
             if len(faces) != 1:
@@ -358,16 +416,15 @@ class FeatureProcessor:
             agg.add_face(f_emb, fid, patch)
             self.last_seen[tid] = now_ts
 
-        # ---------------- 3. 绑定 / 新建 GID ------------
+        # 3 -------- GID 绑定 / 新建 ----------
         realtime_map: Dict[str, Dict[int, Tuple[str, float, int]]] = {}
-
         for tid, agg in list(self.agg_pool.items()):
-            # ----------- 前置条件判断 ------------
+            # 3-0 前置检查
             if len(agg.body) < MIN_BODY4GID or len(agg.face) < MIN_FACE4GID:
                 tid_stream, tid_num = tid.split("_", 1)
-                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = \
-                    (f"{tid_num}_-1_b_{len(agg.body)}", len(agg.body), 0) if len(agg.body) < MIN_BODY4GID else \
-                        (f"{tid_num}_-1_f_{len(agg.face)}", len(agg.face), 0)
+                flag = f"{tid_num}_-1_b_{len(agg.body)}" if len(agg.body) < MIN_BODY4GID else \
+                    f"{tid_num}_-1_f_{len(agg.face)}"
+                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (flag, -1.0, 0)
                 continue
 
             face_feat, _ = agg.main_face_feat_and_patch()
@@ -380,7 +437,7 @@ class FeatureProcessor:
 
             cand_gid, cand_score = self.gid_mgr.probe(face_feat, body_feat)
 
-            # ------------- 锁定检测 -------------
+            # 3-1 锁定检测
             if tid in self.tid2gid:
                 bound_gid = self.tid2gid[tid]
                 lock_elapsed = fid - self.candidate_state.get(tid, {}).get("last_bind_fid", 0)
@@ -390,16 +447,13 @@ class FeatureProcessor:
                     realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-3", cand_score, n_tid)
                     continue
 
-            # ----------- 各种状态字典 -----------
-            state = self.candidate_state.setdefault(
-                tid, {"cand_gid": None, "count": 0, "last_bind_fid": 0}
-            )
+            # --- 状态字典
+            state = self.candidate_state.setdefault(tid, {"cand_gid": None, "count": 0, "last_bind_fid": 0})
             time_since_last_new = fid - self.new_gid_state.get(tid, {}).get("last_new_fid", -1)
-            ng_state = self.new_gid_state.setdefault(
-                tid, {"count": 0, "last_new_fid": -NEW_GID_TIME_WINDOW, "ambig_count": 0}
-            )
+            ng_state = self.new_gid_state.setdefault(tid, {"count": 0, "last_new_fid": -NEW_GID_TIME_WINDOW,
+                                                           "ambig_count": 0})
 
-            # ----------- 3-1. 匹配到已有 GID -----------
+            # 3-2 匹配到已有 GID
             if cand_gid and cand_score >= MATCH_THR:
                 ng_state["ambig_count"] = 0
                 if state["cand_gid"] == cand_gid:
@@ -415,56 +469,61 @@ class FeatureProcessor:
                     self.tid2gid[tid] = cand_gid
                     state["last_bind_fid"] = fid
                     n_tid = len(self.gid_mgr.tid_hist[cand_gid])
+
+                    if n_tid >= 2:
+                        self.trigger_alarm(cand_gid, agg)
+
                     tid_stream, tid_num = tid.split("_", 1)
                     realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (cand_gid, cand_score, n_tid)
                 else:
-                    tid_stream, tid_num = tid.split("_", 1)
                     flag = self.gid_mgr.can_update_proto(cand_gid, face_feat, body_feat)
+                    tid_stream, tid_num = tid.split("_", 1)
                     realtime_map.setdefault(tid_stream, {})[int(tid_num)] = \
                         ("-4_ud_f", -1.0, 0) if flag == -1 else \
-                            ("-4_ud_b", -1.0, 0) if flag == -2 else \
-                                ("-4_c", -1.0, 0)
+                            ("-4_ud_b", -1.0, 0) if flag == -2 else ("-4_c", -1.0, 0)
 
-            # ----------- 3-2. 身份库为空：直接新建 -----------
+            # 3-3 身份库空，直接新建
             elif len(self.gid_mgr.bank) < 1:
                 ng_state["ambig_count"] = 0
                 new_gid = self.gid_mgr.new_gid()
                 self.gid_mgr.bind(new_gid, face_feat, body_feat, agg,
                                   tid=tid, current_ts=now_ts)
                 self.tid2gid[tid] = new_gid
-                state["cand_gid"] = new_gid
-                state["count"] = CANDIDATE_FRAMES
-                state["last_bind_fid"] = fid
+                state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid)
                 ng_state["last_new_fid"] = fid
                 n_tid = len(self.gid_mgr.tid_hist[new_gid])
+
+                if n_tid >= 2:
+                    self.trigger_alarm(new_gid, agg)
+
                 tid_stream, tid_num = tid.split("_", 1)
                 realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
 
-            # ----------- 3-3. 模糊匹配：待观察 -----------
+            # 3-4 模糊匹配
             elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR:
-                ng_state["ambig_count"] = ng_state.get("ambig_count", 0) + 1
+                ng_state["ambig_count"] += 1
+                tid_stream, tid_num = tid.split("_", 1)
                 if ng_state["ambig_count"] >= WAIT_FRAMES_AMBIGUOUS and \
                         time_since_last_new >= NEW_GID_TIME_WINDOW:
                     new_gid = self.gid_mgr.new_gid()
                     self.gid_mgr.bind(new_gid, face_feat, body_feat, agg,
                                       tid=tid, current_ts=now_ts)
                     self.tid2gid[tid] = new_gid
-                    state["cand_gid"] = new_gid
-                    state["count"] = CANDIDATE_FRAMES
-                    state["last_bind_fid"] = fid
-                    ng_state["last_new_fid"] = fid
-                    ng_state["count"] = 0
-                    ng_state["ambig_count"] = 0
+                    state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid)
+                    ng_state.update(last_new_fid=fid, count=0, ambig_count=0)
                     n_tid = len(self.gid_mgr.tid_hist[new_gid])
-                    tid_stream, tid_num = tid.split("_", 1)
+
+                    if n_tid >= 2:
+                        self.trigger_alarm(new_gid, agg)
+
                     realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
                 else:
-                    tid_stream, tid_num = tid.split("_", 1)
                     realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-7", cand_score, 0)
 
-            # ----------- 3-4. 完全没有匹配：计数后新建 -----------
-            elif cand_gid is None or cand_score < THR_NEW_GID:
+            # 3-5 完全没有匹配
+            else:
                 ng_state["ambig_count"] = 0
+                tid_stream, tid_num = tid.split("_", 1)
                 if time_since_last_new >= NEW_GID_TIME_WINDOW:
                     ng_state["count"] += 1
                     if ng_state["count"] >= NEW_GID_MIN_FRAMES:
@@ -472,27 +531,20 @@ class FeatureProcessor:
                         self.gid_mgr.bind(new_gid, face_feat, body_feat, agg,
                                           tid=tid, current_ts=now_ts)
                         self.tid2gid[tid] = new_gid
-                        state["cand_gid"] = new_gid
-                        state["count"] = CANDIDATE_FRAMES
-                        state["last_bind_fid"] = fid
-                        ng_state["last_new_fid"] = fid
-                        ng_state["count"] = 0
+                        state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid)
+                        ng_state.update(last_new_fid=fid, count=0)
                         n_tid = len(self.gid_mgr.tid_hist[new_gid])
-                        tid_stream, tid_num = tid.split("_", 1)
+
+                        if n_tid >= 2:
+                            self.trigger_alarm(new_gid, agg)
+
                         realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
                     else:
-                        tid_stream, tid_num = tid.split("_", 1)
                         realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-5", -1.0, 0)
                 else:
-                    tid_stream, tid_num = tid.split("_", 1)
                     realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-6", -1.0, 0)
 
-            else:
-                ng_state["ambig_count"] = 0
-                tid_stream, tid_num = tid.split("_", 1)
-                realtime_map.setdefault(tid_stream, {})[int(tid_num)] = ("-unknown-", cand_score, 0)
-
-        # ---------------- 4. 清理超时的 tid -------------
+        # 4 -------- 清理超时 tid ----------
         for tid in list(self.last_seen.keys()):
             if now_ts - self.last_seen[tid] >= MAX_TID_IDLE_SEC:
                 self.last_seen.pop(tid, None)
@@ -501,33 +553,28 @@ class FeatureProcessor:
                 self.new_gid_state.pop(tid, None)
                 self.agg_pool.pop(tid, None)
 
-        # ---------------- 5. 清理超时的 gid -------------
-        to_delete = []
-        for gid, last_t in list(self.gid_mgr.last_update.items()):
-            if now_ts - last_t >= GID_MAX_IDLE_SEC:
-                to_delete.append(gid)
-
+        # 5 -------- 清理超时 gid ----------
+        to_delete = [gid for gid, t in self.gid_mgr.last_update.items()
+                     if now_ts - t >= GID_MAX_IDLE_SEC]
         for gid in to_delete:
-            tids_left = [tid for tid, g in self.tid2gid.items() if g == gid]
-            if tids_left:
-                logger.warning(f"GID {gid} to be deleted, but still bound to tids: {tids_left}")
-                for tid in tids_left:
+            tids_linked = [tid for tid, g in self.tid2gid.items() if g == gid]
+            if tids_linked:
+                logger.warning(f"GID {gid} 将被删除，但仍绑定 tid: {tids_linked}")
+                for tid in tids_linked:
                     self.tid2gid.pop(tid, None)
                     self.candidate_state.pop(tid, None)
                     self.new_gid_state.pop(tid, None)
                     self.agg_pool.pop(tid, None)
                     self.last_seen.pop(tid, None)
-            logger.info(f"[GlobalID] GID {gid} timeout "
-                        f"({now_ts - self.gid_mgr.last_update[gid]:.1f}s), removing")
+
+            logger.info(f"[GlobalID] GID {gid} 因空闲超时被删除")
             self.gid_mgr.bank.pop(gid, None)
             self.gid_mgr.tid_hist.pop(gid, None)
             self.gid_mgr.last_update.pop(gid, None)
             dir_path = os.path.join(SAVE_DIR, gid)
             try:
-                import shutil
                 shutil.rmtree(dir_path)
-                logger.info(f"[GlobalID] GID {gid} data at {dir_path} deleted")
             except Exception as e:
-                logger.warning(f"[GlobalID] Error removing directory {dir_path}: {e}")
+                logger.warning(f"删除目录 {dir_path} 失败: {e}")
 
         return realtime_map
