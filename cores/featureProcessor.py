@@ -59,6 +59,7 @@ MAX_TID_IDLE_SEC = MAX_TID_GAP / FPS
 GID_MAX_IDLE_SEC = GID_MAX_IDLE / FPS
 
 # -------- 报警去重相关参数 -----------------
+ALARM_CNT_TH = 8
 ALARM_DUP_THR = 0.4  # ≥ 该阈值视为同一人，不再重复报警
 FUSE_W_FACE, FUSE_W_BODY = 0.6, 0.4
 EMB_FACE_DIM, EMB_BODY_DIM = 512, 2048
@@ -516,7 +517,7 @@ class FeatureProcessor:
                     state["last_bind_fid"] = fid
                     n_tid = len(self.gid_mgr.tid_hist[cand_gid])
 
-                    if n_tid >= 2:
+                    if n_tid >= ALARM_CNT_TH:
                         self.trigger_alarm(cand_gid, agg)
 
                     tid_stream, tid_num = tid.split("_", 1)
@@ -539,7 +540,7 @@ class FeatureProcessor:
                 ng_state["last_new_fid"] = fid
                 n_tid = len(self.gid_mgr.tid_hist[new_gid])
 
-                if n_tid >= 2:
+                if n_tid >= ALARM_CNT_TH:
                     self.trigger_alarm(new_gid, agg)
 
                 tid_stream, tid_num = tid.split("_", 1)
@@ -559,7 +560,7 @@ class FeatureProcessor:
                     ng_state.update(last_new_fid=fid, count=0, ambig_count=0)
                     n_tid = len(self.gid_mgr.tid_hist[new_gid])
 
-                    if n_tid >= 2:
+                    if n_tid >= ALARM_CNT_TH:
                         self.trigger_alarm(new_gid, agg)
 
                     realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
@@ -581,7 +582,7 @@ class FeatureProcessor:
                         ng_state.update(last_new_fid=fid, count=0)
                         n_tid = len(self.gid_mgr.tid_hist[new_gid])
 
-                        if n_tid >= 2:
+                        if n_tid >= ALARM_CNT_TH:
                             self.trigger_alarm(new_gid, agg)
 
                         realtime_map.setdefault(tid_stream, {})[int(tid_num)] = (new_gid, cand_score, n_tid)
