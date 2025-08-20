@@ -34,13 +34,15 @@ THR_NEW_GID = 0.3
 FACE_DET_MIN_SCORE = 0.60
 
 SAVE_DIR = "/home/manu/tmp/perimeter"  # 原始数据目录
-os.makedirs(SAVE_DIR, exist_ok=True)
-make_dirs(SAVE_DIR, reset=True)
-
 ALARM_DIR = "/home/manu/tmp/perimeter_alarm"  # 报警目录
+
+os.makedirs(SAVE_DIR, exist_ok=True)
 os.makedirs(ALARM_DIR, exist_ok=True)
+# 如需清空目录：
+make_dirs(SAVE_DIR, reset=True)
 make_dirs(ALARM_DIR, reset=True)
 
+# -------- 特征库更新 / 新建等参数 -----------
 UPDATE_THR = 0.65
 FACE_THR_STRICT = 0.5
 BODY_THR_STRICT = 0.4
@@ -49,12 +51,17 @@ NEW_GID_TIME_WINDOW = 50
 BIND_LOCK_FRAMES = 15
 CANDIDATE_FRAMES = 2
 MAX_TID_GAP = 256  # 以帧为单位
-GID_MAX_IDLE = 25 / 2 * 60 * 5
+GID_MAX_IDLE = 25 / 2 * 60 * 60 * 24
 WAIT_FRAMES_AMBIGUOUS = 10
 
 FPS = 25 / 2
 MAX_TID_IDLE_SEC = MAX_TID_GAP / FPS
 GID_MAX_IDLE_SEC = GID_MAX_IDLE / FPS
+
+# -------- 报警去重相关参数 -----------------
+ALARM_DUP_THR = 0.4  # ≥ 该阈值视为同一人，不再重复报警
+FUSE_W_FACE, FUSE_W_BODY = 0.6, 0.4
+EMB_FACE_DIM, EMB_BODY_DIM = 512, 2048
 
 
 # ===============================================================
@@ -320,6 +327,25 @@ class FeatureProcessor:
     核心逻辑：检测 → 提取特征 → 绑定 / 新建 GID → 报警 & 清理
     """
 
+    # ----------------- 内部辅助函数 -----------------
+    @staticmethod
+    def _fuse_feat(face_f: np.ndarray | None, body_f: np.ndarray | None) -> np.ndarray:
+        """人脸/行人特征加权拼接并 L2 归一化"""
+        if face_f is None and body_f is None:
+            raise RuntimeError("Both face and body feature are None")
+        face_f = np.zeros(EMB_FACE_DIM, np.float32) if face_f is None else face_f * FUSE_W_FACE
+        body_f = np.zeros(EMB_BODY_DIM, np.float32) if body_f is None else body_f * FUSE_W_BODY
+        combo = np.concatenate([face_f, body_f]).astype(np.float32)
+        return combo / (np.linalg.norm(combo) + 1e-9)
+
+    def _gid_fused_rep(self, gid: str) -> np.ndarray:
+        """取 GlobalID 中平均特征后 fuse"""
+        pool = self.gid_mgr.bank.get(gid, {})
+        face_f = self.gid_mgr._avg(pool['faces']) if pool.get('faces') else None
+        body_f = self.gid_mgr._avg(pool['bodies']) if pool.get('bodies') else None
+        return self._fuse_feat(face_f, body_f)
+
+    # ------------------------------------------------
     def __init__(self, device="cuda"):
         dev = torch.device(device if torch.cuda.is_available() else "cpu")
         self.device = dev
@@ -335,25 +361,42 @@ class FeatureProcessor:
         self.new_gid_state: Dict[str, dict] = {}
 
         # 报警去重
-        self.alarmed: set[str] = set()
+        self.alarmed: set[str] = set()  # 已报警 gid
+        self.alarm_reprs: Dict[str, np.ndarray] = {}  # gid → 融合特征
 
     # ---------------- 报警函数 ----------------
     def trigger_alarm(self, gid: str, agg: TrackAgg):
         """
         将目录拷贝到报警目录，并把当前 agg 内的 patch 保存到 agg_sequence
+        加入“跨 gid 去重”逻辑：若与已报警 gid 的融合特征相似度 ≥ ALARM_DUP_THR，则忽略本次报警
         """
-        if gid in self.alarmed:
+        # 1) 生成当前 gid 的融合特征
+        try:
+            cur_rep = self._gid_fused_rep(gid)
+        except Exception as e:
+            logger.warning(f"[ALARM] 生成 {gid} 特征失败: {e}")
             return
+
+        # 2) 与已报警 gid 做去重
+        for old_gid, old_rep in self.alarm_reprs.items():
+            sim = float(cur_rep @ old_rep)
+            if sim >= ALARM_DUP_THR:
+                logger.info(f"[ALARM] 跳过 {gid} (与已报警 {old_gid} 相似度 {sim:.2f})")
+                return
+
+        # 3) 真正触发报警
+        if gid in self.alarmed:
+            return  # 理论上不会进来，保险起见
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         src_dir = os.path.join(SAVE_DIR, gid)
         dst_dir = os.path.join(ALARM_DIR, f"{gid}_{ts}")
 
         try:
-            # 1) 拷贝已有数据
+            # 3-1 已有数据复制
             shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
 
-            # 2) 保存 agg 内的 patch 序列
+            # 3-2 写入本次 agg 序列
             seq_face_dir = os.path.join(dst_dir, "agg_sequence", "face")
             seq_body_dir = os.path.join(dst_dir, "agg_sequence", "body")
             os.makedirs(seq_face_dir, exist_ok=True)
@@ -365,7 +408,10 @@ class FeatureProcessor:
                 cv2.imwrite(os.path.join(seq_body_dir, f"{i:03d}.jpg"), img)
 
             logger.warning(f"[ALARM] GID {gid} 关联 tid ≥ 2，已备份至 {dst_dir}")
+
+            # 3-3 记录到已报警列表
             self.alarmed.add(gid)
+            self.alarm_reprs[gid] = cur_rep
         except Exception as e:
             logger.error(f"[ALARM] 处理 {gid} 失败: {e}")
 

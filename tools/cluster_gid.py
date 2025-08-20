@@ -112,7 +112,7 @@ def dump_cluster(cluster: List[str], save_dir: Path, out_dir: Path, dry_run: boo
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--save-dir", default="/home/manu/tmp/perimeter_v0/")
+    ap.add_argument("--save-dir", default="/home/manu/tmp/perimeter/")
     ap.add_argument("--thr", type=float, default=0.6)
     ap.add_argument("--out-dir", help="输出目录(默认 save_dir+'_merged')")
     ap.add_argument("--dry-run", default=False)
