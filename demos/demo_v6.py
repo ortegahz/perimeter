@@ -16,7 +16,6 @@ import multiprocessing.queues as mpq
 import queue
 import signal
 import subprocess
-import time
 
 # ------------ 内部模块 ------------
 from cores.byteTrackPipeline import ByteTrackPipeline
@@ -122,6 +121,77 @@ def get_tid_color(tid, tid2color, cmap=COMMON_COLORS):
         color = cmap[len(tid2color) % len(cmap)]
         tid2color[tid] = color
     return tid2color[tid]
+
+
+def display_proc_win(my_stream_id,
+                     q_det2disp,
+                     q_map2disp,
+                     stop_evt,
+                     host=None,  # 依然保留，但后面不用
+                     port=None,
+                     fps_exp=25.0):
+    window_name = f"Stream-{my_stream_id}"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
+    tid2info = {}  # {tid: (gid, score, n_tid)}
+
+    while not stop_evt.is_set():
+        # ① 更新 tid->gid 对应关系 -----------------------------------------
+        try:
+            m = q_map2disp.get_nowait()
+            if m is SENTINEL:
+                q_det2disp.put(SENTINEL)  # 通知下游
+                break
+            tid2info = m.get(my_stream_id, {})
+        except queue.Empty:
+            pass
+
+        # ② 取一帧检测/跟踪结果 --------------------------------------------
+        pkt = q_det2disp.get()
+        if pkt is SENTINEL:
+            break
+
+        stream_id, fid, frame, dets, all_faces = pkt
+
+        # ③ 绘制检测框 ------------------------------------------------------
+        for d in dets:
+            x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
+            gid, score, n_tid = tid2info.get(d["id"], ("-1", -1.0, 0))
+            color = (0, 255, 0)
+            cv2.rectangle(frame,
+                          (x, y), (x + w, y + h),
+                          (0, 0, 255) if n_tid >= 2 else color,
+                          2)
+            cv2.putText(frame, f"{gid}",
+                        (x, max(y + 15, 0)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 2, color, 1)
+            cv2.putText(frame, f"n={n_tid} s={score:.2f}",
+                        (x, max(y + 30, 0)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        # ④ 绘制人脸框 ------------------------------------------------------
+        for face in all_faces:
+            x1, y1, x2, y2 = [int(v * SHOW_SCALE) for v in face["bbox"]]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            cv2.putText(frame, f"{face['score']:.2f}",
+                        (x1, max(y1 - 2, 0)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 128, 0), 1)
+
+            if "kps" in face:
+                for kx, ky in face["kps"]:
+                    kx = int(kx * SHOW_SCALE)
+                    ky = int(ky * SHOW_SCALE)
+                    cv2.circle(frame, (kx, ky), 1, (0, 0, 255), 2)
+
+        # ⑤ 显示 ------------------------------------------------------------
+        cv2.imshow(window_name, frame)
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord('q'), 27):  # q 或 ESC 退出
+            break
+
+    # ⑥ 资源释放 ------------------------------------------------------------
+    cv2.destroyWindow(window_name)
+    print(f"[Display-{my_stream_id}] finished")
 
 
 def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps_exp):
