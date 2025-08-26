@@ -185,7 +185,12 @@ def main():
 
     tracker = None if LOAD_RAW else ByteTrackPipeline(device=DEVICE)
     face_app = FaceSearcher(provider="CUDAExecutionProvider").app
-    processor = FeatureProcessor(device=DEVICE, use_fid_time=True)
+    processor = FeatureProcessor(
+        device=DEVICE,
+        use_fid_time=True,
+        mode='load',  # load or realtime
+        cache_path='/home/manu/tmp/features_cache.json'
+    )
 
     f_res = open(OUTPUT_TXT, "w", encoding="utf-8")
     f_res.write("frame_id,cam_id,tid,gid,score,n_tid\n")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json  # 新增导入
 import os
 import shutil
 import time
@@ -12,13 +13,14 @@ import numpy as np
 import torch
 from loguru import logger
 
+# 注意：这里的导入路径需要根据你的项目结构调整
 from cores.faceSearcher import FaceSearcher
 from cores.personReid import PersonReid
 from utils_peri.general_funcs import make_dirs
 from utils_peri.macros import DIR_REID_MODEL
 
 # ===============================================================
-# 常量与目录
+# 常量与目录 (保持不变)
 # ===============================================================
 SHOW_SCALE = 0.5
 MIN_HW_RATIO = 1.5
@@ -78,7 +80,7 @@ def is_long_patch(patch: np.ndarray, thr=MIN_HW_RATIO):
 
 
 # ===============================================================
-# TrackAgg
+# TrackAgg (保持不变)
 # ===============================================================
 class TrackAgg:
     """
@@ -200,7 +202,7 @@ def normv(v):
 
 
 # ===============================================================
-# GlobalID
+# GlobalID (保持不变)
 # ===============================================================
 class GlobalID:
     """管理全局身份库"""
@@ -349,19 +351,49 @@ class FeatureProcessor:
         return self._fuse_feat(face_f, body_f)
 
     # ------------------------------------------------
-    def __init__(self, device="cuda", use_fid_time: bool | None = None):
-        # 1. 这一行保持不变，它会根据传入的 device 参数和环境决定设备
-        dev = torch.device(device if torch.cuda.is_available() else "cpu")
-        self.device = dev
+    def __init__(self,
+                 device="cuda",
+                 use_fid_time: bool | None = None,
+                 mode: str = 'realtime',  # 新增: 'realtime' (默认) 或 'load'
+                 cache_path: str | None = None  # 新增: 特征缓存文件路径
+                 ):
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.use_fid_time = TIME_BY_FRAME if use_fid_time is None else use_fid_time
+        self.mode = mode
+        self.cache_path = cache_path
+        self.features_to_save = {}
+        self.features_cache = {}
+        self.reid = None
+        self.face_app = None
 
-        # 2. PersonReid 的逻辑保持不变，它会正确地跟随 dev 的类型
-        self.reid = PersonReid(DIR_REID_MODEL, which_epoch="last",
-                               gpu="0" if dev.type == "cuda" else "")
-        self.reid.model.to(self.device)
-
-        # 3. 动态选择 FaceSearcher 的 provider
-        face_provider = "CUDAExecutionProvider" if dev.type == "cuda" else "CPUExecutionProvider"  # <--- ADDED
-        self.face_app = FaceSearcher(provider=face_provider).app  # <--- CHANGED
+        if self.mode == 'realtime':
+            logger.info("FeatureProcessor in 'realtime' mode. Models will be loaded.")
+            if self.cache_path:
+                logger.info(f"Features will be saved to '{self.cache_path}' on exit.")
+                Path(self.cache_path).parent.mkdir(parents=True, exist_ok=True)
+            try:
+                self.reid = PersonReid(DIR_REID_MODEL, which_epoch="last",
+                                       gpu="0" if self.device.type == "cuda" else "")
+                self.reid.model.to(self.device).eval()
+                face_provider = "CUDAExecutionProvider" if self.device.type == "cuda" else "CPUExecutionProvider"
+                self.face_app = FaceSearcher(provider=face_provider).app
+                logger.info("ReID and Face models loaded successfully.")
+            except Exception as e:
+                logger.error(f"Failed to load models in 'realtime' mode: {e}")
+                raise
+        elif self.mode == 'load':
+            logger.info("FeatureProcessor in 'load' mode. Models will NOT be loaded.")
+            if not self.cache_path or not os.path.exists(self.cache_path):
+                raise FileNotFoundError(f"In 'load' mode, but cache file not found: {self.cache_path}")
+            try:
+                with open(self.cache_path, 'r', encoding='utf-8') as f:
+                    self.features_cache = json.load(f)
+                logger.info(
+                    f"Successfully loaded features for {len(self.features_cache)} frames from '{self.cache_path}'.")
+            except Exception as e:
+                raise IOError(f"Failed to read or parse cache file '{self.cache_path}': {e}")
+        else:
+            raise ValueError(f"Invalid mode: '{self.mode}'. Choose 'realtime' or 'load'.")
 
         self.gid_mgr = GlobalID()
         self.agg_pool: Dict[str, TrackAgg] = {}
@@ -369,15 +401,31 @@ class FeatureProcessor:
         self.tid2gid: Dict[str, str] = {}
         self.candidate_state: Dict[str, dict] = {}
         self.new_gid_state: Dict[str, dict] = {}
-
-        # 报警去重
         self.alarmed: set[str] = set()
         self.alarm_reprs: Dict[str, np.ndarray] = {}
 
-        self.use_fid_time = TIME_BY_FRAME if use_fid_time is None else use_fid_time
+    def __del__(self):
+        if self.mode == 'realtime' and self.cache_path and self.features_to_save:
+            logger.info(f"Saving {len(self.features_to_save)} frames of features to '{self.cache_path}'...")
+            try:
+                serializable_features = {}
+                for f_id, f_data in self.features_to_save.items():
+                    serializable_features[f_id] = {}
+                    for t_id, t_data in f_data.items():
+                        serializable_features[f_id][t_id] = {
+                            'body_feat': t_data['body_feat'].tolist() if 'body_feat' in t_data and t_data[
+                                'body_feat'] is not None else None,
+                            'face_feat': t_data['face_feat'].tolist() if 'face_feat' in t_data and t_data[
+                                'face_feat'] is not None else None,
+                        }
+                with open(self.cache_path, "w", encoding="utf-8") as f:
+                    json.dump(serializable_features, f)
+                logger.info("Features saved successfully.")
+            except Exception as e:
+                logger.error(f"Failed to save features to '{self.cache_path}': {e}")
 
     # ------------------------------------------------------------------
-    # 报警
+    # 报警 (保持不变)
     # ------------------------------------------------------------------
     def trigger_alarm(self, gid: str, agg: TrackAgg):
         try:
@@ -412,7 +460,7 @@ class FeatureProcessor:
             logger.error(f"[ALARM] 处理 {gid} 失败: {e}")
 
     # ------------------------------------------------------------------
-    # 主接口
+    # 主接口 (已修改)
     # ------------------------------------------------------------------
     def process_packet(self, pkt):
         """
@@ -421,7 +469,7 @@ class FeatureProcessor:
         """
         stream_id, fid, patches, dets = pkt
 
-        # ========== 统一时间基准 ==========
+        # ========== 统一时间基准 (保持不变) ==========
         if self.use_fid_time:
             now_stamp = fid
             max_tid_idle = MAX_TID_IDLE_FRAMES
@@ -432,45 +480,80 @@ class FeatureProcessor:
             gid_max_idle = GID_MAX_IDLE_SEC
         # =================================
 
-        # ---------------- 1. 行人 ReID ----------------
-        tensors, metas, keep_patches = [], [], []
-        for det, patch in zip(dets, patches):
-            if not is_long_patch(patch):
-                continue
-            tensors.append(prep_patch(patch))
-            metas.append((f"{stream_id}_{det['id']}", det["score"]))
-            keep_patches.append(patch)
+        # -------- 特征提取或加载的分支 --------
+        if self.mode == 'load':
+            precomputed_features = self.features_cache.get(str(fid))
+            if precomputed_features:
+                for tid_str, feats_dict in precomputed_features.items():
+                    body_feat = np.array(feats_dict['body_feat'], dtype=np.float32) if feats_dict.get(
+                        'body_feat') else None
+                    face_feat = np.array(feats_dict['face_feat'], dtype=np.float32) if feats_dict.get(
+                        'face_feat') else None
 
-        if tensors:
-            batch = torch.stack(tensors).to(self.device).float()
-            with torch.no_grad():
-                feats = torch.nn.functional.normalize(self.reid.model(batch), dim=1)
-            feats = feats.cpu().numpy()
+                    num_tid = int(tid_str.split('_')[-1])
+                    found_patch, found_score = None, 0.0
+                    for det, patch in zip(dets, patches):
+                        if det['id'] == num_tid:
+                            found_patch, found_score = patch, det.get('score', 0.0)
+                            break
+                    if found_patch is None: continue
 
-            for (tid, scr), f, p in zip(metas, feats, keep_patches):
-                agg = self.agg_pool.setdefault(tid, TrackAgg())
-                agg.add_body(f, scr, fid, p)
-                self.last_seen[tid] = now_stamp
+                    agg = self.agg_pool.setdefault(tid_str, TrackAgg())
+                    if body_feat is not None:
+                        agg.add_body(body_feat, found_score, fid, found_patch)
+                    if face_feat is not None:
+                        agg.add_face(face_feat, fid, found_patch)
+                    self.last_seen[tid_str] = now_stamp
 
-        # ---------------- 2. 人脸特征 -----------------
-        for det, patch in zip(dets, patches):
-            faces = self.face_app.get(patch)
-            if len(faces) != 1:
-                continue
-            face_obj = faces[0]
-            if getattr(face_obj, "det_score", 1.0) < FACE_DET_MIN_SCORE:
-                continue
-            if patch.shape[0] < 120 or patch.shape[1] < 120:
-                continue
-            if cv2.Laplacian(patch, cv2.CV_64F).var() < 100:
-                continue
-            f_emb = normv(face_obj.embedding)
-            tid = f"{stream_id}_{det['id']}"
-            agg = self.agg_pool.setdefault(tid, TrackAgg())
-            agg.add_face(f_emb, fid, patch)
-            self.last_seen[tid] = now_stamp
+        elif self.mode == 'realtime':
+            extracted_features_for_this_frame = {}
+            # 1. 行人 ReID
+            tensors, metas, keep_patches = [], [], []
+            for det, patch in zip(dets, patches):
+                if not is_long_patch(patch):
+                    continue
+                tensors.append(prep_patch(patch))
+                metas.append((f"{stream_id}_{det['id']}", det["score"]))
+                keep_patches.append(patch)
 
-        # ---------------- 3. GID 绑定 / 新建 ----------------
+            if tensors:
+                batch = torch.stack(tensors).to(self.device).float()
+                with torch.no_grad():
+                    feats = torch.nn.functional.normalize(self.reid.model(batch), dim=1)
+                feats = feats.cpu().numpy()
+
+                for (tid, scr), f, p in zip(metas, feats, keep_patches):
+                    agg = self.agg_pool.setdefault(tid, TrackAgg())
+                    agg.add_body(f, scr, fid, p)
+                    self.last_seen[tid] = now_stamp
+                    extracted_features_for_this_frame.setdefault(tid, {})['body_feat'] = f
+
+            # 2. 人脸特征
+            for det, patch in zip(dets, patches):
+                try:
+                    faces = self.face_app.get(patch)
+                    if len(faces) != 1:
+                        continue
+                    face_obj = faces[0]
+                    if getattr(face_obj, "det_score", 1.0) < FACE_DET_MIN_SCORE:
+                        continue
+                    if patch.shape[0] < 120 or patch.shape[1] < 120:
+                        continue
+                    if cv2.Laplacian(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var() < 100:
+                        continue
+                    f_emb = normv(face_obj.embedding)
+                    tid = f"{stream_id}_{det['id']}"
+                    agg = self.agg_pool.setdefault(tid, TrackAgg())
+                    agg.add_face(f_emb, fid, patch)
+                    self.last_seen[tid] = now_stamp
+                    extracted_features_for_this_frame.setdefault(tid, {})['face_feat'] = f_emb
+                except Exception:
+                    continue
+
+            if extracted_features_for_this_frame:
+                self.features_to_save[str(fid)] = extracted_features_for_this_frame
+
+        # ---------------- 3. GID 绑定 / 新建 (保持不变) ----------------
         realtime_map: Dict[str, Dict[int, Tuple[str, float, int]]] = {}
 
         for tid, agg in list(self.agg_pool.items()):
@@ -587,7 +670,7 @@ class FeatureProcessor:
                 else:
                     realtime_map.setdefault(ts, {})[int(tn)] = ("-6", -1.0, 0)
 
-        # ---------------- 4. 清理超时 tid ----------------
+        # ---------------- 4. 清理超时 tid (保持不变) ----------------
         for tid in list(self.last_seen.keys()):
             if now_stamp - self.last_seen[tid] >= max_tid_idle:
                 self.last_seen.pop(tid, None)
@@ -596,7 +679,7 @@ class FeatureProcessor:
                 self.new_gid_state.pop(tid, None)
                 self.agg_pool.pop(tid, None)
 
-        # ---------------- 5. 清理超时 gid ----------------
+        # ---------------- 5. 清理超时 gid (保持不变) ----------------
         to_delete = [gid for gid, t in self.gid_mgr.last_update.items()
                      if now_stamp - t >= gid_max_idle]
         for gid in to_delete:
