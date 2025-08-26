@@ -74,11 +74,11 @@ Packet load_packet_from_cache(const std::string &cam_id, int fid, const std::str
 int main(int argc, char **argv) {
     // --- 可调参数 ---
     std::string VIDEO_PATH = "/home/manu/tmp/64.mp4";
-    std::string RAW_DIR = "/home/manu/tmp/cache_v0";
-    std::string FEATURE_CACHE_JSON = "/home/manu/tmp/features_cache_v0.json";
+    std::string RAW_DIR = "/home/manu/tmp/cache_v1";
+    std::string FEATURE_CACHE_JSON = "/home/manu/tmp/features_cache_v1.json";
     std::string OUTPUT_TXT = "/home/manu/tmp/output_result_cpp.txt";
     std::string CAM_ID = "cam1";
-    int SKIP = 50;
+    int SKIP = 2;
 
     std::string MODE = "load"; // "load" or "realtime"
     if (argc > 1) {

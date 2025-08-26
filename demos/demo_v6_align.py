@@ -47,7 +47,7 @@ VIDEO_PATH = "/home/manu/tmp/64.mp4"
 OUTPUT_MP4 = "/home/manu/tmp/output_result.mp4"
 OUTPUT_TXT = "/home/manu/tmp/output_result.txt"
 
-SKIP = 50
+SKIP = 2
 SHOW_SCALE = 0.5
 DEVICE = "cpu"
 CAM_ID = "cam1"
@@ -55,7 +55,7 @@ CAM_ID = "cam1"
 # ---- 缓存相关 ----
 SAVE_RAW = False
 LOAD_RAW = True
-RAW_DIR = "/home/manu/tmp/cache"
+RAW_DIR = "/home/manu/tmp/cache_v1"
 OVERWRITE = False
 
 
@@ -189,7 +189,7 @@ def main():
         device=DEVICE,
         use_fid_time=True,
         mode='load',  # load or realtime
-        cache_path='/home/manu/tmp/features_cache.json'
+        cache_path='/home/manu/tmp/features_cache_v1.json'
     )
 
     f_res = open(OUTPUT_TXT, "w", encoding="utf-8")
