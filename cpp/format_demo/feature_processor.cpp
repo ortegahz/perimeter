@@ -4,11 +4,8 @@
 #include <cmath>
 #include <stdexcept>
 #include <numeric>
-#include <iostream> // For logging/debug
+#include <iostream>
 
-/* ----------------- 工具函数 (与之前一致) ----------------- */
-// ... (sim_vec, avg_feats, blend, vec_dist, mean_stddev, etc. - 保持不变)
-// copy all helper functions from your existing file here...
 /* ----------------- 工具函数 ----------------- */
 static float sim_vec(const std::vector<float> &a, const std::vector<float> &b) {
     if (a.empty() || b.empty() || a.size() != b.size()) return 0.f;
@@ -20,7 +17,7 @@ static float sim_vec(const std::vector<float> &a, const std::vector<float> &b) {
 static std::vector<float> avg_feats(const std::vector<std::vector<float>> &feats) {
     if (feats.empty()) return {};
     std::vector<float> mean(feats[0].size(), 0.f);
-    for (auto &f: feats) for (size_t i = 0; i < f.size(); ++i) mean[i] += f[i];
+    for (const auto &f: feats) for (size_t i = 0; i < f.size(); ++i) mean[i] += f[i];
     float num_feats = static_cast<float>(feats.size());
     for (float &v: mean) v /= num_feats;
     float n = 1e-9f;
@@ -87,9 +84,8 @@ main_representation_cpp(const std::deque<std::vector<float>> &feats_dq, float ou
     }
     return best_idx != -1 ? kept_feats[best_idx] : std::vector<float>{};
 }
-/* ================= TrackAgg (与之前一致) ================= */
-// ... (TrackAgg implementation - 保持不变)
-// copy all TrackAgg implementation from your existing file here...
+
+/* ================= TrackAgg ================= */
 bool TrackAgg::check_consistency(const std::deque<std::vector<float>> &feats, float thr) {
     if (feats.size() < 2) return true;
     std::vector<float> sims;
@@ -127,7 +123,6 @@ std::vector<float> TrackAgg::main_face_feat() const {
 }
 
 /* ================= GlobalID ================= */
-
 static void add_proto(std::vector<std::vector<float>> &lst, const std::vector<float> &feat) {
     if (feat.empty()) return;
     if (!lst.empty()) {
@@ -151,7 +146,6 @@ static void add_proto(std::vector<std::vector<float>> &lst, const std::vector<fl
     }
 }
 
-// === MODIFIED: Create directories when a new GID is made ===
 std::string GlobalID::new_gid() {
     char buf[32];
     sprintf(buf, "G%05d", gid_next++);
@@ -159,22 +153,15 @@ std::string GlobalID::new_gid() {
     bank_faces[gid] = {};
     bank_bodies[gid] = {};
     tid_hist[gid] = {};
-    last_update[gid] = 0; // Initialize last_update
-
-    // Create directories
-    try {
-        std::filesystem::create_directories(std::filesystem::path(SAVE_DIR) / gid);
-    } catch (const std::filesystem::filesystem_error &e) {
-        std::cerr << "Error creating directory for GID " << gid << ": " << e.what() << std::endl;
-    }
-
+    last_update[gid] = 0;
+    try { std::filesystem::create_directories(std::filesystem::path(SAVE_DIR) / gid); } catch (...) {}
     std::cout << "[GlobalID] new " << gid << std::endl;
     return gid;
 }
 
 int
 GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f) {
-    if (bank_faces.find(gid) == bank_faces.end()) return 0; // Gid does not exist, can't check
+    if (bank_faces.find(gid) == bank_faces.end()) return 0;
     if (!bank_faces[gid].empty() && !face_f.empty() &&
         sim_vec(face_f, avg_feats(bank_faces[gid])) < FACE_THR_STRICT)
         return -1;
@@ -184,9 +171,8 @@ GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &fac
     return 0;
 }
 
-// === MODIFIED: Added current_ts parameter for timeout management ===
-void GlobalID::bind(const std::string &gid, const std::vector<float> &face_f,
-                    const std::vector<float> &body_f, const std::string &tid, int current_ts) {
+void GlobalID::bind(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f,
+                    const std::string &tid, int current_ts) {
     add_proto(bank_faces[gid], face_f);
     add_proto(bank_bodies[gid], body_f);
     auto &v = tid_hist[gid];
@@ -212,111 +198,190 @@ std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, 
 }
 
 /* =============== FeatureProcessor =============== */
-FeatureProcessor::FeatureProcessor(const std::string &cache_path) {
-    std::ifstream jf(cache_path);
-    if (!jf.is_open()) throw std::runtime_error("open cache fail: " + cache_path);
-    jf >> features_cache;
-
-    // === NEW: Create base directories ===
+FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &device,
+                                   const std::string &feature_cache_path)
+        : mode_(mode), device_(device), feature_cache_path_(feature_cache_path) {
+    std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode." << std::endl;
+    if (mode_ == "realtime") {
+        std::cout << "Loading ReID and Face models for feature extraction..." << std::endl;
+        reid_model_ = std::make_unique<PersonReid>();
+        face_app_ = std::make_unique<FaceSearcher>();
+        std::cout << "Placeholder models loaded." << std::endl;
+        if (!feature_cache_path_.empty()) {
+            std::cout << "Extracted features will be cached to: " << feature_cache_path_ << std::endl;
+            std::filesystem::create_directories(std::filesystem::path(feature_cache_path_).parent_path());
+        }
+    } else if (mode_ == "load") {
+        if (feature_cache_path_.empty() || !std::filesystem::exists(feature_cache_path_)) {
+            throw std::runtime_error("In 'load' mode, a valid feature_cache_path is required: " + feature_cache_path_);
+        }
+        std::cout << "Loading pre-computed features from: " << feature_cache_path_ << std::endl;
+        std::ifstream jf(feature_cache_path_);
+        jf >> features_cache_;
+        std::cout << "Loaded features for " << features_cache_.size() << " frames." << std::endl;
+    } else {
+        throw std::invalid_argument("Invalid mode: " + mode_ + ". Choose 'realtime' or 'load'.");
+    }
     try {
         std::filesystem::create_directories(SAVE_DIR);
         std::filesystem::create_directories(ALARM_DIR);
-    } catch (const std::filesystem::filesystem_error &e) {
-        std::cerr << "Error creating base directories: " << e.what() << std::endl;
+    } catch (const std::exception &e) { std::cerr << "Error creating base directories: " << e.what() << std::endl; }
+}
+
+FeatureProcessor::~FeatureProcessor() {
+    if (mode_ == "realtime" && !feature_cache_path_.empty() && !features_to_save_.empty()) {
+        std::cout << "Saving " << features_to_save_.size() << " frames of features to '" << feature_cache_path_
+                  << "'..." << std::endl;
+        try {
+            std::ofstream of(feature_cache_path_);
+            of << features_to_save_.dump(4);
+            std::cout << "Features saved successfully." << std::endl;
+        } catch (const std::exception &e) {
+            std::cerr << "Failed to save features to '" << feature_cache_path_ << "': " << e.what() << std::endl;
+        }
     }
 }
 
-// === NEW: Alarm helper functions ===
+void FeatureProcessor::_extract_features_realtime(const Packet &pkt) {
+    const auto &[stream_id, fid, patches, dets] = pkt;
+    nlohmann::json extracted_features_for_this_frame;
+
+    // NOTE: This is a placeholder. For a runnable example, we will re-use the load logic.
+    // In a real application, you should UNCOMMENT and IMPLEMENT the model inference below
+    // and REMOVE the call to _load_features_from_cache.
+    /*
+    std::vector<cv::Mat> valid_patches;
+    std::vector<std::string> tids_for_reid;
+    for(size_t i = 0; i < dets.size(); ++i) {
+        // Add checks like is_long_patch if necessary
+        valid_patches.push_back(patches[i]);
+        tids_for_reid.push_back(stream_id + "_" + std::to_string(dets[i].id));
+    }
+    if(!valid_patches.empty() && reid_model_) {
+        auto reid_feats = reid_model_->infer(valid_patches);
+        for(size_t i = 0; i < reid_feats.size(); ++i) {
+            const auto& tid_str = tids_for_reid[i];
+            auto& agg = agg_pool[tid_str];
+            agg.add_body(reid_feats[i], dets[i].score);
+            last_seen[tid_str] = fid;
+            extracted_features_for_this_frame[tid_str]["body_feat"] = reid_feats[i];
+        }
+    }
+    if (face_app_) {
+        for (size_t i = 0; i < dets.size(); ++i) {
+            auto faces = face_app_->get(patches[i]);
+            if(faces.size() == 1) { // Add other quality checks
+                 const auto& tid_str = stream_id + "_" + std::to_string(dets[i].id);
+                 auto& agg = agg_pool[tid_str];
+                 agg.add_face(faces[0].embedding);
+                 last_seen[tid_str] = fid;
+                 extracted_features_for_this_frame[tid_str]["face_feat"] = faces[0].embedding;
+            }
+        }
+    }
+    if (!extracted_features_for_this_frame.empty()) {
+        features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
+    }
+    */
+
+    // Fallback for runnable example:
+    if (features_cache_.contains(std::to_string(fid))) {
+        _load_features_from_cache(pkt);
+    }
+}
+
+void FeatureProcessor::_load_features_from_cache(const Packet &pkt) {
+    const auto &[stream_id, fid, patches, dets] = pkt;
+    std::string fid_str = std::to_string(fid);
+    if (!features_cache_.contains(fid_str)) return;
+
+    for (auto &[tid_str_json, fd]: features_cache_.at(fid_str).items()) {
+        int tid_num = -1;
+        try { tid_num = std::stoi(tid_str_json.substr(tid_str_json.find('_') + 1)); } catch (...) { continue; }
+
+        float score = 0.f;
+        for (const auto &det: dets) {
+            if (det.id == tid_num) {
+                score = det.score;
+                break;
+            }
+        }
+
+        std::vector<float> bf, ff;
+        if (fd.contains("body_feat") && !fd["body_feat"].is_null()) bf = fd["body_feat"].get<std::vector<float>>();
+        if (fd.contains("face_feat") && !fd["face_feat"].is_null()) ff = fd["face_feat"].get<std::vector<float>>();
+
+        auto &agg = agg_pool[tid_str_json];
+        if (!bf.empty()) agg.add_body(bf, score);
+        if (!ff.empty()) agg.add_face(ff);
+        last_seen[tid_str_json] = fid;
+    }
+}
+
 std::vector<float> FeatureProcessor::_fuse_feat(const std::vector<float> &face_f, const std::vector<float> &body_f) {
     std::vector<float> face_part = face_f.empty() ? std::vector<float>(EMB_FACE_DIM, 0.f) : face_f;
     std::vector<float> body_part = body_f.empty() ? std::vector<float>(EMB_BODY_DIM, 0.f) : body_f;
-
     for (float &v: face_part) v *= FUSE_W_FACE;
     for (float &v: body_part) v *= FUSE_W_BODY;
-
     std::vector<float> combo;
     combo.insert(combo.end(), face_part.begin(), face_part.end());
     combo.insert(combo.end(), body_part.begin(), body_part.end());
-
     float n = 1e-9f;
     for (float v: combo) n += v * v;
     n = std::sqrt(n);
     if (n > 1e-9f) for (float &v: combo) v /= n;
-
     return combo;
 }
 
 std::vector<float> FeatureProcessor::_gid_fused_rep(const std::string &gid) {
     if (gid_mgr.bank_faces.find(gid) == gid_mgr.bank_faces.end()) return {};
-
     auto face_pool = gid_mgr.bank_faces.at(gid);
     auto body_pool = gid_mgr.bank_bodies.at(gid);
-
     auto face_f = face_pool.empty() ? std::vector<float>() : avg_feats(face_pool);
     auto body_f = body_pool.empty() ? std::vector<float>() : avg_feats(body_pool);
-
     return _fuse_feat(face_f, body_f);
 }
 
 void FeatureProcessor::trigger_alarm(const std::string &gid) {
     if (alarmed.count(gid)) return;
-
     auto cur_rep = _gid_fused_rep(gid);
-    if (cur_rep.empty()) {
-        std::cerr << "[ALARM] Failed to generate fused representation for GID " << gid << std::endl;
-        return;
-    }
-
+    if (cur_rep.empty()) return;
     for (const auto &[ogid, rep]: alarm_reprs) {
         if (sim_vec(cur_rep, rep) >= ALARM_DUP_THR) {
             std::cout << "[ALARM] Skip " << gid << " (similar to " << ogid << ")" << std::endl;
             return;
         }
     }
-
-    std::string src_dir = std::filesystem::path(SAVE_DIR) / gid;
-    time_t now = time(0);
+    time_t now_time = time(0);
     char buf[80];
-    strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", localtime(&now));
+    strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", localtime(&now_time));
     std::string dst_dir = std::filesystem::path(ALARM_DIR) / (gid + "_" + buf);
-
     try {
-        if (std::filesystem::exists(src_dir)) {
-            std::filesystem::copy(src_dir, dst_dir, std::filesystem::copy_options::recursive);
-            alarmed.insert(gid);
-            alarm_reprs[gid] = cur_rep;
-            std::cout << "[ALARM] GID " << gid << " alarmed and backed up to " << dst_dir << std::endl;
-        }
-    } catch (const std::filesystem::filesystem_error &e) {
-        std::cerr << "[ALARM] Failed to process alarm for " << gid << ": " << e.what() << std::endl;
+        std::filesystem::copy(std::filesystem::path(SAVE_DIR) / gid, dst_dir, std::filesystem::copy_options::recursive);
+        alarmed.insert(gid);
+        alarm_reprs[gid] = cur_rep;
+        std::cout << "[ALARM] GID " << gid << " alarmed and backed up to " << dst_dir << std::endl;
+    } catch (const std::exception &e) {
+        std::cerr << "[ALARM] Failed copy for " << gid << ": " << e.what() << std::endl;
     }
 }
 
-auto FeatureProcessor::process_packet(const std::string &stream_id, int fid)
--> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
-    std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> realtime_map;
-    if (!features_cache.contains(std::to_string(fid))) return realtime_map;
+auto FeatureProcessor::process_packet(
+        const Packet &pkt) -> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
+    const auto &[stream_id, fid, patches, dets] = pkt;
 
-    /* ---------- 1. 更新 agg_pool (不变) ---------- */
-    for (auto &[tid_str, fd]: features_cache[std::to_string(fid)].items()) {
-        std::vector<float> bf, ff;
-        if (fd.contains("body_feat") && fd["body_feat"].is_array())
-            for (auto &v: fd["body_feat"])
-                bf.push_back(v.get<float>());
-        if (fd.contains("face_feat") && fd["face_feat"].is_array())
-            for (auto &v: fd["face_feat"])
-                ff.push_back(v.get<float>());
-        auto &agg = agg_pool[tid_str];
-        if (!bf.empty()) agg.add_body(bf, 1.f);
-        if (!ff.empty()) agg.add_face(ff);
-        last_seen[tid_str] = fid;
+    // --- 1. 特征提取或加载 ---
+    if (mode_ == "realtime") {
+        _extract_features_realtime(pkt);
+    } else if (mode_ == "load") {
+        _load_features_from_cache(pkt);
     }
 
-    /* ---------- 2. 遍历每个 tid (=== 全面重写此部分逻辑 ===) ---------- */
-    for (auto &[tid_str, agg]: agg_pool) {
-        int tid_num = std::stoi(tid_str.substr(tid_str.find('_') + 1));
+    // --- 2. GID 绑定/新建/清理 (此后逻辑与您已实现的版本完全相同) ---
+    std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> realtime_map;
 
-        // 2-a 数量/质量检查
+    for (auto const &[tid_str, agg]: agg_pool) {
+        int tid_num = std::stoi(tid_str.substr(tid_str.find('_') + 1));
         if ((int) agg.body.size() < MIN_BODY4GID) {
             realtime_map[stream_id][tid_num] = {std::to_string(tid_num) + "_-1_b_" + std::to_string(agg.body.size()),
                                                 -1.f, 0};
@@ -339,31 +404,25 @@ auto FeatureProcessor::process_packet(const std::string &stream_id, int fid)
             continue;
         }
 
-        // 2-c probe
         auto [cand_gid, score] = gid_mgr.probe(face_f, body_f);
-
-        // --- 引入完整的 FSM ---
         auto &state = candidate_state[tid_str];
         auto &ng_state = new_gid_state[tid_str];
         int time_since_last_new = fid - ng_state.last_new_fid;
 
-        // 已有 GID 的锁定逻辑
         if (tid2gid.count(tid_str)) {
-            std::string bound_gid = tid2gid[tid_str];
+            std::string bound_gid = tid2gid.at(tid_str);
             int lock_elapsed = fid - state.last_bind_fid;
             if (!cand_gid.empty() && cand_gid != bound_gid && lock_elapsed < BIND_LOCK_FRAMES) {
-                int n = gid_mgr.tid_hist.count(bound_gid) ? (int) gid_mgr.tid_hist[bound_gid].size() : 0;
+                int n = gid_mgr.tid_hist.count(bound_gid) ? (int) gid_mgr.tid_hist.at(bound_gid).size() : 0;
                 realtime_map[stream_id][tid_num] = {"-3", score, n};
                 continue;
             }
         }
 
-        // 2-d-1: 直接匹配成功
         if (!cand_gid.empty() && score >= MATCH_THR) {
             ng_state.ambig_count = 0;
             state.count = (state.cand_gid == cand_gid) ? state.count + 1 : 1;
             state.cand_gid = cand_gid;
-
             if (state.count >= CANDIDATE_FRAMES && gid_mgr.can_update_proto(cand_gid, face_f, body_f) == 0) {
                 gid_mgr.bind(cand_gid, face_f, body_f, tid_str, fid);
                 tid2gid[tid_str] = cand_gid;
@@ -376,9 +435,7 @@ auto FeatureProcessor::process_packet(const std::string &stream_id, int fid)
                 std::string flag = (flag_code == -1) ? "-4_ud_f" : (flag_code == -2) ? "-4_ud_b" : "-4_c";
                 realtime_map[stream_id][tid_num] = {flag, -1.0f, 0};
             }
-        }
-            // 2-d-2: 库为空，新建
-        else if (gid_mgr.bank_faces.empty()) {
+        } else if (gid_mgr.bank_faces.empty()) {
             std::string new_gid = gid_mgr.new_gid();
             gid_mgr.bind(new_gid, face_f, body_f, tid_str, fid);
             tid2gid[tid_str] = new_gid;
@@ -387,9 +444,7 @@ auto FeatureProcessor::process_packet(const std::string &stream_id, int fid)
             int n = (int) gid_mgr.tid_hist[new_gid].size();
             if (n >= ALARM_CNT_TH) trigger_alarm(new_gid);
             realtime_map[stream_id][tid_num] = {new_gid, score, n};
-        }
-            // 2-d-3: 模糊匹配
-        else if (!cand_gid.empty() && score >= THR_NEW_GID) {
+        } else if (!cand_gid.empty() && score >= THR_NEW_GID) {
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 std::string new_gid = gid_mgr.new_gid();
@@ -400,12 +455,8 @@ auto FeatureProcessor::process_packet(const std::string &stream_id, int fid)
                 int n = (int) gid_mgr.tid_hist[new_gid].size();
                 if (n >= ALARM_CNT_TH) trigger_alarm(new_gid);
                 realtime_map[stream_id][tid_num] = {new_gid, score, n};
-            } else {
-                realtime_map[stream_id][tid_num] = {"-7", score, 0};
-            }
-        }
-            // 2-d-4: 完全不匹配
-        else {
+            } else { realtime_map[stream_id][tid_num] = {"-7", score, 0}; }
+        } else {
             ng_state.ambig_count = 0;
             if (time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 ng_state.count++;
@@ -418,16 +469,11 @@ auto FeatureProcessor::process_packet(const std::string &stream_id, int fid)
                     int n = (int) gid_mgr.tid_hist[new_gid].size();
                     if (n >= ALARM_CNT_TH) trigger_alarm(new_gid);
                     realtime_map[stream_id][tid_num] = {new_gid, score, n};
-                } else {
-                    realtime_map[stream_id][tid_num] = {"-5", -1.0f, 0};
-                }
-            } else {
-                realtime_map[stream_id][tid_num] = {"-6", -1.0f, 0};
-            }
+                } else { realtime_map[stream_id][tid_num] = {"-5", -1.0f, 0}; }
+            } else { realtime_map[stream_id][tid_num] = {"-6", -1.0f, 0}; }
         }
     }
 
-    /* ---------- 3. 清理 idle tid (不变) ---------- */
     for (auto it = last_seen.begin(); it != last_seen.end();) {
         if (fid - it->second >= MAX_TID_IDLE_FRAMES) {
             agg_pool.erase(it->first);
@@ -438,24 +484,14 @@ auto FeatureProcessor::process_packet(const std::string &stream_id, int fid)
         } else ++it;
     }
 
-    /* ---------- 4. === NEW: 清理 idle gid === ---------- */
     std::vector<std::string> gids_to_del;
     for (auto const &[gid, last_fid]: gid_mgr.last_update) {
-        if (fid - last_fid >= GID_MAX_IDLE_FRAMES) {
+        if (fid - last_fid >= GID_MAX_IDLE_FRAMES)
             gids_to_del.push_back(gid);
-        }
     }
-
     for (const auto &gid: gids_to_del) {
-        std::cout << "[Cleanup] GID " << gid << " timed out." << std::endl;
-
-        // Find and remove linked TIDs
         std::vector<std::string> tids_to_clean;
-        for (auto const &[tid_str, g]: tid2gid) {
-            if (g == gid) {
-                tids_to_clean.push_back(tid_str);
-            }
-        }
+        for (auto const &[tid_str, g]: tid2gid) { if (g == gid) tids_to_clean.push_back(tid_str); }
         for (const auto &tid_str: tids_to_clean) {
             agg_pool.erase(tid_str);
             tid2gid.erase(tid_str);
@@ -463,21 +499,13 @@ auto FeatureProcessor::process_packet(const std::string &stream_id, int fid)
             new_gid_state.erase(tid_str);
             last_seen.erase(tid_str);
         }
-
-        // Remove GID from all managers
         gid_mgr.bank_faces.erase(gid);
         gid_mgr.bank_bodies.erase(gid);
         gid_mgr.tid_hist.erase(gid);
         gid_mgr.last_update.erase(gid);
         alarmed.erase(gid);
         alarm_reprs.erase(gid);
-
-        // Remove from disk
-        try {
-            std::filesystem::remove_all(std::filesystem::path(SAVE_DIR) / gid);
-        } catch (const std::filesystem::filesystem_error &e) {
-            std::cerr << "Failed to delete GID directory " << gid << ": " << e.what() << std::endl;
-        }
+        try { std::filesystem::remove_all(std::filesystem::path(SAVE_DIR) / gid); } catch (...) {}
     }
 
     return realtime_map;
