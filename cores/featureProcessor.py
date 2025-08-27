@@ -110,7 +110,7 @@ class IntrusionDetector:
         disappeared_tids = set(self.track_history.keys()) - current_tids
         for tid in disappeared_tids:
             self.track_history.pop(tid, None)
-            self.alarmed_tids.pop(tid, None)
+            self.alarmed_tids.discard(tid)  # ###-FIXED-### Changed .pop(tid, None) to .discard(tid)
 
 
 def get_point_side(p: tuple[int, int], a: tuple[int, int], b: tuple[int, int]) -> int:
@@ -150,7 +150,7 @@ class LineCrossingDetector:
         disappeared_tids = set(self.track_side_history.keys()) - current_tids
         for tid in disappeared_tids:
             self.track_side_history.pop(tid, None)
-            self.alarmed_tids.pop(tid, None)
+            self.alarmed_tids.discard(tid)  # ###-FIXED-### Changed .pop(tid, None) to .discard(tid)
 
 
 # ===============================================================
@@ -338,7 +338,8 @@ class GlobalID:
     def bind(self, gid, face, body, agg=None, tid=None, current_ts=None):
         root = os.path.join(SAVE_DIR, gid)
         if agg is not None:
-            f_feat, f_patch = agg.main_face_feat_and_patch(); b_feat, b_patch = agg.main_body_feat_and_patch()
+            f_feat, f_patch = agg.main_face_feat_and_patch()
+            b_feat, b_patch = agg.main_body_feat_and_patch()
         else:
             f_feat, f_patch, b_feat, b_patch = face, None, body, None
         self._add(self.bank[gid]['faces'], f_feat, f_patch, os.path.join(root, "faces"))
