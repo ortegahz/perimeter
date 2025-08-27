@@ -39,11 +39,14 @@ constexpr float FUSE_W_BODY = 0.4f;
 constexpr int EMB_FACE_DIM = 512;
 constexpr int EMB_BODY_DIM = 2048;
 
+// MODIFIED HERE: 新增报警持续时间常量
+constexpr int BEHAVIOR_ALARM_DURATION_FRAMES = 256;
+
 const std::string SAVE_DIR = "/home/manu/tmp/perimeter_cpp";
 const std::string ALARM_DIR = "/home/manu/tmp/perimeter_alarm_cpp";
 /* ------------------------------------------------ */
 
-/* ---------- 新增：数据结构定义 ---------- */
+/* ---------- 数据结构定义 ---------- */
 struct Detection {
     cv::Rect2f tlwh;
     float score;
@@ -57,11 +60,9 @@ struct Packet {
     std::vector<Detection> dets;
 };
 
-/* ---------- 占位符：模拟模型封装 (用您的真实模型类替换) ---------- */
+/* ---------- 占位符：模拟模型封装  ---------- */
 struct PersonReid {
-    // 示例接口：输入一批图像，返回一批特征
     std::vector<std::vector<float>> infer(const std::vector<cv::Mat> &patches) {
-        // TODO: 在此实现您的 ReID 模型推理
         std::vector<std::vector<float>> dummy_feats;
         for (const auto &p: patches) {
             dummy_feats.push_back(std::vector<float>(EMB_BODY_DIM, 0.1f));
@@ -76,14 +77,126 @@ struct FaceSearcher {
         float det_score = 1.0f;
     };
 
-    // 示例接口：输入单张图，返回检测到的人脸
-    std::vector<FaceObject> get(const cv::Mat &patch) {
-        // TODO: 在此实现您的人脸检测和特征提取模型推理
-        return {};
-    }
+    std::vector<FaceObject> get(const cv::Mat &patch) { return {}; }
 };
 
-/* ---------- TrackAgg, GlobalID 等结构体 (保持不变) ---------- */
+/* ===== 新增：入侵和穿越检测模块 (辅助类) ===== */
+static cv::Point2f get_foot_point(const cv::Rect2f &tlwh) {
+    return cv::Point2f(tlwh.x + tlwh.width / 2.0f, tlwh.y + tlwh.height);
+}
+
+class IntrusionDetector {
+public:
+    explicit IntrusionDetector(const std::vector<cv::Point> &boundary_poly) {
+        if (boundary_poly.size() >= 3) {
+            boundary_ = boundary_poly;
+        }
+    }
+
+    std::set<int> check(const std::vector<Detection> &dets, const std::string &stream_id) {
+        if (boundary_.empty()) return {};
+
+        std::set<int> newly_alarmed_tids;
+        std::set<int> current_tids;
+        for (const auto &d: dets) {
+            current_tids.insert(d.id);
+            if (alarmed_tids_.count(d.id)) continue;
+
+            cv::Point2f current_point = get_foot_point(d.tlwh);
+            auto it = track_history_.find(d.id);
+
+            if (it != track_history_.end()) {
+                cv::Point2f last_point = it->second;
+                if (cv::pointPolygonTest(boundary_, last_point, false) < 0 &&
+                    cv::pointPolygonTest(boundary_, current_point, false) >= 0) {
+                    // std::cout << "[ALARM][" << stream_id << "] Intrusion Detected! TID:" << d.id << std::endl;
+                    alarmed_tids_.insert(d.id);
+                    newly_alarmed_tids.insert(d.id);
+                }
+            }
+            track_history_[d.id] = current_point;
+        }
+
+        std::vector<int> disappeared_tids;
+        for (const auto &pair: track_history_) {
+            if (current_tids.find(pair.first) == current_tids.end()) {
+                disappeared_tids.push_back(pair.first);
+            }
+        }
+        for (int tid: disappeared_tids) {
+            track_history_.erase(tid);
+            alarmed_tids_.erase(tid);
+        }
+        return newly_alarmed_tids;
+    }
+
+private:
+    std::vector<cv::Point> boundary_;
+    std::map<int, cv::Point2f> track_history_;
+    std::set<int> alarmed_tids_;
+};
+
+static int get_point_side(const cv::Point2f &p, const cv::Point2f &a, const cv::Point2f &b) {
+    float val = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    if (val > 0) return 1;
+    if (val < 0) return -1;
+    return 0;
+}
+
+class LineCrossingDetector {
+public:
+    LineCrossingDetector(const cv::Point &start, const cv::Point &end, const std::string &direction = "any")
+            : line_start_(start), line_end_(end), direction_(direction) {}
+
+    std::set<int> check(const std::vector<Detection> &dets, const std::string &stream_id) {
+        std::set<int> newly_alarmed_tids;
+        std::set<int> current_tids;
+
+        for (const auto &d: dets) {
+            current_tids.insert(d.id);
+            if (alarmed_tids_.count(d.id)) continue;
+
+            cv::Point2f current_point = get_foot_point(d.tlwh);
+            int current_side = get_point_side(current_point, line_start_, line_end_);
+
+            auto it = track_side_history_.find(d.id);
+            if (it != track_side_history_.end()) {
+                int last_side = it->second;
+                if (last_side != 0 && current_side != 0 && current_side != last_side) {
+                    bool crossed = (direction_ == "any") ||
+                                   (direction_ == "in" && last_side < 0 && current_side > 0) ||
+                                   (direction_ == "out" && last_side > 0 && current_side < 0);
+                    if (crossed) {
+                        // std::cout << "[ALARM][" << stream_id << "] Line Crossing Detected! TID:" << d.id << std::endl;
+                        alarmed_tids_.insert(d.id);
+                        newly_alarmed_tids.insert(d.id);
+                    }
+                }
+            }
+            track_side_history_[d.id] = current_side;
+        }
+
+        std::vector<int> disappeared_tids;
+        for (const auto &pair: track_side_history_) {
+            if (current_tids.find(pair.first) == current_tids.end()) {
+                disappeared_tids.push_back(pair.first);
+            }
+        }
+        for (int tid: disappeared_tids) {
+            track_side_history_.erase(tid);
+            alarmed_tids_.erase(tid);
+        }
+        return newly_alarmed_tids;
+    }
+
+private:
+    cv::Point2f line_start_, line_end_;
+    std::string direction_;
+    std::map<int, int> track_side_history_;
+    std::set<int> alarmed_tids_;
+};
+
+/* ---------- TrackAgg, GlobalID 等结构体  ---------- */
 struct TrackAgg {
     void add_body(const std::vector<float> &feat, float score);
 
@@ -131,9 +244,11 @@ struct NewGidState {
 /* ---------- FeatureProcessor 类定义 ---------- */
 class FeatureProcessor {
 public:
+    // MODIFIED HERE: 修改构造函数签名
     explicit FeatureProcessor(const std::string &mode,
                               const std::string &device = "cuda",
-                              const std::string &feature_cache_path = "");
+                              const std::string &feature_cache_path = "",
+                              const nlohmann::json &boundary_config = {});
 
     ~FeatureProcessor();
 
@@ -156,8 +271,8 @@ private:
     std::string device_;
     std::string feature_cache_path_;
 
-    nlohmann::json features_cache_;      // 用于 load 模式
-    nlohmann::json features_to_save_;    // 用于 realtime 模式
+    nlohmann::json features_cache_;
+    nlohmann::json features_to_save_;
 
     std::unique_ptr<PersonReid> reid_model_;
     std::unique_ptr<FaceSearcher> face_app_;
@@ -170,4 +285,9 @@ private:
     std::unordered_map<std::string, NewGidState> new_gid_state;
     std::set<std::string> alarmed;
     std::map<std::string, std::vector<float>> alarm_reprs;
+
+    // MODIFIED HERE: 新增行为分析相关成员
+    std::map<std::string, std::tuple<int, std::string>> behavior_alarm_state; // key: full_tid, val: (start_fid, alarm_type)
+    std::map<std::string, IntrusionDetector> intrusion_detectors;
+    std::map<std::string, LineCrossingDetector> line_crossing_detectors;
 };

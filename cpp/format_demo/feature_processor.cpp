@@ -155,7 +155,7 @@ std::string GlobalID::new_gid() {
     tid_hist[gid] = {};
     last_update[gid] = 0;
     try { std::filesystem::create_directories(std::filesystem::path(SAVE_DIR) / gid); } catch (...) {}
-    std::cout << "[GlobalID] new " << gid << std::endl;
+    // std::cout << "[GlobalID] new " << gid << std::endl;
     return gid;
 }
 
@@ -198,8 +198,10 @@ std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, 
 }
 
 /* =============== FeatureProcessor =============== */
+// MODIFIED HERE: 修改构造函数实现
 FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &device,
-                                   const std::string &feature_cache_path)
+                                   const std::string &feature_cache_path,
+                                   const nlohmann::json &boundary_config)
         : mode_(mode), device_(device), feature_cache_path_(feature_cache_path) {
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode." << std::endl;
     if (mode_ == "realtime") {
@@ -222,7 +224,39 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
     } else {
         throw std::invalid_argument("Invalid mode: " + mode_ + ". Choose 'realtime' or 'load'.");
     }
+
+    // MODIFIED HERE: 初始化检测器
+    if (!boundary_config.is_null()) {
+        for (auto it = boundary_config.begin(); it != boundary_config.end(); ++it) {
+            const std::string &stream_id = it.key();
+            const nlohmann::json &config = it.value();
+
+            if (config.contains("intrusion_poly")) {
+                std::vector<cv::Point> poly;
+                for (const auto &pt_json: config["intrusion_poly"]) {
+                    poly.emplace_back(pt_json[0].get<int>(), pt_json[1].get<int>());
+                }
+                intrusion_detectors.emplace(std::piecewise_construct,
+                                            std::forward_as_tuple(stream_id),
+                                            std::forward_as_tuple(poly));
+                std::cout << "Initialized IntrusionDetector for stream '" << stream_id << "'." << std::endl;
+            }
+            if (config.contains("crossing_line")) {
+                const auto &line_cfg = config["crossing_line"];
+                cv::Point start(line_cfg["start"][0].get<int>(), line_cfg["start"][1].get<int>());
+                cv::Point end(line_cfg["end"][0].get<int>(), line_cfg["end"][1].get<int>());
+                std::string direction = line_cfg.value("direction", "any");
+                line_crossing_detectors.emplace(std::piecewise_construct,
+                                                std::forward_as_tuple(stream_id),
+                                                std::forward_as_tuple(start, end, direction));
+                std::cout << "Initialized LineCrossingDetector for stream '" << stream_id << "'." << std::endl;
+            }
+        }
+    }
+
     try {
+        if (std::filesystem::exists(SAVE_DIR)) std::filesystem::remove_all(SAVE_DIR);
+        if (std::filesystem::exists(ALARM_DIR)) std::filesystem::remove_all(ALARM_DIR);
         std::filesystem::create_directories(SAVE_DIR);
         std::filesystem::create_directories(ALARM_DIR);
     } catch (const std::exception &e) { std::cerr << "Error creating base directories: " << e.what() << std::endl; }
@@ -348,7 +382,7 @@ void FeatureProcessor::trigger_alarm(const std::string &gid) {
     if (cur_rep.empty()) return;
     for (const auto &[ogid, rep]: alarm_reprs) {
         if (sim_vec(cur_rep, rep) >= ALARM_DUP_THR) {
-            std::cout << "[ALARM] Skip " << gid << " (similar to " << ogid << ")" << std::endl;
+            // std::cout << "[ALARM] Skip " << gid << " (similar to " << ogid << ")" << std::endl;
             return;
         }
     }
@@ -360,7 +394,7 @@ void FeatureProcessor::trigger_alarm(const std::string &gid) {
         std::filesystem::copy(std::filesystem::path(SAVE_DIR) / gid, dst_dir, std::filesystem::copy_options::recursive);
         alarmed.insert(gid);
         alarm_reprs[gid] = cur_rep;
-        std::cout << "[ALARM] GID " << gid << " alarmed and backed up to " << dst_dir << std::endl;
+        // std::cout << "[ALARM] GID " << gid << " alarmed and backed up to " << dst_dir << std::endl;
     } catch (const std::exception &e) {
         std::cerr << "[ALARM] Failed copy for " << gid << ": " << e.what() << std::endl;
     }
@@ -370,37 +404,56 @@ auto FeatureProcessor::process_packet(
         const Packet &pkt) -> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
     const auto &[stream_id, fid, patches, dets] = pkt;
 
-    // --- 1. 特征提取或加载 ---
+    // MODIFIED HERE: 1. 触发新的行为报警，并记录到状态中
+    if (intrusion_detectors.count(stream_id)) {
+        auto alarmed_tids = intrusion_detectors.at(stream_id).check(dets, stream_id);
+        for (int tid: alarmed_tids) {
+            std::string full_tid = stream_id + "_" + std::to_string(tid);
+            behavior_alarm_state[full_tid] = {fid, "_AA"}; // _AA for Area Alarm
+        }
+    }
+    if (line_crossing_detectors.count(stream_id)) {
+        auto alarmed_tids = line_crossing_detectors.at(stream_id).check(dets, stream_id);
+        for (int tid: alarmed_tids) {
+            std::string full_tid = stream_id + "_" + std::to_string(tid);
+            behavior_alarm_state[full_tid] = {fid, "_AL"}; // _AL for Line Alarm
+        }
+    }
+
+    // --- 2. 特征提取或加载 ---
     if (mode_ == "realtime") {
         _extract_features_realtime(pkt);
     } else if (mode_ == "load") {
         _load_features_from_cache(pkt);
     }
 
-    // --- 2. GID 绑定/新建/清理 (此后逻辑与您已实现的版本完全相同) ---
+    // --- 3. GID 绑定/新建 ---
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> realtime_map;
 
     for (auto const &[tid_str, agg]: agg_pool) {
-        int tid_num = std::stoi(tid_str.substr(tid_str.find('_') + 1));
+        size_t last_underscore = tid_str.find_last_of('_');
+        std::string s_id = tid_str.substr(0, last_underscore);
+        int tid_num = std::stoi(tid_str.substr(last_underscore + 1));
+
         if ((int) agg.body.size() < MIN_BODY4GID) {
-            realtime_map[stream_id][tid_num] = {std::to_string(tid_num) + "_-1_b_" + std::to_string(agg.body.size()),
-                                                -1.f, 0};
+            std::string gid_str = tid_str + "_-1_b_" + std::to_string(agg.body.size());
+            realtime_map[s_id][tid_num] = {gid_str, -1.f, 0};
             continue;
         }
         if ((int) agg.face.size() < MIN_FACE4GID) {
-            realtime_map[stream_id][tid_num] = {std::to_string(tid_num) + "_-1_f_" + std::to_string(agg.face.size()),
-                                                -1.f, 0};
+            std::string gid_str = tid_str + "_-1_f_" + std::to_string(agg.face.size());
+            realtime_map[s_id][tid_num] = {gid_str, -1.f, 0};
             continue;
         }
 
         auto face_f = agg.main_face_feat();
         auto body_f = agg.main_body_feat();
         if (face_f.empty()) {
-            realtime_map[stream_id][tid_num] = {"-2_f", -1.f, 0};
+            realtime_map[s_id][tid_num] = {tid_str + "_-2_f", -1.f, 0};
             continue;
         }
         if (body_f.empty()) {
-            realtime_map[stream_id][tid_num] = {"-2_b", -1.f, 0};
+            realtime_map[s_id][tid_num] = {tid_str + "_-2_b", -1.f, 0};
             continue;
         }
 
@@ -414,7 +467,7 @@ auto FeatureProcessor::process_packet(
             int lock_elapsed = fid - state.last_bind_fid;
             if (!cand_gid.empty() && cand_gid != bound_gid && lock_elapsed < BIND_LOCK_FRAMES) {
                 int n = gid_mgr.tid_hist.count(bound_gid) ? (int) gid_mgr.tid_hist.at(bound_gid).size() : 0;
-                realtime_map[stream_id][tid_num] = {"-3", score, n};
+                realtime_map[s_id][tid_num] = {tid_str + "_-3", score, n};
                 continue;
             }
         }
@@ -423,17 +476,17 @@ auto FeatureProcessor::process_packet(
             ng_state.ambig_count = 0;
             state.count = (state.cand_gid == cand_gid) ? state.count + 1 : 1;
             state.cand_gid = cand_gid;
-            if (state.count >= CANDIDATE_FRAMES && gid_mgr.can_update_proto(cand_gid, face_f, body_f) == 0) {
+            int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f);
+            if (state.count >= CANDIDATE_FRAMES && flag_code == 0) {
                 gid_mgr.bind(cand_gid, face_f, body_f, tid_str, fid);
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = (int) gid_mgr.tid_hist[cand_gid].size();
                 if (n >= ALARM_CNT_TH) trigger_alarm(cand_gid);
-                realtime_map[stream_id][tid_num] = {cand_gid, score, n};
+                realtime_map[s_id][tid_num] = {tid_str + "_" + cand_gid, score, n};
             } else {
-                int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f);
-                std::string flag = (flag_code == -1) ? "-4_ud_f" : (flag_code == -2) ? "-4_ud_b" : "-4_c";
-                realtime_map[stream_id][tid_num] = {flag, -1.0f, 0};
+                std::string flag = (flag_code == -1) ? "_-4_ud_f" : (flag_code == -2) ? "_-4_ud_b" : "_-4_c";
+                realtime_map[s_id][tid_num] = {tid_str + flag, -1.0f, 0};
             }
         } else if (gid_mgr.bank_faces.empty()) {
             std::string new_gid = gid_mgr.new_gid();
@@ -443,7 +496,7 @@ auto FeatureProcessor::process_packet(
             ng_state.last_new_fid = fid;
             int n = (int) gid_mgr.tid_hist[new_gid].size();
             if (n >= ALARM_CNT_TH) trigger_alarm(new_gid);
-            realtime_map[stream_id][tid_num] = {new_gid, score, n};
+            realtime_map[s_id][tid_num] = {tid_str + "_" + new_gid, score, n};
         } else if (!cand_gid.empty() && score >= THR_NEW_GID) {
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
@@ -454,8 +507,8 @@ auto FeatureProcessor::process_packet(
                 ng_state = {0, fid, 0};
                 int n = (int) gid_mgr.tid_hist[new_gid].size();
                 if (n >= ALARM_CNT_TH) trigger_alarm(new_gid);
-                realtime_map[stream_id][tid_num] = {new_gid, score, n};
-            } else { realtime_map[stream_id][tid_num] = {"-7", score, 0}; }
+                realtime_map[s_id][tid_num] = {tid_str + "_" + new_gid, score, n};
+            } else { realtime_map[s_id][tid_num] = {tid_str + "_-7", score, 0}; }
         } else {
             ng_state.ambig_count = 0;
             if (time_since_last_new >= NEW_GID_TIME_WINDOW) {
@@ -468,44 +521,72 @@ auto FeatureProcessor::process_packet(
                     ng_state = {0, fid, 0};
                     int n = (int) gid_mgr.tid_hist[new_gid].size();
                     if (n >= ALARM_CNT_TH) trigger_alarm(new_gid);
-                    realtime_map[stream_id][tid_num] = {new_gid, score, n};
-                } else { realtime_map[stream_id][tid_num] = {"-5", -1.0f, 0}; }
-            } else { realtime_map[stream_id][tid_num] = {"-6", -1.0f, 0}; }
+                    realtime_map[s_id][tid_num] = {tid_str + "_" + new_gid, score, n};
+                } else { realtime_map[s_id][tid_num] = {tid_str + "_-5", -1.0f, 0}; }
+            } else { realtime_map[s_id][tid_num] = {tid_str + "_-6", -1.0f, 0}; }
         }
     }
 
+    // MODIFIED HERE: 4. 应用并清理持续的行为报警状态
+    std::map<std::string, std::tuple<int, std::string>> active_alarms;
+    for (const auto &[full_tid, state_tuple]: behavior_alarm_state) {
+        const auto &[start_fid, alarm_type] = state_tuple;
+        if (fid - start_fid <= BEHAVIOR_ALARM_DURATION_FRAMES) {
+            active_alarms[full_tid] = state_tuple;
+
+            size_t last_underscore = full_tid.find_last_of('_');
+            std::string s_id = full_tid.substr(0, last_underscore);
+            int t_id_int = std::stoi(full_tid.substr(last_underscore + 1));
+
+            std::string bound_gid = tid2gid.count(full_tid) ? tid2gid.at(full_tid) : "";
+            int n_tid = 0;
+            if (!bound_gid.empty() && gid_mgr.tid_hist.count(bound_gid)) {
+                n_tid = gid_mgr.tid_hist.at(bound_gid).size();
+            }
+
+            std::string info_str = !bound_gid.empty() ? (full_tid + "_" + bound_gid + alarm_type) : (full_tid + "_-1" +
+                                                                                                     alarm_type);
+            realtime_map[s_id][t_id_int] = {info_str, 1.0f, n_tid};
+        }
+    }
+    behavior_alarm_state = active_alarms;
+
+    // --- 5. 清理 (Cleanup logic) ---
     for (auto it = last_seen.begin(); it != last_seen.end();) {
         if (fid - it->second >= MAX_TID_IDLE_FRAMES) {
             agg_pool.erase(it->first);
             tid2gid.erase(it->first);
             candidate_state.erase(it->first);
             new_gid_state.erase(it->first);
+            behavior_alarm_state.erase(it->first); // MODIFIED HERE
             it = last_seen.erase(it);
         } else ++it;
     }
 
     std::vector<std::string> gids_to_del;
-    for (auto const &[gid, last_fid]: gid_mgr.last_update) {
+    for (auto const &[gid_del, last_fid]: gid_mgr.last_update) {
         if (fid - last_fid >= GID_MAX_IDLE_FRAMES)
-            gids_to_del.push_back(gid);
+            gids_to_del.push_back(gid_del);
     }
-    for (const auto &gid: gids_to_del) {
+
+    for (const auto &gid_del: gids_to_del) {
         std::vector<std::string> tids_to_clean;
-        for (auto const &[tid_str, g]: tid2gid) { if (g == gid) tids_to_clean.push_back(tid_str); }
+        for (auto const &[tid_str, g]: tid2gid) { if (g == gid_del) tids_to_clean.push_back(tid_str); }
         for (const auto &tid_str: tids_to_clean) {
             agg_pool.erase(tid_str);
             tid2gid.erase(tid_str);
             candidate_state.erase(tid_str);
             new_gid_state.erase(tid_str);
             last_seen.erase(tid_str);
+            behavior_alarm_state.erase(tid_str); // MODIFIED HERE
         }
-        gid_mgr.bank_faces.erase(gid);
-        gid_mgr.bank_bodies.erase(gid);
-        gid_mgr.tid_hist.erase(gid);
-        gid_mgr.last_update.erase(gid);
-        alarmed.erase(gid);
-        alarm_reprs.erase(gid);
-        try { std::filesystem::remove_all(std::filesystem::path(SAVE_DIR) / gid); } catch (...) {}
+        gid_mgr.bank_faces.erase(gid_del);
+        gid_mgr.bank_bodies.erase(gid_del);
+        gid_mgr.tid_hist.erase(gid_del);
+        gid_mgr.last_update.erase(gid_del);
+        alarmed.erase(gid_del);
+        alarm_reprs.erase(gid_del);
+        try { std::filesystem::remove_all(std::filesystem::path(SAVE_DIR) / gid_del); } catch (...) {}
     }
 
     return realtime_map;
