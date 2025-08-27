@@ -13,7 +13,6 @@ import numpy as np
 import torch
 from loguru import logger
 
-# 注意：这里的导入路径需要根据你的项目结构调整
 from cores.faceSearcher import FaceSearcher
 from cores.personReid import PersonReid
 from utils_peri.general_funcs import make_dirs
@@ -110,7 +109,7 @@ class IntrusionDetector:
         disappeared_tids = set(self.track_history.keys()) - current_tids
         for tid in disappeared_tids:
             self.track_history.pop(tid, None)
-            self.alarmed_tids.discard(tid)  # ###-FIXED-### Changed .pop(tid, None) to .discard(tid)
+            self.alarmed_tids.discard(tid)
 
 
 def get_point_side(p: tuple[int, int], a: tuple[int, int], b: tuple[int, int]) -> int:
@@ -150,7 +149,7 @@ class LineCrossingDetector:
         disappeared_tids = set(self.track_side_history.keys()) - current_tids
         for tid in disappeared_tids:
             self.track_side_history.pop(tid, None)
-            self.alarmed_tids.discard(tid)  # ###-FIXED-### Changed .pop(tid, None) to .discard(tid)
+            self.alarmed_tids.discard(tid)
 
 
 # ===============================================================
@@ -176,7 +175,6 @@ class TrackAgg:
         self.face: deque = deque(maxlen=max_face)
         self.last_fid = -1
 
-    # ... (此类的所有方法保持不变) ...
     @staticmethod
     def _check_consistency(feats, thr=0.35):
         if len(feats) < 2: return True
@@ -275,7 +273,6 @@ class GlobalID:
         self.last_update: Dict[str, float] = {}
         self.gid_next = 1
 
-    # ... (此类的所有方法保持不变) ...
     @staticmethod
     def _sim(a, b):
         return float(a @ b)
@@ -366,20 +363,8 @@ class GlobalID:
 class FeatureProcessor:
     """
     检测 → 特征 → 绑定/新建 GID → （新增：行为分析）→ 报警 & 清理
-
-    新增的边界检测功能通过 `boundary_config` 在初始化时配置，例如：
-
-    boundary_config = {
-        "cam1": {
-            "intrusion_poly": [(100, 900), (800, 900), (800, 500), (100, 500)],
-            "crossing_line": {"start": (100, 100), "end": (900, 900), "direction": "any"}
-        },
-        "cam2": { ... }
-    }
-    processor = FeatureProcessor(..., boundary_config=boundary_config)
     """
 
-    # ----------------- 内部辅助 -----------------
     @staticmethod
     def _fuse_feat(face_f: np.ndarray | None, body_f: np.ndarray | None) -> np.ndarray:
         if face_f is None and body_f is None: raise RuntimeError("Both face and body feature are None")
@@ -394,13 +379,12 @@ class FeatureProcessor:
         body_f = self.gid_mgr._avg(pool['bodies']) if pool.get('bodies') else None
         return self._fuse_feat(face_f, body_f)
 
-    # ------------------------------------------------
     def __init__(self,
                  device="cuda",
                  use_fid_time: bool | None = None,
-                 mode: str = 'realtime',  # 'realtime' (默认) 或 'load'
-                 cache_path: str | None = None,  # 特征缓存文件路径
-                 boundary_config: Dict | None = None  # ========== 新增：边界配置 ==========
+                 mode: str = 'realtime',
+                 cache_path: str | None = None,
+                 boundary_config: Dict | None = None
                  ):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.use_fid_time = TIME_BY_FRAME if use_fid_time is None else use_fid_time
@@ -449,7 +433,6 @@ class FeatureProcessor:
         self.alarmed: set[str] = set()
         self.alarm_reprs: Dict[str, np.ndarray] = {}
 
-        # ========== 新增：初始化边界检测器 ==========
         self.intrusion_detectors: Dict[str, IntrusionDetector] = {}
         self.line_crossing_detectors: Dict[str, LineCrossingDetector] = {}
         if boundary_config:
@@ -463,7 +446,6 @@ class FeatureProcessor:
                         line_cfg["start"], line_cfg["end"], line_cfg.get("direction", "any")
                     )
                     logger.info(f"Initialized LineCrossingDetector for stream '{stream_id}'.")
-        # ===============================================
 
     def __del__(self):
         if self.mode == 'realtime' and self.cache_path and self.features_to_save:
@@ -485,7 +467,6 @@ class FeatureProcessor:
             except Exception as e:
                 logger.error(f"Failed to save features to '{self.cache_path}': {e}")
 
-    # ... (报警逻辑保持不变) ...
     def trigger_alarm(self, gid: str, agg: TrackAgg):
         try:
             cur_rep = self._gid_fused_rep(gid)
@@ -513,9 +494,6 @@ class FeatureProcessor:
         except Exception as e:
             logger.error(f"[ALARM] 处理 {gid} 失败: {e}")
 
-    # ------------------------------------------------------------------
-    # 主接口
-    # ------------------------------------------------------------------
     def process_packet(self, pkt):
         """
         pkt = (stream_id, fid, patches, dets)
@@ -523,24 +501,16 @@ class FeatureProcessor:
         """
         stream_id, fid, patches, dets = pkt
 
-        # ========== 新增：在此处执行行为检测 ==========
-        # 这里的 `dets` 包含原始尺寸的 `tlwh`，可以直接使用
-        intrusion_detector = self.intrusion_detectors.get(stream_id)
-        if intrusion_detector:
-            intrusion_detector.check(dets, stream_id)
+        if self.intrusion_detectors.get(stream_id):
+            self.intrusion_detectors[stream_id].check(dets, stream_id)
+        if self.line_crossing_detectors.get(stream_id):
+            self.line_crossing_detectors[stream_id].check(dets, stream_id)
 
-        line_detector = self.line_crossing_detectors.get(stream_id)
-        if line_detector:
-            line_detector.check(dets, stream_id)
-        # ===========================================
-
-        # ========== 统一时间基准 (保持不变) ==========
         if self.use_fid_time:
             now_stamp, max_tid_idle, gid_max_idle = fid, MAX_TID_IDLE_FRAMES, GID_MAX_IDLE_FRAMES
         else:
             now_stamp, max_tid_idle, gid_max_idle = time.time(), MAX_TID_IDLE_SEC, GID_MAX_IDLE_SEC
 
-        # -------- 特征提取或加载的分支 (保持不变) --------
         if self.mode == 'load':
             precomputed_features = self.features_cache.get(str(fid))
             if precomputed_features:
@@ -596,79 +566,82 @@ class FeatureProcessor:
             if self.cache_path and extracted_features_for_this_frame:
                 self.features_to_save.setdefault(str(fid), {}).update(extracted_features_for_this_frame)
 
-        # ---------------- 3. GID 绑定 / 新建 (保持不变) ----------------
         realtime_map: Dict[str, Dict[int, Tuple[str, float, int]]] = {}
         for tid, agg in list(self.agg_pool.items()):
+            ts, tn = tid.split("_")
             if len(agg.body) < MIN_BODY4GID or len(agg.face) < MIN_FACE4GID:
-                ts, tn = tid.split("_")
-                flag = f"{tn}_-1_b_{len(agg.body)}" if len(agg.body) < MIN_BODY4GID else f"{tn}_-1_f_{len(agg.face)}"
+                flag = f"{tid}_-1_b_{len(agg.body)}" if len(agg.body) < MIN_BODY4GID else f"{tid}_-1_f_{len(agg.face)}"
                 realtime_map.setdefault(ts, {})[int(tn)] = (flag, -1.0, 0)
                 continue
             face_feat, _ = agg.main_face_feat_and_patch()
             body_feat, _ = agg.main_body_feat_and_patch()
             if face_feat is None or body_feat is None:
-                ts, tn = tid.split("_")
-                realtime_map.setdefault(ts, {})[int(tn)] = ("-2_f" if face_feat is None else "-2_b", -1.0, 0)
+                realtime_map.setdefault(ts, {})[int(tn)] = (
+                    f"{tid}_-2_f" if face_feat is None else f"{tid}_-2_b", -1.0, 0)
                 continue
+
             cand_gid, cand_score = self.gid_mgr.probe(face_feat, body_feat)
+
             if tid in self.tid2gid:
                 bound_gid = self.tid2gid[tid]
                 lock_elapsed = fid - self.candidate_state.get(tid, {}).get("last_bind_fid", 0)
                 if cand_gid != bound_gid and lock_elapsed < BIND_LOCK_FRAMES:
                     n_tid = len(self.gid_mgr.tid_hist[bound_gid])
-                    ts, tn = tid.split("_")
-                    realtime_map.setdefault(ts, {})[int(tn)] = ("-3", cand_score, n_tid)
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-3", cand_score, n_tid)
                     continue
+
             state = self.candidate_state.setdefault(tid, dict(cand_gid=None, count=0, last_bind_fid=0))
             time_since_last_new = fid - self.new_gid_state.get(tid, {}).get("last_new_fid", -1)
             ng_state = self.new_gid_state.setdefault(tid,
                                                      dict(count=0, last_new_fid=-NEW_GID_TIME_WINDOW, ambig_count=0))
+
             if cand_gid and cand_score >= MATCH_THR:
                 ng_state["ambig_count"] = 0
-                state["count"] = state["count"] + 1 if state["cand_gid"] == cand_gid else 1;
+                state["count"] = state["count"] + 1 if state["cand_gid"] == cand_gid else 1
                 state["cand_gid"] = cand_gid
                 if state["count"] >= CANDIDATE_FRAMES and self.gid_mgr.can_update_proto(cand_gid, face_feat,
                                                                                         body_feat) == 0:
-                    self.gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid, current_ts=now_stamp);
+                    self.gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid, current_ts=now_stamp)
                     self.tid2gid[tid] = cand_gid
                     state["last_bind_fid"] = fid
                     n_tid = len(self.gid_mgr.tid_hist[cand_gid])
                     if n_tid >= ALARM_CNT_TH: self.trigger_alarm(cand_gid, agg)
-                    ts, tn = tid.split("_")
-                    realtime_map.setdefault(ts, {})[int(tn)] = (cand_gid, cand_score, n_tid)
+                    # MODIFIED HERE
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{cand_gid}", cand_score, n_tid)
                 else:
-                    flag = self.gid_mgr.can_update_proto(cand_gid, face_feat, body_feat);
-                    ts, tn = tid.split("_")
+                    flag = self.gid_mgr.can_update_proto(cand_gid, face_feat, body_feat)
                     realtime_map.setdefault(ts, {})[int(tn)] = (
-                        "-4_ud_f" if flag == -1 else "-4_ud_b" if flag == -2 else "-4_c", -1.0, 0)
+                        f"{tid}_-4_ud_f" if flag == -1 else f"{tid}_-4_ud_b" if flag == -2 else f"{tid}_-4_c", -1.0, 0)
+
             elif len(self.gid_mgr.bank) < 1:
                 ng_state["ambig_count"] = 0
                 new_gid = self.gid_mgr.new_gid()
-                self.gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_ts=now_stamp);
+                self.gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_ts=now_stamp)
                 self.tid2gid[tid] = new_gid
-                state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid);
+                state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid)
                 ng_state["last_new_fid"] = fid
                 n_tid = len(self.gid_mgr.tid_hist[new_gid])
                 if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
-                ts, tn = tid.split("_")
-                realtime_map.setdefault(ts, {})[int(tn)] = (new_gid, cand_score, n_tid)
+                # MODIFIED HERE
+                realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
+
             elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR:
                 ng_state["ambig_count"] += 1
-                ts, tn = tid.split("_")
                 if ng_state["ambig_count"] >= WAIT_FRAMES_AMBIGUOUS and time_since_last_new >= NEW_GID_TIME_WINDOW:
                     new_gid = self.gid_mgr.new_gid()
-                    self.gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_ts=now_stamp);
+                    self.gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_ts=now_stamp)
                     self.tid2gid[tid] = new_gid
-                    state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid);
+                    state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid)
                     ng_state.update(last_new_fid=fid, count=0, ambig_count=0)
                     n_tid = len(self.gid_mgr.tid_hist[new_gid])
                     if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
-                    realtime_map.setdefault(ts, {})[int(tn)] = (new_gid, cand_score, n_tid)
+                    # MODIFIED HERE
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
                 else:
-                    realtime_map.setdefault(ts, {})[int(tn)] = ("-7", cand_score, 0)
-            else:
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-7", cand_score, 0)
+
+            else:  # cand_score < THR_NEW_GID
                 ng_state["ambig_count"] = 0
-                ts, tn = tid.split("_")
                 if time_since_last_new >= NEW_GID_TIME_WINDOW:
                     ng_state["count"] += 1
                     if ng_state["count"] >= NEW_GID_MIN_FRAMES:
@@ -679,13 +652,14 @@ class FeatureProcessor:
                         ng_state.update(last_new_fid=fid, count=0)
                         n_tid = len(self.gid_mgr.tid_hist[new_gid])
                         if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
-                        realtime_map.setdefault(ts, {})[int(tn)] = (new_gid, cand_score, n_tid)
+                        # MODIFIED HERE
+                        realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
                     else:
-                        realtime_map.setdefault(ts, {})[int(tn)] = ("-5", -1.0, 0)
+                        realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-5", -1.0, 0)
                 else:
-                    realtime_map.setdefault(ts, {})[int(tn)] = ("-6", -1.0, 0)
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-6", -1.0, 0)
 
-        # ---------------- 4. 清理超时 tid (保持不变) ----------------
+        # Cleanup logic (unchanged)
         for tid in list(self.last_seen.keys()):
             if now_stamp - self.last_seen[tid] >= max_tid_idle:
                 self.last_seen.pop(tid, None)
@@ -694,7 +668,6 @@ class FeatureProcessor:
                 self.new_gid_state.pop(tid, None)
                 self.agg_pool.pop(tid, None)
 
-        # ---------------- 5. 清理超时 gid (保持不变) ----------------
         to_delete = [gid for gid, t in self.gid_mgr.last_update.items() if now_stamp - t >= gid_max_idle]
         for gid in to_delete:
             tids_linked = [tid for tid, g in self.tid2gid.items() if g == gid]

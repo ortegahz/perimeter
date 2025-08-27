@@ -85,18 +85,31 @@ class ByteTrackPipeline:
             verbose=False,
         )[0]
 
+        # --- MODIFIED START: 过滤非 person 类的检测结果 ---
+        detections = None  # 默认为空
         if yolo_out.boxes is not None and yolo_out.boxes.shape[0] > 0:
             xyxy = yolo_out.boxes.xyxy.cpu()  # (N,4)
             conf = yolo_out.boxes.conf.cpu()  # (N,)
             cls = yolo_out.boxes.cls.cpu()  # (N,)
 
-            # 将类别ID编码到分数中：分数的整数部分是类别ID，小数部分是置信度
-            fused_scores = (conf + cls).unsqueeze(1)  # (N, 1)
+            # 1. 创建一个布尔掩码，只选择类别ID为0 (person) 的检测框
+            person_mask = (cls == 0)
 
-            # 使用包含类别信息的分数来构建detections
-            detections = torch.cat([xyxy, fused_scores], dim=1)
-        else:
-            detections = None
+            # 2. 应用掩码，过滤掉所有非 person 的检测结果
+            filtered_xyxy = xyxy[person_mask]
+
+            # 3. 只有在过滤后还有 person 的情况下，才继续处理
+            if filtered_xyxy.shape[0] > 0:
+                filtered_conf = conf[person_mask]
+                filtered_cls = cls[person_mask]  # 虽然都是0，但为了逻辑一致性一起过滤
+
+                # 将类别ID编码到分数中：分数的整数部分是类别ID，小数部分是置信度
+                # 对于 person 来说，filtered_cls 都是0，所以 fused_scores 实质上就是 filtered_conf
+                fused_scores = (filtered_conf + filtered_cls).unsqueeze(1)  # (N_person, 1)
+
+                # 使用过滤后的 person 检测结果来构建 detections 张量
+                detections = torch.cat([filtered_xyxy, fused_scores], dim=1)
+        # --- MODIFIED END ---
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -110,7 +123,7 @@ class ByteTrackPipeline:
             online_targets = self.tracker.update(
                 detections,
                 img_info=(H, W),  # (img_h, img_w)
-                img_size=(H, W),  # ⬅️ 关键改动：保持与原始分辨率一致
+                img_size=(H, W),  # 关键改动：保持与原始分辨率一致
             )
         track_time = time.perf_counter() - t_track0 if debug else 0.0
 
@@ -118,13 +131,14 @@ class ByteTrackPipeline:
         results: List[Dict] = []
         for t in online_targets:
             tlwh = t.tlwh
+            # 这里的几何约束检查依然有效
             vertical = tlwh[2] / tlwh[3] > self.aspect_ratio_thresh
             if tlwh[2] * tlwh[3] <= self.min_box_area or vertical:
                 continue
 
             # 从 track score 中解码出类别ID和真实置信度
             fused_score = t.score
-            class_id = int(fused_score)
+            class_id = int(fused_score)  # 这里得到的 class_id 将永远是 0
             score = fused_score - class_id
 
             results.append(

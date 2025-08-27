@@ -53,7 +53,7 @@ def dec_det_proc(stream_id, src, q_det2feat, q_det2disp, stop_evt, skip):
             logger.error(f"[{stream_id}] open failed: {src}")
             return
         bt = ByteTrackPipeline(device="cuda")
-        face_app = FaceSearcher(provider="CUDAExecutionProvider").app  # 仅初始化一次
+        # face_app = FaceSearcher(provider="CUDAExecutionProvider").app  # 仅初始化一次
         logger.info(f"[{stream_id}] ready")
         fid = 0
         while not stop_evt.is_set():
@@ -68,17 +68,17 @@ def dec_det_proc(stream_id, src, q_det2feat, q_det2disp, stop_evt, skip):
                 frm[max(int(y), 0):min(int(y + h), H), max(int(x), 0):min(int(x + w), W)].copy()
                 for x, y, w, h in (d["tlwh"] for d in dets)
             ]
-            faces_bboxes, faces_kpss = face_app.det_model.detect(small, max_num=0, metric='default')
+            # faces_bboxes, faces_kpss = face_app.det_model.detect(small, max_num=0, metric='default')
             face_info = []
-            if faces_bboxes is not None and faces_bboxes.shape[0] > 0:
-                for i in range(faces_bboxes.shape[0]):
-                    bi = faces_bboxes[i, :4].astype(int)
-                    x1, y1, x2, y2 = [int(b / SHOW_SCALE) for b in bi]
-                    score = float(faces_bboxes[i, 4])
-                    kps = faces_kpss[i].astype(int).tolist() if faces_kpss is not None else None
-                    if kps is not None:
-                        kps = [[int(kp[0] / SHOW_SCALE), int(kp[1] / SHOW_SCALE)] for kp in kps]
-                    face_info.append({"bbox": [x1, y1, x2, y2], "score": score, "kps": kps})
+            # if faces_bboxes is not None and faces_bboxes.shape[0] > 0:
+            #     for i in range(faces_bboxes.shape[0]):
+            #         bi = faces_bboxes[i, :4].astype(int)
+            #         x1, y1, x2, y2 = [int(b / SHOW_SCALE) for b in bi]
+            #         score = float(faces_bboxes[i, 4])
+            #         kps = faces_kpss[i].astype(int).tolist() if faces_kpss is not None else None
+            #         if kps is not None:
+            #             kps = [[int(kp[0] / SHOW_SCALE), int(kp[1] / SHOW_SCALE)] for kp in kps]
+            #         face_info.append({"bbox": [x1, y1, x2, y2], "score": score, "kps": kps})
             q_det2disp.put((stream_id, fid, small, dets, face_info))
             q_det2feat.put((stream_id, fid, patches, dets))
     finally:
@@ -248,7 +248,7 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
             tid, class_name = d['id'], d.get('class_name', 'UNK')
             if d.get('class_id') == 0:
-                gid, score, n_tid = tid2info.get(tid, ("-1", -1.0, 0))
+                gid, score, n_tid = tid2info.get(tid, (f"{tid}_-1", -1.0, 0))
                 color = (0, 255, 0)
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255) if n_tid >= 2 else color, 2)
                 cv2.putText(frame, f"{gid} [{class_name}]", (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color,
@@ -291,7 +291,6 @@ def main():
     pa.add_argument("--video1", default="rtsp://admin:1QAZ2wsx@172.20.20.64")
     pa.add_argument("--video2", default="rtsp://admin:1qaz2wsx@172.20.20.150")
     pa.add_argument("--skip", type=int, default=2)
-    # ###-NEW-### Add argument to switch between local window and GStreamer
     pa.add_argument("--display", choices=["local", "gst"], default="gst", help="Display method")
     args = pa.parse_args()
 
@@ -312,7 +311,6 @@ def main():
         mp.Process(target=dec_det_proc, args=("cam2", args.video2, q_det2feat, q_det2disp2, stop_evt, args.skip)),
         mp.Process(target=display_func, args=("cam2", q_det2disp2, q_map2disp, stop_evt),
                    kwargs={"host": "127.0.0.1", "port": 5001, "fps_exp": 25}),
-        # ###-MODIFIED-### Pass the BOUNDARY_CONFIG dictionary to the feature_proc process
         mp.Process(target=feature_proc, args=(q_det2feat, q_map2disp, stop_evt, BOUNDARY_CONFIG))
     ]
     [p.start() for p in procs]
