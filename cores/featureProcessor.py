@@ -510,6 +510,9 @@ class FeatureProcessor:
             # 1. 行人 ReID
             tensors, metas, keep_patches = [], [], []
             for det, patch in zip(dets, patches):
+                # 只对行人(class_id=0)进行ReID特征提取
+                if det.get('class_id') != 0:
+                    continue
                 if not is_long_patch(patch):
                     continue
                 tensors.append(prep_patch(patch))
@@ -530,6 +533,9 @@ class FeatureProcessor:
 
             # 2. 人脸特征
             for det, patch in zip(dets, patches):
+                # 只对行人(class_id=0)进行人脸特征提取
+                if det.get('class_id') != 0:
+                    continue
                 try:
                     faces = self.face_app.get(patch)
                     if len(faces) != 1:
@@ -551,7 +557,7 @@ class FeatureProcessor:
                     continue
 
             if extracted_features_for_this_frame:
-                self.features_to_save[str(fid)] = extracted_features_for_this_frame
+                self.features_to_save.get(str(fid), {}).update(extracted_features_for_this_frame)
 
         # ---------------- 3. GID 绑定 / 新建 (保持不变) ----------------
         realtime_map: Dict[str, Dict[int, Tuple[str, float, int]]] = {}

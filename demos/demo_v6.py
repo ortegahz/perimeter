@@ -17,13 +17,18 @@ import queue
 import signal
 import subprocess
 
+# --- 假装导入了这些模块，以使得代码能独立运行 ---
+
+SENTINEL = None
+SHOW_SCALE = 0.5
+# ---------------------------------------------
+
 # ------------ 内部模块 ------------
 from cores.byteTrackPipeline import ByteTrackPipeline
 from cores.featureProcessor import *
 
 
 # ---------------------------------
-
 
 class LatestQueue(mpq.Queue):
     def __init__(self, maxsize=1, *, ctx=None):
@@ -156,20 +161,26 @@ def display_proc_win(my_stream_id,
         # ③ 绘制检测框 ------------------------------------------------------
         for d in dets:
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
-            gid, score, n_tid = tid2info.get(d["id"], ("-1", -1.0, 0))
-            color = (0, 255, 0)
-            cv2.rectangle(frame,
-                          (x, y), (x + w, y + h),
-                          (0, 0, 255) if n_tid >= 2 else color,
-                          2)
-            cv2.putText(frame, f"{gid}",
-                        (x, max(y + 15, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 2, color, 1)
-            cv2.putText(frame, f"n={n_tid} s={score:.2f}",
-                        (x, max(y + 30, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            tid = d['id']
+            class_name = d.get('class_name', 'UNK')
 
-        # ④ 绘制人脸框 ------------------------------------------------------
+            # 如果是行人，显示GID信息
+            if d.get('class_id') == 0:
+                gid, score, n_tid = tid2info.get(tid, ("-1", -1.0, 0))
+                color = (0, 255, 0)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255) if n_tid >= 2 else color, 2)
+                cv2.putText(frame, f"{gid} [{class_name}]", (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color,
+                            2)
+                cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 40)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                            color, 1)
+            # 如果是其他物体，显示Track ID和类别
+            else:
+                color = (255, 182, 0)  # 青色
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(frame, f"ID:{tid} [{class_name}]", (x, max(y - 5, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            color, 1)
+
+        # ④ 绘制人脸框 (逻辑不变) --------------------------------------------
         for face in all_faces:
             x1, y1, x2, y2 = [int(v * SHOW_SCALE) for v in face["bbox"]]
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
@@ -216,14 +227,25 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
 
         for d in dets:
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
-            gid, score, n_tid = tid2info.get(d["id"], ("-1", -1.0, 0))
             tid = d['id']
-            color = (0, 255, 0)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255) if n_tid >= 2 else color, 2)
-            cv2.putText(frame, f"{gid}", (x, max(y + 15, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 2, color, 1)
-            cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            class_name = d.get('class_name', 'UNK')
+
+            # 如果是行人(class_id=0)，显示 GID 信息
+            if d.get('class_id') == 0:
+                gid, score, n_tid = tid2info.get(tid, ("-1", -1.0, 0))
+                color = (0, 255, 0)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255) if n_tid >= 2 else color, 2)
+                cv2.putText(frame, f"{gid} [{class_name}]", (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color,
+                            2)
+                cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 40)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                            color, 1)
+            # 否则，显示 Track ID 和类别
+            else:
+                color = (255, 182, 0)  # 青色
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(frame, f"ID:{tid} [{class_name}]", (x, max(y - 5, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            color, 1)
+
         for face in all_faces:
             x1, y1, x2, y2 = [int(v * SHOW_SCALE) for v in face["bbox"]]
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
@@ -286,7 +308,7 @@ def main():
             time.sleep(.5)
     finally:
         stop_evt.set()
-        for q in (q_det2feat, q_map2disp):
+        for q in (q_det2feat, q_map2disp, q_det2disp1, q_det2disp2):
             try:
                 q.put_nowait(SENTINEL)
             except:

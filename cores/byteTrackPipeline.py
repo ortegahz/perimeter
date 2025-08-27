@@ -1,4 +1,5 @@
-# tracker_wrapper_yolo11.py
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Ultralytics-YOLO(11) + BYTETracker
 """
@@ -86,15 +87,14 @@ class ByteTrackPipeline:
 
         if yolo_out.boxes is not None and yolo_out.boxes.shape[0] > 0:
             xyxy = yolo_out.boxes.xyxy.cpu()  # (N,4)
-            conf = yolo_out.boxes.conf.cpu().unsqueeze(1)  # (N,1)
-            cls = yolo_out.boxes.cls.cpu().unsqueeze(1)  # (N,1)
+            conf = yolo_out.boxes.conf.cpu()  # (N,)
+            cls = yolo_out.boxes.cls.cpu()  # (N,)
 
-            # 只保留 person (id = 0)
-            keep = (cls.squeeze(1) == 0)
-            xyxy, conf = xyxy[keep], conf[keep]
+            # 将类别ID编码到分数中：分数的整数部分是类别ID，小数部分是置信度
+            fused_scores = (conf + cls).unsqueeze(1)  # (N, 1)
 
-            # 只拼接 xyxy 和 conf  →  (N,5)
-            detections = torch.cat([xyxy, conf], dim=1)
+            # 使用包含类别信息的分数来构建detections
+            detections = torch.cat([xyxy, fused_scores], dim=1)
         else:
             detections = None
 
@@ -121,12 +121,20 @@ class ByteTrackPipeline:
             vertical = tlwh[2] / tlwh[3] > self.aspect_ratio_thresh
             if tlwh[2] * tlwh[3] <= self.min_box_area or vertical:
                 continue
+
+            # 从 track score 中解码出类别ID和真实置信度
+            fused_score = t.score
+            class_id = int(fused_score)
+            score = fused_score - class_id
+
             results.append(
                 {
                     "id": int(t.track_id),
                     "tlwh": (float(tlwh[0]), float(tlwh[1]),
                              float(tlwh[2]), float(tlwh[3])),
-                    "score": float(t.score),
+                    "score": float(score),
+                    "class_id": class_id,
+                    "class_name": self.detector.names[class_id],
                 }
             )
 

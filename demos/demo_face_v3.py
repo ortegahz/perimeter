@@ -30,7 +30,7 @@ def remove_outliers(embeddings: np.ndarray, thresh: float = 2.0):
 
 def main():
     pa = argparse.ArgumentParser()
-    pa.add_argument("--folder", default="/home/manu/tmp/perimeter/G00010/faces/")
+    pa.add_argument("--folder", default="/home/manu/tmp/perimeter_v1/G00010/faces/")
     pa.add_argument("--provider", default="CUDAExecutionProvider",
                     choices=["CUDAExecutionProvider", "CPUExecutionProvider"])
     pa.add_argument("--det-size", type=int, default=640, help="SCRFD 输入尺寸")
