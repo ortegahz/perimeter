@@ -65,6 +65,7 @@ ALARM_CNT_TH = 8
 ALARM_DUP_THR = 0.4
 FUSE_W_FACE, FUSE_W_BODY = 0.6, 0.4
 EMB_FACE_DIM, EMB_BODY_DIM = 512, 2048
+BEHAVIOR_ALARM_DURATION_FRAMES = 256
 
 
 # ===============================================================
@@ -93,8 +94,9 @@ class IntrusionDetector:
         self.track_history = {}
         self.alarmed_tids = set()
 
-    def check(self, dets: list[dict], stream_id: str) -> None:
-        if self.boundary is None: return
+    def check(self, dets: list[dict], stream_id: str) -> set[int]:
+        if self.boundary is None: return set()
+        newly_alarmed_tids = set()
         current_tids = {d['id'] for d in dets}
         for d in dets:
             tid = d['id']
@@ -106,10 +108,13 @@ class IntrusionDetector:
             if not is_inside_polygon(last_point, self.boundary) and is_inside_polygon(current_point, self.boundary):
                 logger.warning(f"[ALARM][{stream_id}] Intrusion Detected! TID:{tid} entered the area.")
                 self.alarmed_tids.add(tid)
+                newly_alarmed_tids.add(tid)
+
         disappeared_tids = set(self.track_history.keys()) - current_tids
         for tid in disappeared_tids:
             self.track_history.pop(tid, None)
             self.alarmed_tids.discard(tid)
+        return newly_alarmed_tids
 
 
 def get_point_side(p: tuple[int, int], a: tuple[int, int], b: tuple[int, int]) -> int:
@@ -130,7 +135,8 @@ class LineCrossingDetector:
         self.track_side_history = {}
         self.alarmed_tids = set()
 
-    def check(self, dets: list[dict], stream_id: str) -> None:
+    def check(self, dets: list[dict], stream_id: str) -> set[int]:
+        newly_alarmed_tids = set()
         current_tids = {d['id'] for d in dets}
         for d in dets:
             tid = d['id']
@@ -146,10 +152,13 @@ class LineCrossingDetector:
                 if crossed:
                     logger.warning(f"[ALARM][{stream_id}] Line Crossing Detected! TID:{tid} crossed the line.")
                     self.alarmed_tids.add(tid)
+                    newly_alarmed_tids.add(tid)
+
         disappeared_tids = set(self.track_side_history.keys()) - current_tids
         for tid in disappeared_tids:
             self.track_side_history.pop(tid, None)
             self.alarmed_tids.discard(tid)
+        return newly_alarmed_tids
 
 
 # ===============================================================
@@ -433,6 +442,9 @@ class FeatureProcessor:
         self.alarmed: set[str] = set()
         self.alarm_reprs: Dict[str, np.ndarray] = {}
 
+        # MODIFIED HERE: 增加行为报警状态
+        self.behavior_alarm_state: Dict[str, Tuple[int, str]] = {}  # key: full_tid, val: (start_fid, alarm_type)
+
         self.intrusion_detectors: Dict[str, IntrusionDetector] = {}
         self.line_crossing_detectors: Dict[str, LineCrossingDetector] = {}
         if boundary_config:
@@ -501,10 +513,16 @@ class FeatureProcessor:
         """
         stream_id, fid, patches, dets = pkt
 
+        # MODIFIED HERE: 捕获新触发的行为报警，并记录到状态中
         if self.intrusion_detectors.get(stream_id):
-            self.intrusion_detectors[stream_id].check(dets, stream_id)
+            for tid_int in self.intrusion_detectors[stream_id].check(dets, stream_id):
+                full_tid = f"{stream_id}_{tid_int}"
+                self.behavior_alarm_state[full_tid] = (fid, '_AA')  # _AA for Area Alarm
+
         if self.line_crossing_detectors.get(stream_id):
-            self.line_crossing_detectors[stream_id].check(dets, stream_id)
+            for tid_int in self.line_crossing_detectors[stream_id].check(dets, stream_id):
+                full_tid = f"{stream_id}_{tid_int}"
+                self.behavior_alarm_state[full_tid] = (fid, '_AL')  # _AL for Line Alarm
 
         if self.use_fid_time:
             now_stamp, max_tid_idle, gid_max_idle = fid, MAX_TID_IDLE_FRAMES, GID_MAX_IDLE_FRAMES
@@ -606,7 +624,6 @@ class FeatureProcessor:
                     state["last_bind_fid"] = fid
                     n_tid = len(self.gid_mgr.tid_hist[cand_gid])
                     if n_tid >= ALARM_CNT_TH: self.trigger_alarm(cand_gid, agg)
-                    # MODIFIED HERE
                     realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{cand_gid}", cand_score, n_tid)
                 else:
                     flag = self.gid_mgr.can_update_proto(cand_gid, face_feat, body_feat)
@@ -622,7 +639,6 @@ class FeatureProcessor:
                 ng_state["last_new_fid"] = fid
                 n_tid = len(self.gid_mgr.tid_hist[new_gid])
                 if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
-                # MODIFIED HERE
                 realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
 
             elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR:
@@ -635,7 +651,6 @@ class FeatureProcessor:
                     ng_state.update(last_new_fid=fid, count=0, ambig_count=0)
                     n_tid = len(self.gid_mgr.tid_hist[new_gid])
                     if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
-                    # MODIFIED HERE
                     realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
                 else:
                     realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-7", cand_score, 0)
@@ -652,12 +667,26 @@ class FeatureProcessor:
                         ng_state.update(last_new_fid=fid, count=0)
                         n_tid = len(self.gid_mgr.tid_hist[new_gid])
                         if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
-                        # MODIFIED HERE
                         realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
                     else:
                         realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-5", -1.0, 0)
                 else:
                     realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-6", -1.0, 0)
+
+        # MODIFIED HERE: 应用并清理持续的行为报警状态
+        active_alarms = {}
+        for full_tid, (start_fid, alarm_type) in self.behavior_alarm_state.items():
+            if fid - start_fid <= BEHAVIOR_ALARM_DURATION_FRAMES:
+                active_alarms[full_tid] = (start_fid, alarm_type)
+
+                s_id, t_id_str = full_tid.split("_")
+                t_id_int = int(t_id_str)
+
+                bound_gid = self.tid2gid.get(full_tid, "")
+                n_tid = len(self.gid_mgr.tid_hist.get(bound_gid, [])) if bound_gid else 0
+                info_str = f"{full_tid}_{bound_gid}{alarm_type}" if bound_gid else f"{full_tid}_-1{alarm_type}"
+                realtime_map.setdefault(s_id, {})[t_id_int] = (info_str, 1.0, n_tid)
+        self.behavior_alarm_state = active_alarms
 
         # Cleanup logic (unchanged)
         for tid in list(self.last_seen.keys()):
@@ -667,6 +696,7 @@ class FeatureProcessor:
                 self.tid2gid.pop(tid, None)
                 self.new_gid_state.pop(tid, None)
                 self.agg_pool.pop(tid, None)
+                self.behavior_alarm_state.pop(tid, None)  # 清理关联的行为报警
 
         to_delete = [gid for gid, t in self.gid_mgr.last_update.items() if now_stamp - t >= gid_max_idle]
         for gid in to_delete:
@@ -677,6 +707,7 @@ class FeatureProcessor:
                 self.new_gid_state.pop(tid, None)
                 self.agg_pool.pop(tid, None)
                 self.last_seen.pop(tid, None)
+                self.behavior_alarm_state.pop(tid, None)  # 清理关联的行为报警
             self.gid_mgr.bank.pop(gid, None)
             self.gid_mgr.tid_hist.pop(gid, None)
             self.gid_mgr.last_update.pop(gid, None)
