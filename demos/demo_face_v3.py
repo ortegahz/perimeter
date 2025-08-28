@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import json
 from pathlib import Path
 
 import cv2
@@ -30,11 +31,12 @@ def remove_outliers(embeddings: np.ndarray, thresh: float = 2.0):
 
 def main():
     pa = argparse.ArgumentParser()
-    pa.add_argument("--folder", default="/home/manu/tmp/perimeter_v1/G00010/faces/")
+    pa.add_argument("--folder", default="/home/manu/tmp/perimeter_v1/G00002/faces/")
     pa.add_argument("--provider", default="CUDAExecutionProvider",
                     choices=["CUDAExecutionProvider", "CPUExecutionProvider"])
     pa.add_argument("--det-size", type=int, default=640, help="SCRFD 输入尺寸")
     pa.add_argument("--outlier-thresh", type=float, default=1.2, help="异常值阈值（标准差倍数）")
+    pa.add_argument("--output-json", default="/home/manu/tmp/embeddings.json", help="输出的人脸特征JSON文件路径")
     args = pa.parse_args()
 
     # 初始化模型
@@ -78,6 +80,16 @@ def main():
     if not embeddings:
         logger.error("未获取到任何人脸特征")
         return
+
+    # --- 新增代码：将特征保存到JSON文件 ---
+    output_data = {path: emb.tolist() for path, emb in zip(paths_list, embeddings)}
+    try:
+        with open(args.output_json, 'w', encoding='utf-8') as f:
+            json.dump(output_data, f, indent=4)
+        logger.info(f"所有提取到的人脸特征已保存到: {args.output_json}")
+    except Exception as e:
+        logger.error(f"保存JSON文件失败: {e}")
+    # --- 新增代码结束 ---
 
     embeddings = np.array(embeddings)
     logger.info(f"共获取 {len(embeddings)} 张人脸特征")
