@@ -22,16 +22,25 @@ target_include_directories(nlohmann_json INTERFACE
 
 # ----------------- 可执行文件 -----------------
 # 定义可执行文件及其源文件
+# 【修改】为每个 main 文件分别创建一个可执行文件
 add_executable(face_extractor
         main_face_detect.cpp
-#        main_face_recognition.cpp
+        FaceAnalyzer.cpp
+)
+
+add_executable(face_recognizer
+        main_face_recognition.cpp
         FaceAnalyzer.cpp
 )
 
 # ----------------- 链接库 -----------------
-# 将OpenCV和nlohmann_json链接到我们的可执行文件
-# 【已修正】在 face_extractor 和 PRIVATE 之间添加了空格
+# 【修改】将库链接到两个可执行文件
 target_link_libraries(face_extractor PRIVATE
+        ${OpenCV_LIBS}
+        nlohmann_json
+)
+
+target_link_libraries(face_recognizer PRIVATE
         ${OpenCV_LIBS}
         nlohmann_json
 )
@@ -39,6 +48,6 @@ target_link_libraries(face_extractor PRIVATE
 # ----------------- 文件系统库（可选但建议保留） -----------------
 # 为兼容旧版GCC（如GCC 8），显式链接filesystem库
 if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
-    # 注意：这里也需要 PRIVATE 关键字
-    target_link_libraries(face_extractor PRIVATE stdc++fs)
+    # 【修改】为两个可执行文件都链接 stdc++fs
+    target_link_libraries(face_extractor face_recognizer PRIVATE stdc++fs)
 endif ()
