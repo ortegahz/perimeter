@@ -2,6 +2,21 @@
 #include <iostream>
 #include <stdexcept>
 #include <map>
+#include <numeric>
+
+// ======================= 【修改的部分在此】 =======================
+// FOR EXPERIMENT: 实现新函数
+cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::Mat &aligned_img) {
+    if (aligned_img.size() != cv::Size(112, 112)) {
+        throw std::runtime_error("Input for get_embedding_from_aligned must be a 112x112 image.");
+    }
+    // 预处理步骤与之前 get() 函数中的完全相同
+    cv::Mat blob = cv::dnn::blobFromImage(aligned_img, 1.0 / 128.0, cv::Size(112, 112),
+                                          cv::Scalar(127.5, 127.5, 127.5), true, false);
+    rec_net_.setInput(blob);
+    return rec_net_.forward().clone();
+}
+// ======================= 【修改结束】 =======================
 
 FaceAnalyzer::FaceAnalyzer(const std::string &det_model_path, const std::string &rec_model_path) {
     det_net_ = cv::dnn::readNetFromONNX(det_model_path);
@@ -41,20 +56,23 @@ std::vector<Face> FaceAnalyzer::get(const cv::Mat &img) {
                 {70.7299f, 92.2041f}
         };
 
-        // 使用相似变换进行对齐
+        // 使用相似变换进行对齐 (这是我们想要验证的旧方法)
         cv::Mat M = cv::estimateAffinePartial2D(face.kps, dst_pts);
-
         cv::warpAffine(img, aligned_face, M, cv::Size(112, 112));
 
         // 将对齐后的人脸图像存入face结构体
         face.aligned_face = aligned_face.clone();
 
+        // 此处我们复用新函数，逻辑上等同于下面注释掉的代码
+        face.embedding = get_embedding_from_aligned(aligned_face);
+        /*
         // 修正归一化标准差为 128.0
         cv::Mat blob = cv::dnn::blobFromImage(aligned_face, 1.0 / 128.0, cv::Size(112, 112),
                                               cv::Scalar(127.5, 127.5, 127.5), true, false);
 
         rec_net_.setInput(blob);
         face.embedding = rec_net_.forward().clone(); // clone() 确保数据独立
+        */
     }
 
     return detected_faces;
@@ -75,6 +93,7 @@ std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
         new_h = static_cast<int>(new_w * im_ratio);
     }
     scale = (float) new_h / (float) img.rows;
+    if (scale == 0) scale = 1.0f; // 防止除以零
     cv::Mat resized_img;
     cv::resize(img, resized_img, cv::Size(new_w, new_h));
     cv::Mat det_img = cv::Mat::zeros(det_size_, img.type());
@@ -122,16 +141,13 @@ std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
                     const float *bbox_ptr = &bbox_data[idx * 4];
                     const float *kps_ptr = &kps_data[idx * 10];
 
-                    float cx = x * stride;
-                    float cy = y * stride;
+                    float cx = (float) x * stride;
+                    float cy = (float) y * stride;
 
                     scores.push_back(score);
 
                     float x1 = (cx - bbox_ptr[0] * stride) / scale;
-                    // ======================= 【修改的部分在此】 =======================
-                    // 修正上一版本中的拼写错误
                     float y1 = (cy - bbox_ptr[1] * stride) / scale;
-                    // ======================= 【修改结束】 =======================
                     float x2 = (cx + bbox_ptr[2] * stride) / scale;
                     float y2 = (cy + bbox_ptr[3] * stride) / scale;
                     bboxes.emplace_back(x1, y1, x2 - x1, y2 - y1);

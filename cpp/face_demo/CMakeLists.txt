@@ -23,7 +23,8 @@ target_include_directories(nlohmann_json INTERFACE
 # ----------------- 可执行文件 -----------------
 # 定义可执行文件及其源文件
 add_executable(face_extractor
-        main.cpp
+        main_face_detect.cpp
+#        main_face_recognition.cpp
         FaceAnalyzer.cpp
 )
 
