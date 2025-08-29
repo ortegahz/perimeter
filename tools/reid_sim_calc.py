@@ -147,16 +147,12 @@ if __name__ == '__main__':
         formatter_class=argparse.RawTextHelpFormatter
     )
     parser.add_argument(
-        'file1',
-        nargs='?',
+        '--file1',
         default='/home/manu/tmp/features_org.txt',
-        help="第一个特征文件路径。\n(默认: features1.txt)"
     )
     parser.add_argument(
-        'file2',
-        nargs='?',
-        default='/home/manu/tmp/features.txt',
-        help="第二个特征文件路径。\n(默认: features2.txt)"
+        '--file2',
+        default='/home/manu/tmp/features_onnx.txt',
     )
     args = parser.parse_args()
 
