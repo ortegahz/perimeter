@@ -4,6 +4,8 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/dnn.hpp>
 
+#include <opencv2/core/cuda.hpp>
+
 PersonReid::PersonReid(const std::string &onnx_model_path, int input_width, int input_height, bool use_gpu) {
     this->input_size_ = cv::Size(input_width, input_height);
 
@@ -14,9 +16,17 @@ PersonReid::PersonReid(const std::string &onnx_model_path, int input_width, int 
     }
 
     if (use_gpu) {
-        std::cout << "Attempting to use CUDA backend..." << std::endl;
-        net_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
-        net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+        int cuda_count = cv::cuda::getCudaEnabledDeviceCount();
+        if (cuda_count > 0) {
+            std::cout << "CUDA devices detected: " << cuda_count << "\n";
+            std::cout << "Attempting to use CUDA backend..." << std::endl;
+            net_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+            net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+        } else {
+            std::cout << "WARNING: No CUDA devices found, using CPU backend instead!" << std::endl;
+            net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+            net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+        }
     } else {
         net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
         net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);

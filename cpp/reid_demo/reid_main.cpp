@@ -40,9 +40,9 @@ void save_feats_to_txt(const std::vector<cv::Mat> &feats, const std::vector<std:
 
 int main() {
     // ########################### USER CONFIGURATION ###########################
-    std::string resized_input_dir = "/home/manu/tmp/out_reid_resized"; // Python 已经 resize 好的目录
-    std::string onnx_model_path = "/home/manu/tmp/reid_model.onnx";
-    std::string output_txt_path_cpp = "/home/manu/tmp/features_cpp_onnx.txt";
+    std::string resized_input_dir = "/mnt/nfs/out_reid_resized"; // Python 已经 resize 好的目录
+    std::string onnx_model_path = "/mnt/nfs/reid_model.onnx";
+    std::string output_txt_path_cpp = "/mnt/nfs/features_cpp_onnx_arm.txt";
 
     const int MODEL_INPUT_HEIGHT = 256;
     const int MODEL_INPUT_WIDTH = 128;
