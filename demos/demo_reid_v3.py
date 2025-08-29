@@ -58,7 +58,7 @@ if __name__ == '__main__':
 
     for i, img_path in enumerate(all_imgs):
         try:
-            # 使用Pillow打开图片并保存为BMP
+            # 使用 Pillow 打开图片并保存为 BMP
             img = Image.open(img_path).convert('RGB')  # 确保是RGB格式
             bmp_path = os.path.join(output_dir, '{}.bmp'.format(i))
             img.save(bmp_path)
@@ -68,10 +68,26 @@ if __name__ == '__main__':
             print('警告: 处理 {} 失败. 错误: {}'.format(img_path, e))
     print('所有图片已保存为BMP格式。\n')
 
+    # ------------------- 任务1.5: 使用 Pillow resize 并保存到新文件夹(C++读取用) -------------------
+    resized_dir = '/home/manu/tmp/out_reid_resized'
+    os.makedirs(resized_dir, exist_ok=True)
+    print(f'开始将 {len(all_imgs)} 张图片按模型输入尺寸 resize 并保存到 "{resized_dir}"...')
+    for i, img_path in enumerate(all_imgs):
+        try:
+            img = Image.open(img_path).convert('RGB')
+            # 使用 Pillow BICUBIC 插值，尺寸来自模型配置
+            img_resized = img.resize((reid.W, reid.H), Image.BICUBIC)
+            save_path = os.path.join(resized_dir, f"{i}.bmp")
+            img_resized.save(save_path)
+            if (i + 1) % 200 == 0 or (i + 1) == len(all_imgs):
+                print(f'  [{i + 1}/{len(all_imgs)}] resized images saved')
+        except Exception as e:
+            print(f'警告: resize 保存 {img_path} 失败. 错误: {e}')
+    print('所有图片已 resize 并保存完成。\n')
+
     # ------------------- 任务2.1: 使用 PyTorch 提取特征并保存 -------------------
     print('=' * 20, 'PyTorch 推理', '=' * 20)
     print('正在从 "{}" 文件夹读取BMP图片...'.format(output_dir))
-    # 获取BMP图片列表并按数字顺序排序
     bmp_paths = glob.glob(os.path.join(output_dir, '*.bmp'))
     bmp_paths_sorted = sorted(bmp_paths, key=lambda p: int(os.path.splitext(os.path.basename(p))[0]))
     assert bmp_paths_sorted, '"{}" 文件夹中没有找到BMP图片！'.format(output_dir)
@@ -100,6 +116,7 @@ if __name__ == '__main__':
     print('\n==============================================')
     print('任务完成!')
     print('  - 合并后的BMP图片位于:  {}'.format(os.path.abspath(output_dir)))
+    print('  - Resize 后的BMP图片位于 (供 C++ 用): {}'.format(os.path.abspath(resized_dir)))
     print('  - PyTorch 特征文件位于: {}'.format(os.path.abspath(output_txt_path_pt)))
     print('  - ONNX 特征文件位于:    {}'.format(os.path.abspath(output_txt_path_onnx)))
     print('==============================================')
