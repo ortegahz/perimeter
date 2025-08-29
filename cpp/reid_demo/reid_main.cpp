@@ -1,5 +1,3 @@
-// src/reid_main.cpp
-
 #include <iostream>
 #include <string>
 #include <vector>
@@ -10,13 +8,10 @@
 #include <chrono>
 
 #include <opencv2/opencv.hpp>
-#include "PersonReid.hpp" // Include our class header
+#include "PersonReid.hpp"
 
 namespace fs = std::filesystem;
 
-/**
- * @brief Saves the extracted features to a text file in the specified format.
- */
 void save_feats_to_txt(const std::vector<cv::Mat> &feats, const std::vector<std::string> &img_names,
                        const std::string &output_path) {
     std::cout << "\nSaving features to \"" << output_path << "\"..." << std::endl;
@@ -45,9 +40,7 @@ void save_feats_to_txt(const std::vector<cv::Mat> &feats, const std::vector<std:
 
 int main() {
     // ########################### USER CONFIGURATION ###########################
-    std::string folderA = "/home/manu/tmp/perimeter_v1/G00003/bodies";
-    std::string folderB = "/home/manu/tmp/perimeter_v1/G00001/bodies";
-    std::string output_dir_bmp = "/home/manu/tmp/out_reid_cpp"; // Use a different dir to avoid conflict
+    std::string resized_input_dir = "/home/manu/tmp/out_reid_resized"; // Python 已经 resize 好的目录
     std::string onnx_model_path = "/home/manu/tmp/reid_model.onnx";
     std::string output_txt_path_cpp = "/home/manu/tmp/features_cpp_onnx.txt";
 
@@ -56,46 +49,14 @@ int main() {
     const bool USE_GPU = true;
     // ##########################################################################
 
-    // ------------------- Task 1: Consolidate images -------------------
-    std::cout << "================ Task 1: Preparing Images ================" << std::endl;
-    fs::create_directories(output_dir_bmp);
-    std::vector<fs::path> all_imgs;
-    for (const auto &entry: fs::directory_iterator(folderA))
-        if (entry.is_regular_file())
-            all_imgs.push_back(entry.path());
-    for (const auto &entry: fs::directory_iterator(folderB))
-        if (entry.is_regular_file())
-            all_imgs.push_back(entry.path());
-    std::sort(all_imgs.begin(), all_imgs.end());
+    // ------------------- Task 1: Load resized images -------------------
+    std::cout << "================ Task 1: Loading Resized Images ================" << std::endl;
 
-    if (all_imgs.empty()) {
-        std::cerr << "Fatal: No images found!" << std::endl;
-        return -1;
-    }
-
-    std::cout << "Total " << all_imgs.size() << " images found. Converting and saving to \"" << output_dir_bmp
-              << "\"..." << std::endl;
-    for (size_t i = 0; i < all_imgs.size(); ++i) {
-        // [MODIFICATION] Force loading as a 3-channel color image
-        cv::Mat img = cv::imread(all_imgs[i].string(), cv::IMREAD_COLOR);
-        if (img.empty()) {
-            std::cerr << "Warning: Failed to read image " << all_imgs[i] << std::endl;
-            continue;
-        }
-        std::string bmp_path = (fs::path(output_dir_bmp) / (std::to_string(i) + ".bmp")).string();
-        cv::imwrite(bmp_path, img);
-        if ((i + 1) % 200 == 0 || (i + 1) == all_imgs.size()) {
-            std::cout << "  [" << (i + 1) << "/" << all_imgs.size() << "] images saved" << std::endl;
-        }
-    }
-    std::cout << "All images saved as BMP format.\n" << std::endl;
-
-    // ------------------- Task 2: Extract features -------------------
-    std::cout << "================ Task 2: ONNX Inference (C++) ================" << std::endl;
     std::vector<fs::path> bmp_paths;
-    for (const auto &entry: fs::directory_iterator(output_dir_bmp))
+    for (const auto &entry: fs::directory_iterator(resized_input_dir))
         if (entry.path().extension() == ".bmp")
             bmp_paths.push_back(entry.path());
+
     std::sort(bmp_paths.begin(), bmp_paths.end(), [](const fs::path &a, const fs::path &b) {
         return std::stoi(a.stem().string()) < std::stoi(b.stem().string());
     });
@@ -104,9 +65,12 @@ int main() {
     for (const auto &p: bmp_paths) bmp_path_strings.push_back(p.string());
 
     if (bmp_paths.empty()) {
-        std::cerr << "Fatal: No BMP images found in \"" << output_dir_bmp << "\"!" << std::endl;
+        std::cerr << "Fatal: No BMP images found in \"" << resized_input_dir << "\"!" << std::endl;
         return -1;
     }
+
+    // ------------------- Task 2: Extract features -------------------
+    std::cout << "================ Task 2: ONNX Inference (C++) ================" << std::endl;
 
     try {
         std::cout << "Initializing ReID model with OpenCV DNN..." << std::endl;
@@ -118,7 +82,6 @@ int main() {
         auto start_time = std::chrono::high_resolution_clock::now();
 
         for (size_t i = 0; i < bmp_paths.size(); ++i) {
-            // [MODIFICATION] Force loading as a 3-channel color image for robustness
             cv::Mat img = cv::imread(bmp_paths[i].string(), cv::IMREAD_COLOR);
             if (img.empty()) {
                 std::cerr << "Warning: Could not read image " << bmp_paths[i] << std::endl;
@@ -141,11 +104,11 @@ int main() {
         return -1;
     }
 
-    // ------------------- Final Summary -------------------
+    // ------------------- Summary -------------------
     std::cout << "\n==============================================" << std::endl;
     std::cout << "Task complete!" << std::endl;
-    std::cout << "  - Consolidated BMP images are in: " << fs::absolute(output_dir_bmp).string() << std::endl;
-    std::cout << "  - C++ ONNX features file is at:   " << fs::absolute(output_txt_path_cpp).string() << std::endl;
+    std::cout << "  - Input resized BMP images: " << fs::absolute(resized_input_dir).string() << std::endl;
+    std::cout << "  - C++ ONNX features:        " << fs::absolute(output_txt_path_cpp).string() << std::endl;
     std::cout << "==============================================" << std::endl;
 
     return 0;

@@ -42,9 +42,11 @@ private:
 private:
     cv::dnn::Net net_;
     cv::Size input_size_;
-    // Normalization parameters from PyTorch's ImageNet normalization (for RGB)
-    cv::Scalar mean_ = {0.485, 0.456, 0.406};
-    cv::Scalar std_ = {0.229, 0.224, 0.225};
+    // ########################### MODIFICATION START ###########################
+    // Normalization parameters from PyTorch's ImageNet normalization (for RGB color order)
+    cv::Scalar mean_ = {0.485, 0.456, 0.406}; // Mean for R, G, B channels
+    cv::Scalar std_ = {0.229, 0.224, 0.225};  // Std for R, G, B channels
+    // ############################ MODIFICATION END ############################
 };
 
 #endif // PERSON_REID_H
