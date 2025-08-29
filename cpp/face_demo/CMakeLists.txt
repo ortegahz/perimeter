@@ -10,7 +10,8 @@ set(PERIMETER_LIBS_DIR /home/manu/nfs/perimeter_libs)
 message(STATUS "Using centralized library directory: ${PERIMETER_LIBS_DIR}")
 
 # ----------------- OpenCV -----------------
-find_package(OpenCV REQUIRED COMPONENTS core imgproc dnn)
+# 【修改】在这里添加 imgcodecs 模块
+find_package(OpenCV REQUIRED COMPONENTS core imgproc dnn calib3d imgcodecs)
 message(STATUS "Found OpenCV version: ${OpenCV_VERSION}")
 
 # ----------------- nlohmann/json (header-only) -----------------
@@ -22,7 +23,6 @@ target_include_directories(nlohmann_json INTERFACE
 
 # ----------------- 可执行文件 -----------------
 # 定义可执行文件及其源文件
-# 【修改】为每个 main 文件分别创建一个可执行文件
 add_executable(face_extractor
         main_face_detect.cpp
         FaceAnalyzer.cpp
@@ -34,7 +34,7 @@ add_executable(face_recognizer
 )
 
 # ----------------- 链接库 -----------------
-# 【修改】将库链接到两个可执行文件
+# 将库链接到两个可执行文件
 target_link_libraries(face_extractor PRIVATE
         ${OpenCV_LIBS}
         nlohmann_json
@@ -48,6 +48,6 @@ target_link_libraries(face_recognizer PRIVATE
 # ----------------- 文件系统库（可选但建议保留） -----------------
 # 为兼容旧版GCC（如GCC 8），显式链接filesystem库
 if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
-    # 【修改】为两个可执行文件都链接 stdc++fs
+    # 为两个可执行文件都链接 stdc++fs
     target_link_libraries(face_extractor face_recognizer PRIVATE stdc++fs)
 endif ()

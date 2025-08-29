@@ -4,7 +4,6 @@
 #include <map>
 #include <numeric>
 
-// ======================= 【修改的部分在此】 =======================
 // FOR EXPERIMENT: 实现新函数
 cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::Mat &aligned_img) {
     if (aligned_img.size() != cv::Size(112, 112)) {
@@ -16,7 +15,6 @@ cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::Mat &aligned_img) {
     rec_net_.setInput(blob);
     return rec_net_.forward().clone();
 }
-// ======================= 【修改结束】 =======================
 
 FaceAnalyzer::FaceAnalyzer(const std::string &det_model_path, const std::string &rec_model_path) {
     det_net_ = cv::dnn::readNetFromONNX(det_model_path);
@@ -30,12 +28,25 @@ FaceAnalyzer::FaceAnalyzer(const std::string &det_model_path, const std::string 
 }
 
 void FaceAnalyzer::prepare(const std::string &provider, float det_thresh, cv::Size det_size) {
-    // 强制使用 CPU 后端
-    det_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
-    det_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-    rec_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
-    rec_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-    std::cout << "[INFO] Using CPU backend." << std::endl;
+    if (provider == "CUDAExecutionProvider") {
+        std::cout << "[INFO] Attempting to use CUDA backend." << std::endl;
+        // 设置推理后端为CUDA
+        det_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+        det_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+        rec_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+        rec_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+        // 如果您的GPU支持FP16并希望获得更高性能，可以尝试使用 DNN_TARGET_CUDA_FP16
+        // det_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA_FP16);
+        // rec_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA_FP16);
+    } else {
+        std::cout << "[INFO] Using CPU backend." << std::endl;
+        // 使用 CPU 后端（作为备选）
+        det_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+        det_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+        rec_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+        rec_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+    }
+
     det_thresh_ = det_thresh;
     det_size_ = det_size;
 }
@@ -56,23 +67,15 @@ std::vector<Face> FaceAnalyzer::get(const cv::Mat &img) {
                 {70.7299f, 92.2041f}
         };
 
-        // 使用相似变换进行对齐 (这是我们想要验证的旧方法)
+        // 使用相似变换进行对齐
         cv::Mat M = cv::estimateAffinePartial2D(face.kps, dst_pts);
         cv::warpAffine(img, aligned_face, M, cv::Size(112, 112));
 
         // 将对齐后的人脸图像存入face结构体
         face.aligned_face = aligned_face.clone();
 
-        // 此处我们复用新函数，逻辑上等同于下面注释掉的代码
+        // 此处我们复用新函数
         face.embedding = get_embedding_from_aligned(aligned_face);
-        /*
-        // 修正归一化标准差为 128.0
-        cv::Mat blob = cv::dnn::blobFromImage(aligned_face, 1.0 / 128.0, cv::Size(112, 112),
-                                              cv::Scalar(127.5, 127.5, 127.5), true, false);
-
-        rec_net_.setInput(blob);
-        face.embedding = rec_net_.forward().clone(); // clone() 确保数据独立
-        */
     }
 
     return detected_faces;

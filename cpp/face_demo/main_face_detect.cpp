@@ -20,9 +20,9 @@ std::pair<std::vector<cv::Mat>, std::vector<bool>>
 remove_outliers(const std::vector<cv::Mat> &embeddings, double thresh);
 
 int main(int argc, char *argv[]) {
-    // 参数设置 (保持不变)
+    // 参数设置
     std::string folder = "/home/manu/tmp/perimeter_v1/G00002/faces/";
-    std::string provider = "CPUExecutionProvider";
+    std::string provider = "CUDAExecutionProvider"; // <--- 修改点：启用GPU
     int det_size = 640;
     double outlier_thresh = 1.2;
     std::string output_json = "/home/manu/tmp/embeddings.json";
@@ -71,7 +71,6 @@ int main(int argc, char *argv[]) {
         std::vector<cv::Mat> embeddings;
         std::vector<std::string> paths_list;
 
-        // ======================= 【修改的部分在此】 =======================
         // 1. 将所有文件路径收集到一个vector中
         std::vector<fs::path> image_paths;
         for (const auto &entry: fs::directory_iterator(folder)) {
@@ -84,7 +83,6 @@ int main(int argc, char *argv[]) {
         // 3. 遍历排序后的vector
         for (const auto &entry_path: image_paths) {
             std::string ext = entry_path.extension().string();
-            // ======================= 【修改结束】 =======================
 
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
             if (ext == ".jpg" || ext == ".png" || ext == ".jpeg") {
@@ -104,7 +102,6 @@ int main(int argc, char *argv[]) {
                 fs::path p(entry_path);
                 for (auto &f: faces) {
                     if (!output_aligned_dir.empty() && !f.aligned_face.empty()) {
-                        // (对齐图保存逻辑不变)
                         cv::Mat aligned_to_save = f.aligned_face.clone();
                         std::vector<cv::Point2f> arcface_template = {
                                 {38.2946f, 51.6963f},
@@ -123,7 +120,6 @@ int main(int argc, char *argv[]) {
                     }
 
                     if (detection_txt_file.is_open()) {
-                        // (检测结果保存逻辑不变)
                         detection_txt_file << std::fixed << std::setprecision(4)
                                            << entry_path.filename().string() << ","
                                            << f.bbox.x << "," << f.bbox.y << ","
@@ -142,7 +138,6 @@ int main(int argc, char *argv[]) {
                         paths_list.push_back(entry_path.filename().string());
 
                         if (embedding_txt_file.is_open()) {
-                            // (特征向量保存逻辑不变)
                             std::string face_id = p.stem().string() + "_face" + std::to_string(face_idx);
                             embedding_txt_file << face_id;
                             const float *emb_data = emb.ptr<float>(0);

@@ -36,9 +36,9 @@ int main() {
         }
 
         // --- 2. 设置模型运行的后端和目标设备 (只需设置一次) ---
-        rec_net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
-        rec_net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-        std::cout << "[INFO] Recognition model loaded and set to CPU backend." << std::endl;
+        rec_net.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+        rec_net.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+        std::cout << "[INFO] Recognition model loaded and set to CUDA backend." << std::endl;
 
         // --- 3. 准备输出文件 (打开一次，准备写入) ---
         std::ofstream out_file(output_txt_path);
@@ -46,7 +46,6 @@ int main() {
             throw std::runtime_error("Failed to open output file for writing: " + output_txt_path);
         }
 
-        // ======================= 【修改的部分在此】 =======================
         // --- 4. 收集并排序所有BMP文件的路径 ---
         std::vector<fs::path> bmp_paths;
         if (!fs::exists(bmp_folder_path) || !fs::is_directory(bmp_folder_path)) {
@@ -72,7 +71,7 @@ int main() {
 
             // --- 创建输入Blob (swapRB=true) ---
             cv::Mat blob = cv::dnn::blobFromImage(aligned_img, 1.0 / 128.0, cv::Size(112, 112),
-                                                  cv::Scalar(127.5, 127.5, 127.5), true, true);
+                                                  cv::Scalar(127.5, 127.5, 127.5), true, false);
 
             // --- 执行前向传播 ---
             rec_net.setInput(blob);
@@ -86,15 +85,18 @@ int main() {
             cv::Mat embedding_normalized;
             cv::normalize(embedding_raw, embedding_normalized, 1.0, 0.0, cv::NORM_L2);
 
+            // ======================= 【修改的部分在此】 =======================
             // --- 写入文件 ---
             std::string face_id = bmp_path.stem().string();
             out_file << face_id;
 
+            // 当访问.ptr()时，OpenCV会自动将数据从GPU拷贝到CPU，因此无需特殊处理
             const float *data = embedding_normalized.ptr<float>(0);
             for (int i = 0; i < embedding_normalized.cols; ++i) {
                 out_file << "," << std::fixed << std::setprecision(8) << data[i];
             }
             out_file << "\n";
+            // ======================= 【修改结束】 =======================
 
             // 打印进度
             std::cout << "Processed: " << face_id << std::endl;
@@ -102,7 +104,6 @@ int main() {
 
         // --- 6. 关闭文件 ---
         out_file.close();
-        // ======================= 【修改结束】 =======================
 
         std::cout << "[SUCCESS] All embeddings saved to " << output_txt_path << std::endl;
 
