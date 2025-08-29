@@ -152,7 +152,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--file2',
-        default='/home/manu/tmp/features_onnx.txt',
+        default='/home/manu/tmp/features_cpp_onnx.txt',
     )
     args = parser.parse_args()
 
