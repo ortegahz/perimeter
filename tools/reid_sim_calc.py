@@ -149,13 +149,13 @@ if __name__ == '__main__':
     parser.add_argument(
         'file1',
         nargs='?',
-        default='/home/manu/tmp/features.txt',
+        default='/home/manu/tmp/features_org.txt',
         help="第一个特征文件路径。\n(默认: features1.txt)"
     )
     parser.add_argument(
         'file2',
         nargs='?',
-        default='/home/manu/tmp/features_dummy.txt',
+        default='/home/manu/tmp/features.txt',
         help="第二个特征文件路径。\n(默认: features2.txt)"
     )
     args = parser.parse_args()

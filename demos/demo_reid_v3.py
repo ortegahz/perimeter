@@ -33,6 +33,13 @@ if __name__ == '__main__':
     model_dir = os.path.join(DIR_PERSON_REID, 'model/ft_ResNet50')
     reid = PersonReid(model_dir, which_epoch='last', gpu='0')
 
+    # ------------------- 新增步骤: 切换到 ONNX 推理模式 -------------------
+    onnx_model_path = '/home/manu/tmp/reid_model.onnx'
+    print('\n正在准备 ONNX 推理环境...')
+    reid.switch_to_onnx(onnx_model_path)
+    print('已切换到 ONNX 推理模式。\n')
+    # ------------------- 新增步骤结束 -------------------------------------
+
     # ------------------- 任务1: 合并图片并保存为BMP格式 -------------------
     output_dir = '/home/manu/tmp/out_reid'
     os.makedirs(output_dir, exist_ok=True)

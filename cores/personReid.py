@@ -5,23 +5,24 @@ import os
 import sys
 import time
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torchvision.transforms as T
 import yaml
 from PIL import Image
 
-# ------------------- 新增代码开始 -------------------
+# ------------------- 新增/修改的代码开始 -------------------
 # 导入 onnx 相关库，如果未安装则给出提示
 try:
     import onnx
     import onnxsim
+    import onnxruntime
 except ImportError:
-    print('提示: onnx 和 onnxsim 未安装，无法使用 ONNX 导出功能。\n'
-          '请运行: pip install onnx onnx-simplifier')
-    onnx = None
-    onnxsim = None
-# ------------------- 新增代码结束 -------------------
+    print('提示: onnx, onnx-simplifier, 和 onnxruntime 未安装，无法使用 ONNX 功能。\n'
+          '请运行: pip install onnx onnx-simplifier onnxruntime')
+    onnx = onnxsim = onnxruntime = None
+# ------------------- 新增/修改的代码结束 -------------------
 
 from utils_peri.macros import DIR_PERSON_REID
 
@@ -105,22 +106,26 @@ class PersonReid:
         self.gallery_paths = []
         self.gallery_feats = None  # (N, dim)
 
-    # ------------------- 新增代码开始 -------------------
+        # ------------------- 新增/修改的代码开始 -------------------
+        # ONNX 相关状态
+        self.use_onnx = False
+        self.ort_session = None
+        self.onnx_input_name = None
+        # ------------------- 新增/修改的代码结束 -------------------
+
+    # ------------------- 新增/修改的代码开始 -------------------
     def save_onnx(self, output_path: str, simplify: bool = True):
         """
         导出模型为 ONNX 格式 (带 simplify)。
         :param output_path: ONNX 文件保存路径。
-        :param simplify: 是否使用 onnx-simplifier 进行简化。
+        :param simplify: 是否使用 onnx-simplifier进行简化。
         """
         if onnx is None or onnxsim is None:
             print('错误: onnx 或 onnxsim 未安装，无法导出 ONNX 模型。')
             return
 
-        # 根据 __init__ 中设置的 self.H, self.W 创建虚拟输入
-        # 对于您的默认模型，尺寸为 (1, 3, 256, 128)
         dummy_input = torch.randn(1, 3, self.H, self.W, device=self.device)
 
-        # 导出 ONNX 模型
         torch.onnx.export(
             self.model,
             dummy_input,
@@ -129,23 +134,47 @@ class PersonReid:
             input_names=['input'],
             output_names=['output'],
         )
+        print(f'ONNX 模型已导出到 {output_path}')
 
         if not simplify:
-            print(f'ONNX 模型已保存到 {output_path} (未简化)')
             return
 
-        # 简化 ONNX 模型
         try:
             onnx_model = onnx.load(output_path)
             model_simplified, check = onnxsim.simplify(onnx_model)
             assert check, "ONNX-simplifier 检查失败！"
             onnx.save(model_simplified, output_path)
-            print(f'已成功导出并简化 ONNX 模型: {output_path}')
+            print(f'ONNX 模型已简化并保存: {output_path}')
         except Exception as e:
             print(f'ONNX 简化失败: {e}。')
             print(f'在 {output_path} 中保留了未简化的模型。')
 
-    # ------------------- 新增代码结束 -------------------
+    def switch_to_onnx(self, onnx_path: str, simplify: bool = True):
+        """
+        将当前实例切换到 ONNX 推理模式。
+        这会先导出当前模型，然后加载 ONNX Runtime 会话。
+        """
+        if onnxruntime is None:
+            print("错误：onnxruntime 未安装，无法切换到 ONNX 模式。")
+            return
+
+        # 1. 导出模型 (如果文件不存在或需要强制覆盖)
+        if not os.path.exists(onnx_path):
+            self.save_onnx(onnx_path, simplify)
+        else:
+            print(f'使用已存在的 ONNX 模型: {onnx_path}')
+
+        # 2. 加载 ONNX Runtime 会话
+        self.ort_session = onnxruntime.InferenceSession(onnx_path)
+        self.onnx_input_name = self.ort_session.get_inputs()[0].name
+        self.use_onnx = True
+
+        # 3. (可选) 释放 PyTorch 模型占用的内存
+        self.model = None
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+    # ------------------- 新增/修改的代码结束 -------------------
 
     # ------------------------------------------------------------------
     def _build_model(self):
@@ -185,7 +214,7 @@ class PersonReid:
     # ------------------------------------------------------------------
     def _fliplr(self, x):
         inv = torch.arange(x.size(3) - 1, -1, -1,
-                           device=x.device).long()
+                           device=x.device if x.is_cuda else 'cpu').long()
         return x.index_select(3, inv)
 
     @torch.no_grad()
@@ -200,9 +229,37 @@ class PersonReid:
             img = self.transform(img)
         if img.dim() == 3:
             img = img.unsqueeze(0)  # (1,C,H,W)
-        img = img.to(self.device)
 
-        # 推理 + flip 增强
+        # ------------------- 新增/修改的代码开始 -------------------
+        if self.use_onnx:
+            # 使用 ONNX Runtime 推理
+            feat_sum = None
+            for flip in [False, True]:
+                inp_tensor = self._fliplr(img) if flip else img
+                inp_numpy = inp_tensor.cpu().numpy()
+                ort_inputs = {self.onnx_input_name: inp_numpy}
+                feat = self.ort_session.run(None, ort_inputs)[0]  # numpy array
+
+                if feat_sum is None:
+                    feat_sum = feat
+                else:
+                    feat_sum += feat
+
+            # 使用 numpy 进行归一化
+            if self.PCB_flag:
+                feat_sum = feat_sum.reshape((1, -1))
+                norm = np.linalg.norm(feat_sum, ord=2, axis=1, keepdims=True)
+                feat = feat_sum / (norm * math.sqrt(6))
+            else:
+                norm = np.linalg.norm(feat_sum, ord=2, axis=1, keepdims=True)
+                feat = feat_sum / norm
+
+            # 为保持输出类型一致，转回 torch.Tensor
+            return torch.from_numpy(feat).to(self.device)
+        # ------------------- 新增/修改的代码结束 -------------------
+
+        # 原始 PyTorch 推理逻辑
+        img = img.to(self.device)
         if self.linear_num <= 0:
             feat_dim = {True: 1024}.get(self.use_swin or
                                         self.use_swinv2 or
@@ -219,7 +276,6 @@ class PersonReid:
             inp = self._fliplr(img) if flip else img
             feat += self.model(inp)
 
-        # 归一化
         if self.PCB_flag:
             feat = feat / (feat.norm(p=2, dim=1, keepdim=True)
                            * math.sqrt(6))
