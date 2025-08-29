@@ -16,13 +16,13 @@ namespace fs = std::filesystem;
 int main() {
     // ======================= Configuration =======================
     // 1. 设置包含BMP文件的文件夹路径
-    std::string bmp_folder_path = "/home/manu/tmp/face_aligned_py_bmp/";
+    std::string bmp_folder_path = "/mnt/nfs/face_aligned_py_bmp/";
 
     // 2. 设置统一的输出TXT文件的路径
-    std::string output_txt_path = "/home/manu/tmp/embeddings_cpp_from_aligned_bmps.txt";
+    std::string output_txt_path = "/mnt/nfs/embeddings_cpp_from_aligned_bmps.txt";
 
     // 3. 设置识别（recognition）模型的路径
-    std::string rec_model_path = "/home/manu/.insightface/models/buffalo_l/w600k_r50_simplified.onnx";
+    std::string rec_model_path = "/mnt/nfs/w600k_r50_simplified.onnx";
     // =============================================================
 
     std::cout << "[INFO] Starting batch feature extraction test..." << std::endl;

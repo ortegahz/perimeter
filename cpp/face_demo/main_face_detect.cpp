@@ -21,16 +21,16 @@ remove_outliers(const std::vector<cv::Mat> &embeddings, double thresh);
 
 int main(int argc, char *argv[]) {
     // 参数设置
-    std::string folder = "/home/manu/tmp/perimeter_v1/G00002/faces/";
+    std::string folder = "/mnt/nfs/perimeter_v1/G00002/faces/";
     std::string provider = "CUDAExecutionProvider"; // <--- 修改点：启用GPU
     int det_size = 640;
     double outlier_thresh = 1.2;
-    std::string output_json = "/home/manu/tmp/embeddings.json";
-    std::string output_aligned_dir = "/home/manu/tmp/aligned_faces_cpp/";
-    std::string output_detection_txt = "/home/manu/tmp/detections_cpp.txt";
-    std::string output_embedding_txt = "/home/manu/tmp/embeddings_cpp.txt";
-    std::string det_model = "/home/manu/.insightface/models/buffalo_l/det_10g_simplified.onnx";
-    std::string rec_model = "/home/manu/.insightface/models/buffalo_l/w600k_r50_simplified.onnx";
+    std::string output_json = "/mnt/nfs/embeddings.json";
+    std::string output_aligned_dir = "/mnt/nfs/aligned_faces_cpp/";
+    std::string output_detection_txt = "/mnt/nfs/detections_cpp_arm.txt";
+    std::string output_embedding_txt = "/mnt/nfs/embeddings_cpp_arm.txt";
+    std::string det_model = "/mnt/nfs/det_10g_simplified.onnx";
+    std::string rec_model = "/mnt/nfs/w600k_r50_simplified.onnx";
 
     std::cout << "[INFO] folder: " << folder << std::endl;
 

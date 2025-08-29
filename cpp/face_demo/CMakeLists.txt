@@ -4,25 +4,30 @@ project(FaceEmbeddingExtractor)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ----------------- 统一库目录 -----------------
-# 设定你的统一库目录变量，方便管理
-set(PERIMETER_LIBS_DIR /home/manu/nfs/perimeter_libs)
+# ----------------- 统一库目录 (用户可修改) -----------------
+set(PERIMETER_LIBS_DIR /home/nvidia/VSCodeProject/smartboxcore/third_libraries)
 message(STATUS "Using centralized library directory: ${PERIMETER_LIBS_DIR}")
 
 # ----------------- OpenCV -----------------
-# 【修改】在这里添加 imgcodecs 模块
-find_package(OpenCV REQUIRED COMPONENTS core imgproc dnn calib3d imgcodecs)
+set(OpenCV_DIR ${PERIMETER_LIBS_DIR}/opencv/lib/cmake/opencv4)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc dnn calib3d imgcodecs
+        PATHS ${OpenCV_DIR}
+        NO_DEFAULT_PATH
+)
+include_directories(${OpenCV_INCLUDE_DIRS})
 message(STATUS "Found OpenCV version: ${OpenCV_VERSION}")
+if (NOT OpenCV_FOUND)
+    message(FATAL_ERROR "OpenCV not found. Please check your installation or PERIMETER_LIBS_DIR path.")
+endif ()
 
 # ----------------- nlohmann/json (header-only) -----------------
-# 假设 json.hpp 的路径是: ${PERIMETER_LIBS_DIR}/json/include/json.hpp
+# 统一使用 PERIMETER_LIBS_DIR 路径
 add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json INTERFACE
         ${PERIMETER_LIBS_DIR}/json/include
 )
 
 # ----------------- 可执行文件 -----------------
-# 定义可执行文件及其源文件
 add_executable(face_extractor
         main_face_detect.cpp
         FaceAnalyzer.cpp
@@ -34,7 +39,6 @@ add_executable(face_recognizer
 )
 
 # ----------------- 链接库 -----------------
-# 将库链接到两个可执行文件
 target_link_libraries(face_extractor PRIVATE
         ${OpenCV_LIBS}
         nlohmann_json
@@ -45,9 +49,9 @@ target_link_libraries(face_recognizer PRIVATE
         nlohmann_json
 )
 
-# ----------------- 文件系统库（可选但建议保留） -----------------
-# 为兼容旧版GCC（如GCC 8），显式链接filesystem库
+# ----------------- 文件系统库 (GCC<9 兼容) -----------------
 if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
-    # 为两个可执行文件都链接 stdc++fs
-    target_link_libraries(face_extractor face_recognizer PRIVATE stdc++fs)
+    target_link_libraries(face_extractor PRIVATE stdc++fs)
+    target_link_libraries(face_recognizer PRIVATE stdc++fs)
+    message(STATUS "Linking against stdc++fs for GCC < 9")
 endif ()

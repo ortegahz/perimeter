@@ -133,7 +133,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="比较两个 feature.txt 文件，并可视化相似度。",
                                      formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('--file1', default='/home/manu/tmp/embeddings_py.txt')
-    parser.add_argument('--file2', default='/home/manu/tmp/embeddings_cpp_from_aligned_bmps.txt')
+    parser.add_argument('--file2', default='/home/manu/nfs/embeddings_cpp_from_aligned_bmps.txt')
     args = parser.parse_args()
 
     main(args.file1, args.file2)
