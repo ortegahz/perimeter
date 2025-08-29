@@ -26,11 +26,20 @@ def extract_features_in_batch(reid_obj, img_paths):
 
 
 if __name__ == '__main__':
-    folderA = '/home/manu/tmp/perimeter/G00003/bodies'
-    folderB = '/home/manu/tmp/perimeter/G00001/bodies/'
+    folderA = '/home/manu/tmp/perimeter_v1/G00003/bodies'
+    folderB = '/home/manu/tmp/perimeter_v1/G00001/bodies/'
 
     model_dir = os.path.join(DIR_PERSON_REID, 'model/ft_ResNet50')
     reid = PersonReid(model_dir, which_epoch='last', gpu='0')
+
+    # ------------------- 新增代码开始 -------------------
+    # 保存为 onnx (带 simplify)
+    # 输入尺寸将根据模型自动设置为 (1, 3, 256, 128)
+    onnx_path = os.path.join(model_dir, 'model.onnx')
+    print('\n[ONNX] 正在保存 ONNX 模型到 -> {} ...'.format(onnx_path))
+    reid.save_onnx(onnx_path)
+    print('[ONNX] 模型保存完毕。\n')
+    # ------------------- 新增代码结束 -------------------
 
     imgsA = sorted(glob.glob(os.path.join(folderA, '*')))
     imgsB = sorted(glob.glob(os.path.join(folderB, '*')))

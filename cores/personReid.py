@@ -11,6 +11,18 @@ import torchvision.transforms as T
 import yaml
 from PIL import Image
 
+# ------------------- 新增代码开始 -------------------
+# 导入 onnx 相关库，如果未安装则给出提示
+try:
+    import onnx
+    import onnxsim
+except ImportError:
+    print('提示: onnx 和 onnxsim 未安装，无法使用 ONNX 导出功能。\n'
+          '请运行: pip install onnx onnx-simplifier')
+    onnx = None
+    onnxsim = None
+# ------------------- 新增代码结束 -------------------
+
 from utils_peri.macros import DIR_PERSON_REID
 
 sys.path.append(os.path.abspath(DIR_PERSON_REID))
@@ -92,6 +104,48 @@ class PersonReid:
         # gallery 特征缓存
         self.gallery_paths = []
         self.gallery_feats = None  # (N, dim)
+
+    # ------------------- 新增代码开始 -------------------
+    def save_onnx(self, output_path: str, simplify: bool = True):
+        """
+        导出模型为 ONNX 格式 (带 simplify)。
+        :param output_path: ONNX 文件保存路径。
+        :param simplify: 是否使用 onnx-simplifier 进行简化。
+        """
+        if onnx is None or onnxsim is None:
+            print('错误: onnx 或 onnxsim 未安装，无法导出 ONNX 模型。')
+            return
+
+        # 根据 __init__ 中设置的 self.H, self.W 创建虚拟输入
+        # 对于您的默认模型，尺寸为 (1, 3, 256, 128)
+        dummy_input = torch.randn(1, 3, self.H, self.W, device=self.device)
+
+        # 导出 ONNX 模型
+        torch.onnx.export(
+            self.model,
+            dummy_input,
+            output_path,
+            opset_version=12,
+            input_names=['input'],
+            output_names=['output'],
+        )
+
+        if not simplify:
+            print(f'ONNX 模型已保存到 {output_path} (未简化)')
+            return
+
+        # 简化 ONNX 模型
+        try:
+            onnx_model = onnx.load(output_path)
+            model_simplified, check = onnxsim.simplify(onnx_model)
+            assert check, "ONNX-simplifier 检查失败！"
+            onnx.save(model_simplified, output_path)
+            print(f'已成功导出并简化 ONNX 模型: {output_path}')
+        except Exception as e:
+            print(f'ONNX 简化失败: {e}。')
+            print(f'在 {output_path} 中保留了未简化的模型。')
+
+    # ------------------- 新增代码结束 -------------------
 
     # ------------------------------------------------------------------
     def _build_model(self):
