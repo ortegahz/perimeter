@@ -7,9 +7,9 @@
 #include <iostream>
 
 // 1. 定义模型路径和参数 (请确保这些路径正确)
-const std::string REID_MODEL_PATH = "/home/manu/nfs/reid_model.onnx";
-const std::string FACE_DET_MODEL_PATH = "/home/manu/nfs/det_10g_simplified.onnx";
-const std::string FACE_REC_MODEL_PATH = "/home/manu/nfs/w600k_r50_simplified.onnx";
+const std::string REID_MODEL_PATH = "/mnt/nfs/reid_model.onnx";
+const std::string FACE_DET_MODEL_PATH = "/mnt/nfs/det_10g_simplified.onnx";
+const std::string FACE_REC_MODEL_PATH = "/mnt/nfs/w600k_r50_simplified.onnx";
 const int REID_INPUT_WIDTH = 128;
 const int REID_INPUT_HEIGHT = 256;
 
