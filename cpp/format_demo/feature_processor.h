@@ -52,8 +52,8 @@ constexpr int BEHAVIOR_ALARM_DURATION_FRAMES = 256;
 constexpr float MIN_HW_RATIO = 1.5f;
 constexpr float FACE_DET_MIN_SCORE = 0.60f;
 
-const std::string SAVE_DIR = "/home/manu/tmp/perimeter_cpp";
-const std::string ALARM_DIR = "/home/manu/tmp/perimeter_alarm_cpp";
+const std::string SAVE_DIR = "/mnt/nfs/perimeter_cpp";
+const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
 /* ------------------------------------------------ */
 
 /* ---------- 数据结构定义 ---------- */

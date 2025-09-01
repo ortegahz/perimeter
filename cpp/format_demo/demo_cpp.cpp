@@ -77,8 +77,8 @@ Packet load_packet_from_cache(const std::string &cam_id, int fid, const std::str
 
 int main(int argc, char **argv) {
     // --- 可调参数 ---
-    std::string VIDEO_PATH = "/home/manu/tmp/64.mp4";
-    std::string RAW_DIR = "/home/manu/tmp/cache_v1";
+    std::string VIDEO_PATH = "/mnt/nfs/64.mp4";
+    std::string RAW_DIR = "/mnt/nfs/cache_v1";
     std::string CAM_ID = "cam1";
     int SKIP = 2;
     float SHOW_SCALE = 0.5; // <-- 新增：与Python对齐
@@ -91,13 +91,13 @@ int main(int argc, char **argv) {
 
     std::string FEATURE_CACHE_JSON, OUTPUT_TXT, OUTPUT_VIDEO_PATH;
     if (MODE == "load") {
-        FEATURE_CACHE_JSON = "/home/manu/tmp/features_cache_v1.json";
-        OUTPUT_TXT = "/home/manu/tmp/output_result_cpp_load.txt";
-        OUTPUT_VIDEO_PATH = "/home/manu/tmp/output_video_cpp_load.mp4";
+        FEATURE_CACHE_JSON = "/mnt/nfs/features_cache_v1.json";
+        OUTPUT_TXT = "/mnt/nfs/output_result_cpp_load.txt";
+        OUTPUT_VIDEO_PATH = "/mnt/nfs/output_video_cpp_load.mp4";
     } else { // realtime
-        FEATURE_CACHE_JSON = "/home/manu/tmp/features_cache_realtime_output.json";
-        OUTPUT_TXT = "/home/manu/tmp/output_result_cpp_realtime.txt";
-        OUTPUT_VIDEO_PATH = "/home/manu/tmp/output_video_cpp_realtime.mp4";
+        FEATURE_CACHE_JSON = "/mnt/nfs/features_cache_realtime_output.json";
+        OUTPUT_TXT = "/mnt/nfs/output_result_cpp_realtime.txt";
+        OUTPUT_VIDEO_PATH = "/mnt/nfs/output_video_cpp_realtime.mp4";
     }
 
     nlohmann::json boundary_config; // 留空
