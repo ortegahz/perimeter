@@ -84,7 +84,7 @@ int main(int argc, char **argv) {
     float SHOW_SCALE = 0.5; // <-- 新增：与Python对齐
 
     // 根据模式选择不同的输入/输出
-    std::string MODE = "realtime"; // 默认为 "load" 模式
+    std::string MODE = "load"; // 默认为 "load" 模式
     if (argc > 1) {
         MODE = argv[1];
     }

@@ -72,6 +72,40 @@ static std::pair<float, float> mean_stddev(const std::vector<float> &data) {
     return {mean, stddev};
 }
 
+// ======================= 【NEW FUNCTION】 =======================
+// 新增：从 Python 移植的 GID 原型离群点移除逻辑
+static std::pair<std::vector<std::vector<float>>, std::vector<bool>>
+remove_outliers_cpp(const std::vector<std::vector<float>> &embeddings, float thresh) {
+    size_t n = embeddings.size();
+    if (n < 3) {
+        return {embeddings, std::vector<bool>(n, true)};
+    }
+    auto mean_vec = avg_feats(embeddings);
+    std::vector<float> dists;
+    dists.reserve(n);
+    for (const auto &emb: embeddings) {
+        dists.push_back(vec_dist(emb, mean_vec));
+    }
+    auto [dist_mean, dist_std] = mean_stddev(dists);
+    std::vector<bool> keep_mask(n, true);
+    std::vector<std::vector<float>> new_list;
+    float std_dev_safe = dist_std + 1e-8f;
+
+    for (size_t i = 0; i < n; ++i) {
+        float z_score = (dists[i] - dist_mean) / std_dev_safe;
+        if (std::abs(z_score) < thresh) {
+            new_list.push_back(embeddings[i]);
+        } else {
+            keep_mask[i] = false;
+        }
+    }
+    if (new_list.empty()) { // 如果所有都被标记为离群点，则保留所有
+        return {embeddings, std::vector<bool>(n, true)};
+    }
+    return {new_list, keep_mask};
+}
+// ======================= 【修改结束】 =======================
+
 static std::vector<float>
 main_representation_cpp(const std::deque<std::vector<float>> &feats_dq, float outlier_thr = 1.5f) {
     if (feats_dq.empty()) return {};
@@ -157,6 +191,15 @@ static void add_proto(std::vector<std::vector<float>> &lst, const std::vector<fl
         }
         lst[idx] = blend(lst[idx], feat);
     }
+
+    // ======================= 【FIXED】 =======================
+    // 新增：在更新原型后，进行离群点移除以保持特征库纯净
+    // Python GlobalID 初始化时 outlier_thresh=3.0
+    auto [new_lst, keep_mask] = remove_outliers_cpp(lst, 3.0f);
+    if (new_lst.size() != lst.size()) {
+        lst = new_lst;
+    }
+    // ======================= 【修改结束】 =======================
 }
 
 std::string GlobalID::new_gid() {
@@ -343,10 +386,11 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt) {
             cv::Laplacian(gray, laplacian, CV_64F);
             cv::meanStdDev(laplacian, mu, sigma);
 
-            // ======================= 【修改的部分在此】 =======================
+            // ======================= 【FIXED】 =======================
             // 错误：sigma.val[0]
             // 正确：sigma.at<double>(0, 0)
-            if (sigma.at<double>(0, 0) * sigma.at<double>(0, 0) < 100) continue; // 模糊度检查
+            // Python .var() 返回方差，C++ .at<double> 返回标准差，所以需要平方
+            if (sigma.at<double>(0, 0) * sigma.at<double>(0, 0) < 100) continue;
             // ======================= 【修改结束】 =======================
 
             cv::Mat normalized_emb;

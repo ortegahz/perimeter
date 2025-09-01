@@ -34,7 +34,10 @@ constexpr int NEW_GID_TIME_WINDOW = 50;
 constexpr int BIND_LOCK_FRAMES = 15;
 constexpr int CANDIDATE_FRAMES = 2;
 constexpr int MAX_TID_IDLE_FRAMES = 256;
-constexpr int GID_MAX_IDLE_FRAMES = 25 * 60; // 简化版: 25fps * 60s
+// ======================= 【FIXED】 =======================
+// 已将此值从 25*60 (1500) 修改为与 Python (25/2*60*60*24) 一致
+constexpr int GID_MAX_IDLE_FRAMES = 1080000;
+// ======================= 【修改结束】 =======================
 constexpr int WAIT_FRAMES_AMBIGUOUS = 10;
 
 constexpr int ALARM_CNT_TH = 8;
