@@ -69,7 +69,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Compare two output_result.txt files")
     parser.add_argument("--file_a", default="/home/manu/tmp/output_result_py.txt")
-    parser.add_argument("--file_b", default="/home/manu/tmp/output_result_cpp.txt")
+    parser.add_argument("--file_b", default="/home/manu/tmp/output_result_cpp_realtime.txt")
     parser.add_argument("--show", default=True)
     parser.add_argument("--out_png", default="/home/manu/tmp/compare_result.png")
     args = parser.parse_args()

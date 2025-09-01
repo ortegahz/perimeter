@@ -162,8 +162,10 @@ int main(int argc, char **argv) {
         while (cap.read(frame)) {
             fid++; // 帧号从1开始
 
+//            if (fid == 256) break;
+
             if (fid % SKIP != 0) {
-                writer.write(frame); // 未处理的帧直接写入
+//                writer.write(frame); // 未处理的帧直接写入
                 continue;
             }
 
@@ -221,6 +223,7 @@ int main(int argc, char **argv) {
                 }
             } catch (const std::runtime_error &e) {
                 // 如果某个帧的缓存不存在，则跳过处理，但帧还是要写入
+                std::cout << "\ncatch -> " << &e << std::endl;
             }
 
             writer.write(frame); // 写入处理并标注过的帧
