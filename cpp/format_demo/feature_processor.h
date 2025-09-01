@@ -12,6 +12,11 @@
 #include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
 
+// 1. 包含你提供的真实模型头文件
+//    (假设这些文件位于 cores/ 目录下)
+#include "cores/personReid/PersonReid.hpp"
+#include "cores/face/FaceAnalyzer.hpp"
+
 /* ---------- 与 python 保持一致的常量 ---------- */
 constexpr int MIN_BODY4GID = 8;
 constexpr int MIN_FACE4GID = 8;
@@ -38,9 +43,11 @@ constexpr float FUSE_W_FACE = 0.6f;
 constexpr float FUSE_W_BODY = 0.4f;
 constexpr int EMB_FACE_DIM = 512;
 constexpr int EMB_BODY_DIM = 2048;
-
-// MODIFIED HERE: 新增报警持续时间常量
 constexpr int BEHAVIOR_ALARM_DURATION_FRAMES = 256;
+
+// 2. 从 Python 端移植的常量，用于实时特征提取
+constexpr float MIN_HW_RATIO = 1.5f;
+constexpr float FACE_DET_MIN_SCORE = 0.60f;
 
 const std::string SAVE_DIR = "/home/manu/tmp/perimeter_cpp";
 const std::string ALARM_DIR = "/home/manu/tmp/perimeter_alarm_cpp";
@@ -51,6 +58,8 @@ struct Detection {
     cv::Rect2f tlwh;
     float score;
     int id;
+    // 3. 增加 class_id 以匹配 Python 端的过滤逻辑
+    int class_id = 0;
 };
 
 struct Packet {
@@ -60,27 +69,7 @@ struct Packet {
     std::vector<Detection> dets;
 };
 
-/* ---------- 占位符：模拟模型封装  ---------- */
-struct PersonReid {
-    std::vector<std::vector<float>> infer(const std::vector<cv::Mat> &patches) {
-        std::vector<std::vector<float>> dummy_feats;
-        for (const auto &p: patches) {
-            dummy_feats.push_back(std::vector<float>(EMB_BODY_DIM, 0.1f));
-        }
-        return dummy_feats;
-    }
-};
-
-struct FaceSearcher {
-    struct FaceObject {
-        std::vector<float> embedding;
-        float det_score = 1.0f;
-    };
-
-    std::vector<FaceObject> get(const cv::Mat &patch) { return {}; }
-};
-
-/* ===== 新增：入侵和穿越检测模块 (辅助类) ===== */
+/* ===== 入侵和穿越检测模块 (辅助类) ===== */
 static cv::Point2f get_foot_point(const cv::Rect2f &tlwh) {
     return cv::Point2f(tlwh.x + tlwh.width / 2.0f, tlwh.y + tlwh.height);
 }
@@ -95,28 +84,23 @@ public:
 
     std::set<int> check(const std::vector<Detection> &dets, const std::string &stream_id) {
         if (boundary_.empty()) return {};
-
         std::set<int> newly_alarmed_tids;
         std::set<int> current_tids;
         for (const auto &d: dets) {
             current_tids.insert(d.id);
             if (alarmed_tids_.count(d.id)) continue;
-
             cv::Point2f current_point = get_foot_point(d.tlwh);
             auto it = track_history_.find(d.id);
-
             if (it != track_history_.end()) {
                 cv::Point2f last_point = it->second;
                 if (cv::pointPolygonTest(boundary_, last_point, false) < 0 &&
                     cv::pointPolygonTest(boundary_, current_point, false) >= 0) {
-                    // std::cout << "[ALARM][" << stream_id << "] Intrusion Detected! TID:" << d.id << std::endl;
                     alarmed_tids_.insert(d.id);
                     newly_alarmed_tids.insert(d.id);
                 }
             }
             track_history_[d.id] = current_point;
         }
-
         std::vector<int> disappeared_tids;
         for (const auto &pair: track_history_) {
             if (current_tids.find(pair.first) == current_tids.end()) {
@@ -151,14 +135,11 @@ public:
     std::set<int> check(const std::vector<Detection> &dets, const std::string &stream_id) {
         std::set<int> newly_alarmed_tids;
         std::set<int> current_tids;
-
         for (const auto &d: dets) {
             current_tids.insert(d.id);
             if (alarmed_tids_.count(d.id)) continue;
-
             cv::Point2f current_point = get_foot_point(d.tlwh);
             int current_side = get_point_side(current_point, line_start_, line_end_);
-
             auto it = track_side_history_.find(d.id);
             if (it != track_side_history_.end()) {
                 int last_side = it->second;
@@ -167,7 +148,6 @@ public:
                                    (direction_ == "in" && last_side < 0 && current_side > 0) ||
                                    (direction_ == "out" && last_side > 0 && current_side < 0);
                     if (crossed) {
-                        // std::cout << "[ALARM][" << stream_id << "] Line Crossing Detected! TID:" << d.id << std::endl;
                         alarmed_tids_.insert(d.id);
                         newly_alarmed_tids.insert(d.id);
                     }
@@ -175,7 +155,6 @@ public:
             }
             track_side_history_[d.id] = current_side;
         }
-
         std::vector<int> disappeared_tids;
         for (const auto &pair: track_side_history_) {
             if (current_tids.find(pair.first) == current_tids.end()) {
@@ -244,7 +223,6 @@ struct NewGidState {
 /* ---------- FeatureProcessor 类定义 ---------- */
 class FeatureProcessor {
 public:
-    // MODIFIED HERE: 修改构造函数签名
     explicit FeatureProcessor(const std::string &mode,
                               const std::string &device = "cuda",
                               const std::string &feature_cache_path = "",
@@ -270,12 +248,12 @@ private:
     std::string mode_;
     std::string device_;
     std::string feature_cache_path_;
-
     nlohmann::json features_cache_;
     nlohmann::json features_to_save_;
 
+    // 4. 使用真实的模型类替换占位符
     std::unique_ptr<PersonReid> reid_model_;
-    std::unique_ptr<FaceSearcher> face_app_;
+    std::unique_ptr<FaceAnalyzer> face_analyzer_;
 
     std::map<std::string, TrackAgg> agg_pool;
     GlobalID gid_mgr;
@@ -285,9 +263,7 @@ private:
     std::unordered_map<std::string, NewGidState> new_gid_state;
     std::set<std::string> alarmed;
     std::map<std::string, std::vector<float>> alarm_reprs;
-
-    // MODIFIED HERE: 新增行为分析相关成员
-    std::map<std::string, std::tuple<int, std::string>> behavior_alarm_state; // key: full_tid, val: (start_fid, alarm_type)
+    std::map<std::string, std::tuple<int, std::string>> behavior_alarm_state;
     std::map<std::string, IntrusionDetector> intrusion_detectors;
     std::map<std::string, LineCrossingDetector> line_crossing_detectors;
 };
