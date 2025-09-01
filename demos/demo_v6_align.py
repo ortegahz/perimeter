@@ -45,7 +45,7 @@ except Exception:
 # ---------------- 可调参数 ----------------
 VIDEO_PATH = "/home/manu/tmp/64.mp4"
 OUTPUT_MP4 = "/home/manu/tmp/output_result.mp4"
-OUTPUT_TXT = "/home/manu/tmp/output_result.txt"
+OUTPUT_TXT = "/home/manu/tmp/output_result_py.txt"
 
 SKIP = 2
 SHOW_SCALE = 0.5
