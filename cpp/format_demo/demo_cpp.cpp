@@ -197,10 +197,8 @@ int main(int argc, char **argv) {
 
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();
-                // ======================= 【修改的部分在此】 =======================
                 // 修改：调用新的 process_packet 接口，不再传递 full_frame
                 auto mp = processor.process_packet(packet, face_info);
-                // ======================= 【修改结束】 =======================
                 auto t2 = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double, std::milli> proc_time = t2 - t1;
                 std::cout << "  [proc_packet took " << proc_time.count() << " ms]" << std::endl;
@@ -215,27 +213,83 @@ int main(int argc, char **argv) {
                 const auto &cam_map = mp.count(CAM_ID) ? mp.at(CAM_ID)
                                                        : std::map<int, std::tuple<std::string, float, int>>{};
 
+                // ======================= 【修改的部分在此】 =======================
                 for (const auto &det: packet.dets) {
-                    std::string full_gid_str = std::to_string(det.id) + "_-?";
+                    // --- 默认值 ---
                     float score = -1.0f;
                     int n_tid = 0;
+                    std::string display_status = "G:-?";
+                    int color_id = det.id;
+                    cv::Scalar color_override(-1, -1, -1); // 用于强制指定颜色的哨兵值
 
+                    // --- 检查此 TID 是否有处理器返回的结果 ---
                     if (cam_map.count(det.id)) {
                         const auto &tpl = cam_map.at(det.id);
-                        full_gid_str = std::get<0>(tpl);
+                        const std::string &full_gid_str = std::get<0>(tpl);
                         score = std::get<1>(tpl);
                         n_tid = std::get<2>(tpl);
+
+                        // --- 解析 full_gid_str 以生成用于显示的状态文本 ---
+                        bool gid_found = false;
+                        size_t g_pos = full_gid_str.find("_G");
+                        if (g_pos != std::string::npos) {
+                            std::string gid_part = full_gid_str.substr(g_pos + 1);
+                            // GID 后面可能跟着告警信息, 例如 G00001_AA
+                            size_t next_underscore = gid_part.find('_');
+                            if (next_underscore != std::string::npos) {
+                                gid_part = gid_part.substr(0, next_underscore);
+                            }
+
+                            if (gid_part.rfind("G", 0) == 0) {
+                                display_status = gid_part;
+                                try { color_id = std::stoi(gid_part.substr(1)); } catch (...) {}
+                                gid_found = true;
+                            }
+                        }
+
+                        // 检查行为告警，它可能附加在 GID 之后
+                        if (full_gid_str.find("_AA") != std::string::npos) {
+                            display_status = (gid_found ? display_status + " " : "") + "Intrusion!";
+                            color_override = cv::Scalar(0, 0, 255); // 红色
+                        } else if (full_gid_str.find("_AL") != std::string::npos) {
+                            display_status = (gid_found ? display_status + " " : "") + "Crossing!";
+                            color_override = cv::Scalar(0, 0, 255); // 红色
+                        }
+                            // 如果没找到 GID 且没有告警，则说明是调试状态
+                        else if (!gid_found) {
+                            if (full_gid_str.find("_-1_b_") != std::string::npos) {
+                                size_t pos = full_gid_str.find("_-1_b_");
+                                display_status =
+                                        "body<" + std::to_string(MIN_BODY4GID) + " (" + full_gid_str.substr(pos + 6) +
+                                        ")";
+                            } else if (full_gid_str.find("_-1_f_") != std::string::npos) {
+                                size_t pos = full_gid_str.find("_-1_f_");
+                                display_status =
+                                        "face<" + std::to_string(MIN_FACE4GID) + " (" + full_gid_str.substr(pos + 6) +
+                                        ")";
+                            } else if (full_gid_str.find("_-2_f") != std::string::npos) {
+                                display_status = "Face Inconsist";
+                            } else if (full_gid_str.find("_-2_b") != std::string::npos) {
+                                display_status = "Body Inconsist";
+                            } else if (full_gid_str.find("_-3") != std::string::npos) {
+                                display_status = "Bind Lock";
+                            } else if (full_gid_str.find("_-4_ud_f") != std::string::npos) {
+                                display_status = "Update Face No";
+                            } else if (full_gid_str.find("_-4_ud_b") != std::string::npos) {
+                                display_status = "Update Body No";
+                            } else if (full_gid_str.find("_-4_c") != std::string::npos) {
+                                display_status = "Cand Wait";
+                            } else if (full_gid_str.find("_-5") != std::string::npos) {
+                                display_status = "New GID Wait";
+                            } else if (full_gid_str.find("_-6") != std::string::npos) {
+                                display_status = "New GID Cool";
+                            } else if (full_gid_str.find("_-7") != std::string::npos) {
+                                display_status = "Ambig Wait";
+                            }
+                        }
                     }
 
-                    size_t gid_pos = full_gid_str.find_last_of('_');
-                    std::string gid_str = full_gid_str.substr(gid_pos + 1);
-
-                    int color_id = det.id;
-                    if (gid_str.rfind("G", 0) == 0) {
-                        try { color_id = std::stoi(gid_str.substr(1)); } catch (...) {}
-                    }
-
-                    // 蓝色(0,0,255) -> BGR(255,0,0) / 绿色(0,255,0) -> BGR(0,255,0) / 红色(255,0,0) -> BGR(0,0,255)
+                    // --- 确定边界框颜色 ---
                     const cv::Scalar colors[] = {{0,   0,   255},
                                                  {0,   255, 0},
                                                  {255, 255, 0},
@@ -244,28 +298,32 @@ int main(int argc, char **argv) {
                                                  {128, 0,   0},
                                                  {0,   128, 0},
                                                  {0,   0,   128}};
-                    cv::Scalar color = colors[color_id % (sizeof(colors) / sizeof(cv::Scalar))];
+                    cv::Scalar color = (color_override[0] != -1)
+                                       ? color_override
+                                       : colors[color_id % (sizeof(colors) / sizeof(cv::Scalar))];
 
+                    // --- 获取框的坐标 ---
                     int x = static_cast<int>(det.tlwh.x * SHOW_SCALE);
                     int y = static_cast<int>(det.tlwh.y * SHOW_SCALE);
                     int w = static_cast<int>(det.tlwh.width * SHOW_SCALE);
                     int h = static_cast<int>(det.tlwh.height * SHOW_SCALE);
 
-                    std::string display_text = "T:" + std::to_string(det.id) + " G:" + gid_str;
-                    if (full_gid_str.find("_AA") != std::string::npos ||
-                        full_gid_str.find("_AL") != std::string::npos) {
-                        color = {0, 0, 255}; // 红色
-                    }
-
+                    // --- 绘制框和文本 ---
                     cv::rectangle(vis, cv::Rect(x, y, w, h), color, 2);
-                    cv::putText(vis, display_text, cv::Point(x, std::max(y - 5, 10)), cv::FONT_HERSHEY_SIMPLEX, 0.5,
+
+                    // 顶部文本: Track ID 和 GID/状态
+                    std::string display_text_top = "T:" + std::to_string(det.id) + " " + display_status;
+                    cv::putText(vis, display_text_top, cv::Point(x, std::max(y - 5, 10)), cv::FONT_HERSHEY_SIMPLEX, 0.5,
                                 color, 1);
 
-                    std::ostringstream ss;
-                    ss << "n=" << n_tid << " s=" << std::fixed << std::setprecision(2) << score;
-                    cv::putText(vis, ss.str(), cv::Point(x, std::max(y + h + 15, 15)), cv::FONT_HERSHEY_SIMPLEX, 0.4,
+                    // 底部文本: n_tid 和 score
+                    std::ostringstream ss_bottom;
+                    ss_bottom << "n=" << n_tid << " s=" << std::fixed << std::setprecision(2) << score;
+                    cv::putText(vis, ss_bottom.str(), cv::Point(x, std::max(y + h + 15, 15)), cv::FONT_HERSHEY_SIMPLEX,
+                                0.4,
                                 color, 1);
                 }
+                // ======================= 【修改结束】 =======================
 
                 // 新增：可视化人脸框
                 for (const auto &face: face_info) {
