@@ -22,7 +22,9 @@ import torch
 from tqdm import tqdm
 
 from cores.byteTrackPipeline import ByteTrackPipeline
-from cores.featureProcessor import FaceSearcher, FeatureProcessor
+from cores.faceSearcher import FaceSearcher  # 假设 FaceSearcher 在此
+# MODIFIED HERE: 路径和类名可能需要根据你的项目结构调整
+from cores.featureProcessor import FeatureProcessor
 
 # ------------------ 确定性设置 ------------------
 SEED = 0  # 你可以改其他整数
@@ -55,14 +57,15 @@ CAM_ID = "cam1"
 # ---- 缓存相关 ----
 SAVE_RAW = False
 LOAD_RAW = True
-RAW_DIR = "/home/manu/tmp/cache_v1"
+RAW_DIR = "/home/manu/tmp/cache_v2"
 OVERWRITE = False
 
 
 # -------------------------------------------------
 
 # ---------------- 工具函数 ----------------
-def save_packet(packet, root_dir=RAW_DIR, overwrite=OVERWRITE):
+# MODIFIED HERE: save_packet 增加 face_info 参数
+def save_packet(packet, face_info, root_dir=RAW_DIR, overwrite=OVERWRITE):
     cam_id, fid, patches, dets = packet
     frame_dir = Path(root_dir) / cam_id / f"{fid:06d}"
     if frame_dir.exists() and not overwrite:
@@ -72,7 +75,8 @@ def save_packet(packet, root_dir=RAW_DIR, overwrite=OVERWRITE):
     patch_names = []
     for i, img in enumerate(patches):
         name = f"patch_{i:02d}.bmp"
-        cv2.imwrite(str(frame_dir / name), img)
+        # 使用 imencode 避免中文路径问题，并确保保存质量
+        cv2.imencode(".bmp", img)[1].tofile(str(frame_dir / name))
         patch_names.append(name)
 
     dets_json = []
@@ -85,21 +89,27 @@ def save_packet(packet, root_dir=RAW_DIR, overwrite=OVERWRITE):
             }
         )
 
-    meta = {"cam_id": cam_id, "fid": fid, "patches": patch_names, "dets": dets_json}
+    # MODIFIED HERE: 将 face_info 添加到 meta 中
+    meta = {"cam_id": cam_id, "fid": fid, "patches": patch_names, "dets": dets_json, "face_info": face_info}
     (frame_dir / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
+# MODIFIED HERE: load_packet 从 meta 中读取 face_info 并返回
 def load_packet(cam_id, fid, root_dir=RAW_DIR):
     frame_dir = Path(root_dir) / cam_id / f"{fid:06d}"
     if not frame_dir.exists():
         raise FileNotFoundError(f"未找到缓存: {frame_dir}")
 
     meta = json.loads((frame_dir / "meta.json").read_text("utf-8"))
-    patches = [cv2.imread(str(frame_dir / p)) for p in meta["patches"]]
+
+    # 使用 imdecode 避免中文路径问题
+    patches = [cv2.imdecode(np.fromfile(str(frame_dir / p), dtype=np.uint8), cv2.IMREAD_COLOR) for p in meta["patches"]]
+
     dets = meta["dets"]
-    return cam_id, fid, patches, dets
+    face_info = meta.get("face_info", [])  # 如果旧缓存没有 face_info，则返回空列表
+    return cam_id, fid, patches, dets, face_info
 
 
 def compare_packet(p1, p2, eps=1.0):
@@ -184,13 +194,20 @@ def main():
     )
 
     tracker = None if LOAD_RAW else ByteTrackPipeline(device=DEVICE)
-    face_app = FaceSearcher(provider="CUDAExecutionProvider").app
+    # MODIFIED HERE: 统一使用FaceSearcher，确保与FeatureProcessor一致
+    face_searcher = FaceSearcher(provider="CUDAExecutionProvider" if DEVICE == "cuda" else "CPUExecutionProvider")
+
     processor = FeatureProcessor(
         device=DEVICE,
         use_fid_time=True,
-        mode='load',  # load or realtime
-        cache_path='/home/manu/tmp/features_cache_v1.json'
+        # MODIFIED HERE: 缓存文件名根据您的要求修改
+        # 如果是 realtime 模式，则会提取特征并在此路径下生成缓存；如果是 load 模式，则从此路径加载特征。
+        mode='load' if LOAD_RAW else 'realtime',
+        cache_path='/home/manu/tmp/features_cache_v2.json'
     )
+    # 确保 processor 内部也使用同一个 face_app 实例以节省资源
+    if processor.face_app is None and processor.mode == 'realtime':
+        processor.face_app = face_searcher.app
 
     f_res = open(OUTPUT_TXT, "w", encoding="utf-8")
     f_res.write("frame_id,cam_id,tid,gid,score,n_tid\n")
@@ -206,14 +223,25 @@ def main():
             fid += 1
             pbar.update(1)
 
+            # if fid > 64 != 0:
+            #     break
+
             if fid % SKIP != 0:
                 continue
 
-            # ------------- 获得 packet -------------
+            # ------------- 准备处理输入 -------------
+            processing_input = {}
             if LOAD_RAW:
-                packet = load_packet(CAM_ID, fid, RAW_DIR)
-                patches, dets = packet[2:]
-            else:
+                # MODIFIED HERE: load_packet 返回5个值，包含 face_info
+                cam_id, _, patches, dets, face_info = load_packet(CAM_ID, fid, RAW_DIR)
+                packet = (cam_id, fid, patches, dets)
+                # MODIFIED HERE: 构造与 realtime 模式下完全一致的输入字典
+                processing_input = {
+                    "packet": packet,
+                    "face_info": face_info,
+                    "full_frame": frame  # 传入 frame 用于后续的可视化
+                }
+            else:  # 实时模式
                 dets = tracker.update(frame, debug=False)
                 # 先按 score 降序排，保证进入 Kalman 顺序一致
                 dets.sort(key=lambda d: -d.get("score", 0))
@@ -230,39 +258,59 @@ def main():
                 # 再按 id 排序，写盘 / 写 txt / 画图都统一
                 dets, patches = sort_dets_and_patches(dets, patches)
                 packet = (CAM_ID, fid, patches, dets)
+
+                # 人脸检测 (全图一次)
+                small = cv2.resize(frame, None, fx=SHOW_SCALE, fy=SHOW_SCALE)
+                faces_bboxes, faces_kpss = face_searcher.app.det_model.detect(
+                    small, max_num=0, metric="default"
+                )
+
+                face_info = []
+                if faces_bboxes is not None and faces_bboxes.shape[0] > 0:
+                    for i in range(faces_bboxes.shape[0]):
+                        bi = faces_bboxes[i, :4].astype(int)
+                        x1, y1, x2, y2 = [int(b / SHOW_SCALE) for b in bi]  # 坐标缩放回原始尺寸
+                        sc = float(faces_bboxes[i, 4])
+                        kps = (
+                            faces_kpss[i].astype(int).tolist()
+                            if faces_kpss is not None
+                            else None
+                        )
+                        if kps:
+                            kps = [
+                                [int(k[0] / SHOW_SCALE), int(k[1] / SHOW_SCALE)]
+                                for k in kps
+                            ]
+                        face_info.append({"bbox": [x1, y1, x2, y2], "score": sc, "kps": kps})
+
+                # MODIFIED HERE: 将 face_info 传入 save_packet
                 if SAVE_RAW:
-                    save_packet(packet, RAW_DIR, overwrite=OVERWRITE)
+                    save_packet(packet, face_info, RAW_DIR, overwrite=OVERWRITE)
 
-            # ------------- 人脸检测 -------------
-            small = cv2.resize(frame, None, fx=SHOW_SCALE, fy=SHOW_SCALE)
-            faces_bboxes, faces_kpss = face_app.det_model.detect(
-                small, max_num=0, metric="default"
-            )
-
-            face_info = []
-            if faces_bboxes is not None and faces_bboxes.shape[0] > 0:
-                for i in range(faces_bboxes.shape[0]):
-                    bi = faces_bboxes[i, :4].astype(int)
-                    x1, y1, x2, y2 = [int(b / SHOW_SCALE) for b in bi]
-                    sc = float(faces_bboxes[i, 4])
-                    kps = (
-                        faces_kpss[i].astype(int).tolist()
-                        if faces_kpss is not None
-                        else None
-                    )
-                    if kps:
-                        kps = [
-                            [int(k[0] / SHOW_SCALE), int(k[1] / SHOW_SCALE)]
-                            for k in kps
-                        ]
-                    face_info.append({"bbox": [x1, y1, x2, y2], "score": sc, "kps": kps})
+                # MODIFIED HERE: 将所有信息打包成字典
+                processing_input = {
+                    "packet": packet,
+                    "face_info": face_info,
+                    "full_frame": frame
+                }
 
             # ------------- 特征处理 -------------
-            realtime_map = processor.process_packet(packet)
+            realtime_map = processor.process_packet(processing_input)
+
+            # 从 packet 或 processing_input 中获取 dets 和 cam_id 用于后续逻辑
+            if isinstance(processing_input, dict):
+                _, _, _, dets = processing_input["packet"]
+                face_info = processing_input.get("face_info", [])
+            else:
+                # 这个分支理论上在新逻辑下不会进入，但为了兼容性保留
+                _, _, _, dets = processing_input
+                face_info = []
+
             cam_map = realtime_map.get(CAM_ID, {})
 
             # 按 tid 升序写 txt
-            for tid in sorted(cam_map.keys()):
+            sorted_keys = sorted(cam_map.keys())
+            for tid in sorted_keys:
                 gid, score, n_tid = cam_map[tid]
                 f_res.write(f"{fid},{CAM_ID},{tid},{gid},{score:.4f},{n_tid}\n")
 
@@ -272,13 +320,24 @@ def main():
             for d in dets:  # dets 已按 id 排序
                 tid = d["id"]
                 x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
-                gid, score, n_tid = cam_map.get(tid, ("-1", -1.0, 0))
-                color = (0, 255, 0) if n_tid < 2 else (0, 0, 255)
+                # MODIFIED HERE: 修复一个潜在的KeyError，使用 .get()
+                gid, score, n_tid = cam_map.get(tid, (f"{CAM_ID}_{tid}_-?", -1.0, 0))
+                color_id = int(str(gid).split('_')[-1].replace('G', '').lstrip('0')) if str(gid).startswith(
+                    'G') else tid
+                color = _COMMON_COLORS[color_id % len(_COMMON_COLORS)]
+
+                # behavior alarm (入侵/穿越) 的特殊显示
+                if str(gid).endswith(('_AA', '_AL')):
+                    color = (0, 0, 255)  # 红色
+                    display_text = f"T:{tid} G:{gid}"
+                else:
+                    display_text = f"T:{tid} G:{gid}"  # 正常显示
+
                 cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
                 cv2.putText(
                     vis,
-                    f"G:{gid}",
-                    (x, max(y + 15, 0)),
+                    display_text,
+                    (x, max(y - 5, 10)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
                     color,
@@ -287,7 +346,7 @@ def main():
                 cv2.putText(
                     vis,
                     f"n={n_tid} s={score:.2f}",
-                    (x, max(y + 30, 0)),
+                    (x, max(y + h + 15, 15)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.4,
                     color,

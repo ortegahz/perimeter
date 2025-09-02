@@ -11,6 +11,8 @@ from typing import Dict, List, Tuple
 import cv2
 import numpy as np
 import torch
+# MODIFIED HERE: 导入 Face 对象
+from insightface.app.common import Face
 from loguru import logger
 
 from cores.faceSearcher import FaceSearcher
@@ -382,6 +384,26 @@ class FeatureProcessor:
         combo = np.concatenate([face_f, body_f]).astype(np.float32)
         return combo / (np.linalg.norm(combo) + 1e-9)
 
+    @staticmethod
+    def _calculate_ioa(person_tlwh: list, face_xyxy: list) -> float:
+        """计算人脸框与人体框的交集面积占人脸框面积的比例 (IoA)"""
+        px, py, pw, ph = person_tlwh
+        px1, py1, px2, py2 = px, py, px + pw, py + ph
+        fx1, fy1, fx2, fy2 = face_xyxy
+
+        x_left = max(px1, fx1)
+        y_top = max(py1, fy1)
+        x_right = min(px2, fx2)
+        y_bottom = min(py2, fy2)
+
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0
+
+        intersection_area = (x_right - x_left) * (y_bottom - y_top)
+        face_area = (fx2 - fx1) * (fy2 - fy1)
+
+        return intersection_area / (face_area + 1e-6)
+
     def _gid_fused_rep(self, gid: str) -> np.ndarray:
         pool = self.gid_mgr.bank.get(gid, {})
         face_f = self.gid_mgr._avg(pool['faces']) if pool.get('faces') else None
@@ -403,7 +425,7 @@ class FeatureProcessor:
         self.features_cache = {}
         self.reid = None
         self.face_app = None
-
+        self.rec_model = None
         if self.mode == 'realtime':
             logger.info("FeatureProcessor in 'realtime' mode. Models will be loaded.")
             if self.cache_path:
@@ -415,6 +437,13 @@ class FeatureProcessor:
                 self.reid.model.to(self.device).eval()
                 face_provider = "CUDAExecutionProvider" if self.device.type == "cuda" else "CPUExecutionProvider"
                 self.face_app = FaceSearcher(provider=face_provider).app
+
+                if 'recognition' in self.face_app.models:
+                    self.rec_model = self.face_app.models['recognition']
+                    logger.info("Recognition-only model extracted from FaceAnalysis app.")
+                else:
+                    raise ValueError("Recognition model not found in FaceAnalysis app!")
+
                 logger.info("ReID and Face models loaded successfully.")
             except Exception as e:
                 logger.error(f"Failed to load models in 'realtime' mode: {e}")
@@ -441,10 +470,7 @@ class FeatureProcessor:
         self.new_gid_state: Dict[str, dict] = {}
         self.alarmed: set[str] = set()
         self.alarm_reprs: Dict[str, np.ndarray] = {}
-
-        # MODIFIED HERE: 增加行为报警状态
-        self.behavior_alarm_state: Dict[str, Tuple[int, str]] = {}  # key: full_tid, val: (start_fid, alarm_type)
-
+        self.behavior_alarm_state: Dict[str, Tuple[int, str]] = {}
         self.intrusion_detectors: Dict[str, IntrusionDetector] = {}
         self.line_crossing_detectors: Dict[str, LineCrossingDetector] = {}
         if boundary_config:
@@ -507,28 +533,21 @@ class FeatureProcessor:
             logger.error(f"[ALARM] 处理 {gid} 失败: {e}")
 
     def process_packet(self, pkt):
-        """
-        pkt = (stream_id, fid, patches, dets)
-        返回 realtime_map: Dict[cam_id][tid] = (gid, score, n_tid)
-        """
-        stream_id, fid, patches, dets = pkt
-
-        # MODIFIED HERE: 捕获新触发的行为报警，并记录到状态中
+        if isinstance(pkt, dict):
+            packet, face_info, full_frame = pkt["packet"], pkt.get("face_info", []), pkt.get("full_frame")
+        else:
+            packet, face_info, full_frame = pkt, [], None
+        stream_id, fid, patches, dets = packet
         if self.intrusion_detectors.get(stream_id):
             for tid_int in self.intrusion_detectors[stream_id].check(dets, stream_id):
-                full_tid = f"{stream_id}_{tid_int}"
-                self.behavior_alarm_state[full_tid] = (fid, '_AA')  # _AA for Area Alarm
-
+                self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, '_AA')
         if self.line_crossing_detectors.get(stream_id):
             for tid_int in self.line_crossing_detectors[stream_id].check(dets, stream_id):
-                full_tid = f"{stream_id}_{tid_int}"
-                self.behavior_alarm_state[full_tid] = (fid, '_AL')  # _AL for Line Alarm
-
+                self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, '_AL')
         if self.use_fid_time:
             now_stamp, max_tid_idle, gid_max_idle = fid, MAX_TID_IDLE_FRAMES, GID_MAX_IDLE_FRAMES
         else:
             now_stamp, max_tid_idle, gid_max_idle = time.time(), MAX_TID_IDLE_SEC, GID_MAX_IDLE_SEC
-
         if self.mode == 'load':
             precomputed_features = self.features_cache.get(str(fid))
             if precomputed_features:
@@ -538,9 +557,8 @@ class FeatureProcessor:
                     face_feat = np.array(feats_dict['face_feat'], dtype=np.float32) if feats_dict.get(
                         'face_feat') else None
                     num_tid = int(tid_str.split('_')[-1])
-                    found_patch, found_score = None, 0.0
-                    for det, patch in zip(dets, patches):
-                        if det['id'] == num_tid: found_patch, found_score = patch, det.get('score', 0.0); break
+                    found_patch, found_score = next(
+                        ((p, d.get('score', 0.0)) for d, p in zip(dets, patches) if d['id'] == num_tid), (None, 0.0))
                     if found_patch is None: continue
                     agg = self.agg_pool.setdefault(tid_str, TrackAgg())
                     if body_feat is not None: agg.add_body(body_feat, found_score, fid, found_patch)
@@ -560,30 +578,65 @@ class FeatureProcessor:
                     feats = torch.nn.functional.normalize(self.reid.model(batch), dim=1)
                 feats = feats.cpu().numpy()
                 for (tid, scr), f, p in zip(metas, feats, keep_patches):
-                    agg = self.agg_pool.setdefault(tid, TrackAgg())
+                    agg, self.last_seen[tid] = self.agg_pool.setdefault(tid, TrackAgg()), now_stamp
                     agg.add_body(f, scr, fid, p)
-                    self.last_seen[tid] = now_stamp
                     extracted_features_for_this_frame.setdefault(tid, {})['body_feat'] = f
-            for det, patch in zip(dets, patches):
-                if det.get('class_id') != 0: continue
-                try:
-                    faces = self.face_app.get(patch)
-                    if len(faces) != 1: continue
-                    face_obj = faces[0]
-                    if getattr(face_obj, "det_score", 1.0) < FACE_DET_MIN_SCORE: continue
-                    if patch.shape[0] < 120 or patch.shape[1] < 120: continue
-                    if cv2.Laplacian(cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var() < 100: continue
-                    f_emb = normv(face_obj.embedding)
-                    tid = f"{stream_id}_{det['id']}"
-                    agg = self.agg_pool.setdefault(tid, TrackAgg())
-                    agg.add_face(f_emb, fid, patch)
-                    self.last_seen[tid] = now_stamp
-                    extracted_features_for_this_frame.setdefault(tid, {})['face_feat'] = f_emb
-                except Exception:
-                    continue
+
+            # MODIFIED HERE: 恢复了唯一性检查
+            if face_info and full_frame is not None and self.rec_model is not None:
+                H, W = full_frame.shape[:2]
+                used_face_indices = set()
+                for det, patch in zip(dets, patches):
+                    if det.get('class_id') != 0: continue
+
+                    # 1. 查找所有与当前人体框 IoA > 0.8 的 *未使用的* 人脸
+                    matching_face_indices = []
+                    for j, face_det in enumerate(face_info):
+                        if j in used_face_indices:
+                            continue
+                        if self._calculate_ioa(det['tlwh'], face_det['bbox']) > 0.8:
+                            matching_face_indices.append(j)
+
+                    # 2. 只有当找到的人脸数量 *正好为1* 时，才认为匹配有效
+                    if len(matching_face_indices) != 1:
+                        continue
+
+                    unique_face_idx = matching_face_indices[0]
+                    used_face_indices.add(unique_face_idx)
+                    face_det = face_info[unique_face_idx]
+
+                    if face_det['score'] < FACE_DET_MIN_SCORE: continue
+
+                    try:
+                        bbox = np.array(face_det['bbox'], dtype=np.float32)
+                        kps = np.array(face_det['kps'], dtype=np.float32) if face_det.get('kps') else None
+                        det_score = face_det.get('score', 0.99)
+                        face = Face(bbox=bbox, kps=kps, det_score=det_score)
+
+                        x1, y1, x2, y2 = map(int, bbox)
+                        if (x2 - x1) < 32 or (y2 - y1) < 32: continue
+                        face_crop_for_blur = full_frame[max(0, y1):min(H, y2), max(0, x1):min(W, x2)]
+                        if face_crop_for_blur.size == 0 or cv2.Laplacian(
+                                cv2.cvtColor(face_crop_for_blur, cv2.COLOR_BGR2GRAY),
+                                cv2.CV_64F).var() < 100: continue
+
+                        self.rec_model.get(full_frame, face)
+
+                        if face.embedding is not None:
+                            f_emb = normv(face.embedding)
+                            tid = f"{stream_id}_{det['id']}"
+                            agg = self.agg_pool.setdefault(tid, TrackAgg())
+                            agg.add_face(f_emb, fid, patch)
+                            self.last_seen[tid] = now_stamp
+                            extracted_features_for_this_frame.setdefault(tid, {})['face_feat'] = f_emb
+                    except Exception as e:
+                        logger.warning(f"Failed to get face embedding for TID {det['id']} due to: {e}")
+                        continue
+
             if self.cache_path and extracted_features_for_this_frame:
                 self.features_to_save.setdefault(str(fid), {}).update(extracted_features_for_this_frame)
 
+        # ... [ GID 绑定和清理逻辑保持不变 ] ...
         realtime_map: Dict[str, Dict[int, Tuple[str, float, int]]] = {}
         for tid, agg in list(self.agg_pool.items()):
             ts, tn = tid.split("_")
@@ -622,7 +675,7 @@ class FeatureProcessor:
                     self.gid_mgr.bind(cand_gid, face_feat, body_feat, agg, tid=tid, current_ts=now_stamp)
                     self.tid2gid[tid] = cand_gid
                     state["last_bind_fid"] = fid
-                    n_tid = len(self.gid_mgr.tid_hist[cand_gid])
+                    n_tid = len(self.gid_mgr.tid_hist.get(cand_gid, []))
                     if n_tid >= ALARM_CNT_TH: self.trigger_alarm(cand_gid, agg)
                     realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{cand_gid}", cand_score, n_tid)
                 else:
@@ -673,22 +726,18 @@ class FeatureProcessor:
                 else:
                     realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-6", -1.0, 0)
 
-        # MODIFIED HERE: 应用并清理持续的行为报警状态
         active_alarms = {}
         for full_tid, (start_fid, alarm_type) in self.behavior_alarm_state.items():
             if fid - start_fid <= BEHAVIOR_ALARM_DURATION_FRAMES:
                 active_alarms[full_tid] = (start_fid, alarm_type)
-
                 s_id, t_id_str = full_tid.split("_")
                 t_id_int = int(t_id_str)
-
                 bound_gid = self.tid2gid.get(full_tid, "")
                 n_tid = len(self.gid_mgr.tid_hist.get(bound_gid, [])) if bound_gid else 0
                 info_str = f"{full_tid}_{bound_gid}{alarm_type}" if bound_gid else f"{full_tid}_-1{alarm_type}"
                 realtime_map.setdefault(s_id, {})[t_id_int] = (info_str, 1.0, n_tid)
         self.behavior_alarm_state = active_alarms
 
-        # Cleanup logic (unchanged)
         for tid in list(self.last_seen.keys()):
             if now_stamp - self.last_seen[tid] >= max_tid_idle:
                 self.last_seen.pop(tid, None)
@@ -696,7 +745,7 @@ class FeatureProcessor:
                 self.tid2gid.pop(tid, None)
                 self.new_gid_state.pop(tid, None)
                 self.agg_pool.pop(tid, None)
-                self.behavior_alarm_state.pop(tid, None)  # 清理关联的行为报警
+                self.behavior_alarm_state.pop(tid, None)
 
         to_delete = [gid for gid, t in self.gid_mgr.last_update.items() if now_stamp - t >= gid_max_idle]
         for gid in to_delete:
@@ -707,7 +756,7 @@ class FeatureProcessor:
                 self.new_gid_state.pop(tid, None)
                 self.agg_pool.pop(tid, None)
                 self.last_seen.pop(tid, None)
-                self.behavior_alarm_state.pop(tid, None)  # 清理关联的行为报警
+                self.behavior_alarm_state.pop(tid, None)
             self.gid_mgr.bank.pop(gid, None)
             self.gid_mgr.tid_hist.pop(gid, None)
             self.gid_mgr.last_update.pop(gid, None)
