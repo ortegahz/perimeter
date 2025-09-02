@@ -229,15 +229,17 @@ public:
     ~FeatureProcessor();
 
     // ======================= 【修改的部分在此】 =======================
+    // 移除了 const cv::Mat& full_frame 参数
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>>
-    process_packet(const Packet &pkt, const std::vector<Face> &face_info, const cv::Mat &full_frame);
+    process_packet(const Packet &pkt, const std::vector<Face> &face_info);
     // ======================= 【修改结束】 =======================
 
 private:
     // ======================= 【修改的部分在此】 =======================
-    void _extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info, const cv::Mat &full_frame);
-
+    // 移除了 const cv::Mat& full_frame 参数
+    void _extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info);
     // ======================= 【修改结束】 =======================
+
     void _load_features_from_cache(const Packet &pkt);
 
     std::vector<float> _fuse_feat(const std::vector<float> &face_f, const std::vector<float> &body_f);

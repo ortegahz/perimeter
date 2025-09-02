@@ -72,6 +72,7 @@ static std::pair<float, float> mean_stddev(const std::vector<float> &data) {
 
 // IoA 计算函数
 static float calculate_ioa(const cv::Rect2f &person_tlwh, const cv::Rect2d &face_xyxy) {
+    // face_xyxy is bbox format: [x,y,width,height]
     cv::Rect2f person_rect = person_tlwh;
     cv::Rect2f face_rect(face_xyxy);
 
@@ -349,15 +350,17 @@ FeatureProcessor::~FeatureProcessor() {
     }
 }
 
-void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info,
-                                                  const cv::Mat &full_frame) {
+// ======================= 【修改的部分在此】 =======================
+// 函数定义移除了 const cv::Mat& full_frame 参数
+// 内部逻辑修改为从人体 patch 中提取人脸 patch
+void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info) {
     const auto &[stream_id, fid, patches, dets] = pkt;
     nlohmann::json extracted_features_for_this_frame;
-    cv::Size frame_size = full_frame.size();
 
-    // 1. 行人重识别 (ReID)
+    // 1. 行人重识别 (ReID) - 此部分逻辑不变
     for (size_t i = 0; i < dets.size(); ++i) {
         const auto &det = dets[i];
+        if (i >= patches.size()) continue;
         const auto &patch = patches[i];
         if (det.class_id != 0 || !is_long_patch(patch)) continue;
 
@@ -376,14 +379,16 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::
         }
     }
 
-    // 2. 人脸与人体的匹配及人脸特征提取
-    if (!face_info.empty() && !full_frame.empty() && face_analyzer_) {
+    // 2. 人脸与人体的匹配及人脸特征提取 (核心修改逻辑)
+    if (!face_info.empty() && !patches.empty() && face_analyzer_) {
         std::set<size_t> used_face_indices;
         for (size_t i = 0; i < dets.size(); ++i) {
             const auto &det = dets[i];
             if (det.class_id != 0) continue;
+            if (i >= patches.size()) continue; // 安全检查
+            const auto &person_patch = patches[i];
 
-            // 2.1 查找所有与当前人体框IoA > 0.8的 *未使用* 的人脸
+            // 2.1 查找所有与当前人体框IoA > 0.8的 *未使用* 的人脸（匹配逻辑不变，使用全局坐标）
             std::vector<size_t> matching_face_indices;
             for (size_t j = 0; j < face_info.size(); ++j) {
                 if (used_face_indices.count(j)) continue;
@@ -396,32 +401,49 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::
             if (matching_face_indices.size() != 1) continue;
 
             size_t unique_face_idx = matching_face_indices[0];
+
+            const Face &face_global_coords = face_info[unique_face_idx];
+            if (face_global_coords.det_score < FACE_DET_MIN_SCORE) continue;
+
+            // 分数达标，声明占用此人脸
             used_face_indices.insert(unique_face_idx);
 
-            Face face = face_info[unique_face_idx];
+            // 2.3 将人脸坐标转换为人体patch的相对坐标, 并进行清晰度检查
+            Face face_relative_coords = face_global_coords; // 复制一份用于修改
 
-            if (face.det_score < FACE_DET_MIN_SCORE) continue;
+            // 将全局人脸BBox转换为相对于人体patch的BBox
+            face_relative_coords.bbox.x -= det.tlwh.x;
+            face_relative_coords.bbox.y -= det.tlwh.y;
 
-            // 2.3 图像清晰度检查
-            cv::Rect face_bbox_safe = cv::Rect(face.bbox) & cv::Rect(0, 0, frame_size.width, frame_size.height);
-            if (face_bbox_safe.width < 32 || face_bbox_safe.height < 32) continue;
+            // 将全局人脸关键点转换为相对于人体patch的关键点
+            for (auto &kp: face_relative_coords.kps) {
+                kp.x -= det.tlwh.x;
+                kp.y -= det.tlwh.y;
+            }
 
-            cv::Mat face_crop_for_blur = full_frame(face_bbox_safe);
-            if (face_crop_for_blur.empty()) continue;
+            // 安全地裁剪出人脸patch并检查
+            cv::Rect face_bbox_in_patch_safe =
+                    cv::Rect(face_relative_coords.bbox) & cv::Rect(0, 0, person_patch.cols, person_patch.rows);
+            if (face_bbox_in_patch_safe.width < 32 || face_bbox_in_patch_safe.height < 32) continue;
 
+            cv::Mat face_crop = person_patch(face_bbox_in_patch_safe);
+            if (face_crop.empty()) continue;
+
+            // 清晰度检查
             cv::Mat gray, laplacian, mu, sigma;
-            cv::cvtColor(face_crop_for_blur, gray, cv::COLOR_BGR2GRAY);
+            cv::cvtColor(face_crop, gray, cv::COLOR_BGR2GRAY);
             cv::Laplacian(gray, laplacian, CV_64F);
             cv::meanStdDev(laplacian, mu, sigma);
             if (sigma.at<double>(0, 0) * sigma.at<double>(0, 0) < 100) continue;
 
-            // 2.4 提取人脸特征
+            // 2.4 从人体patch中提取人脸特征
             try {
-                face_analyzer_->get_embedding(full_frame, face);
-                if (face.embedding.empty()) continue;
+                // 将人体patch和相对坐标的人脸信息传给分析器
+                face_analyzer_->get_embedding(person_patch, face_relative_coords);
+                if (face_relative_coords.embedding.empty()) continue;
 
                 cv::Mat normalized_emb;
-                cv::normalize(face.embedding, normalized_emb, 1.0, 0.0, cv::NORM_L2);
+                cv::normalize(face_relative_coords.embedding, normalized_emb, 1.0, 0.0, cv::NORM_L2);
                 std::vector<float> f_emb(normalized_emb.begin<float>(), normalized_emb.end<float>());
 
                 std::string tid_str = stream_id + "_" + std::to_string(det.id);
@@ -431,6 +453,8 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::
                     extracted_features_for_this_frame[tid_str]["face_feat"] = f_emb;
                 }
             } catch (const std::exception &e) {
+                std::cerr << "\n[WARN] Exception during face embedding extraction for tid " << det.id << " in frame "
+                          << fid << ": " << e.what() << std::endl;
                 continue;
             }
         }
@@ -440,6 +464,7 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::
         features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
     }
 }
+// ======================= 【修改结束】 =======================
 
 void FeatureProcessor::_load_features_from_cache(const Packet &pkt) {
     const auto &[stream_id, fid, patches, dets] = pkt;
@@ -518,9 +543,11 @@ void FeatureProcessor::trigger_alarm(const std::string &gid) {
     }
 }
 
-auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face> &face_info, const cv::Mat &full_frame)
+// ======================= 【修改的部分在此】 =======================
+// 函数定义移除了 const cv::Mat& full_frame 参数
+auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face> &face_info)
 -> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
-
+// ======================= 【修改结束】 =======================
     const auto &[stream_id, fid, patches, dets] = pkt;
 
     // 1. 入侵/穿越检测
@@ -541,7 +568,10 @@ auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face>
 
     // 2. 特征提取
     if (mode_ == "realtime") {
-        _extract_features_realtime(pkt, face_info, full_frame);
+        // ======================= 【修改的部分在此】 =======================
+        // 调用修改后的_extract_features_realtime，不再传递full_frame
+        _extract_features_realtime(pkt, face_info);
+        // ======================= 【修改结束】 =======================
     } else if (mode_ == "load") {
         _load_features_from_cache(pkt);
     }
