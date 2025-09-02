@@ -5,21 +5,19 @@
 #include <stdexcept>
 #include <numeric>
 #include <iostream>
+#include <chrono>
 
-// 1. 定义模型路径和参数 (请确保这些路径正确)
-const std::string REID_MODEL_PATH = "/mnt/nfs/reid_model.onnx";
-const std::string FACE_DET_MODEL_PATH = "/mnt/nfs/det_10g_simplified.onnx";
-const std::string FACE_REC_MODEL_PATH = "/mnt/nfs/w600k_r50_simplified.onnx";
+const std::string REID_MODEL_PATH = "/home/manu/nfs/reid_model.onnx";
+const std::string FACE_DET_MODEL_PATH = "/home/manu/nfs/det_10g_simplified.onnx";
+const std::string FACE_REC_MODEL_PATH = "/home/manu/nfs/w600k_r50_simplified.onnx";
 const int REID_INPUT_WIDTH = 128;
 const int REID_INPUT_HEIGHT = 256;
 
-// 2. 从 Python 逻辑移植的辅助函数
 static bool is_long_patch(const cv::Mat &patch, float thr = MIN_HW_RATIO) {
     if (patch.empty()) return false;
     return (float) patch.rows / ((float) patch.cols + 1e-9f) >= thr;
 }
 
-/* ----------------- 工具函数 ----------------- */
 static float sim_vec(const std::vector<float> &a, const std::vector<float> &b) {
     if (a.empty() || b.empty() || a.size() != b.size()) return 0.f;
     float s = 0.f;
@@ -72,8 +70,19 @@ static std::pair<float, float> mean_stddev(const std::vector<float> &data) {
     return {mean, stddev};
 }
 
-// ======================= 【NEW FUNCTION】 =======================
-// 新增：从 Python 移植的 GID 原型离群点移除逻辑
+// IoA 计算函数
+static float calculate_ioa(const cv::Rect2f &person_tlwh, const cv::Rect2d &face_xyxy) {
+    cv::Rect2f person_rect = person_tlwh;
+    cv::Rect2f face_rect(face_xyxy);
+
+    cv::Rect2f intersection = person_rect & face_rect;
+    if (intersection.area() <= 0 || face_rect.area() <= 0) {
+        return 0.0f;
+    }
+    return intersection.area() / face_rect.area();
+}
+
+// GID 原型离群点移除逻辑
 static std::pair<std::vector<std::vector<float>>, std::vector<bool>>
 remove_outliers_cpp(const std::vector<std::vector<float>> &embeddings, float thresh) {
     size_t n = embeddings.size();
@@ -99,12 +108,11 @@ remove_outliers_cpp(const std::vector<std::vector<float>> &embeddings, float thr
             keep_mask[i] = false;
         }
     }
-    if (new_list.empty()) { // 如果所有都被标记为离群点，则保留所有
+    if (new_list.empty()) {
         return {embeddings, std::vector<bool>(n, true)};
     }
     return {new_list, keep_mask};
 }
-// ======================= 【修改结束】 =======================
 
 static std::vector<float>
 main_representation_cpp(const std::deque<std::vector<float>> &feats_dq, float outlier_thr = 1.5f) {
@@ -139,6 +147,7 @@ bool TrackAgg::check_consistency(const std::deque<std::vector<float>> &feats, fl
     for (size_t i = 0; i < feats.size(); ++i)
         for (size_t j = i + 1; j < feats.size(); ++j)
             sims.push_back(sim_vec(feats[i], feats[j]));
+    if (sims.empty()) return true;
     float m = 0.f;
     for (float v: sims) m += v;
     m /= sims.size();
@@ -147,12 +156,12 @@ bool TrackAgg::check_consistency(const std::deque<std::vector<float>> &feats, fl
 
 void TrackAgg::add_body(const std::vector<float> &feat, float score) {
     body.emplace_back(feat, score);
-    if ((int) body.size() > MIN_BODY4GID) body.pop_front();
+    if (body.size() > MIN_BODY4GID) body.pop_front();
 }
 
 void TrackAgg::add_face(const std::vector<float> &feat) {
     face.push_back(feat);
-    if ((int) face.size() > MIN_FACE4GID) face.pop_front();
+    if (face.size() > MIN_FACE4GID) face.pop_front();
 }
 
 std::vector<float> TrackAgg::main_body_feat() const {
@@ -191,15 +200,11 @@ static void add_proto(std::vector<std::vector<float>> &lst, const std::vector<fl
         }
         lst[idx] = blend(lst[idx], feat);
     }
-
-    // ======================= 【FIXED】 =======================
-    // 新增：在更新原型后，进行离群点移除以保持特征库纯净
-    // Python GlobalID 初始化时 outlier_thresh=3.0
     auto [new_lst, keep_mask] = remove_outliers_cpp(lst, 3.0f);
     if (new_lst.size() != lst.size()) {
+        std::cout << "[GlobalID] Outlier removed: " << lst.size() - new_lst.size() << std::endl;
         lst = new_lst;
     }
-    // ======================= 【修改结束】 =======================
 }
 
 std::string GlobalID::new_gid() {
@@ -240,7 +245,9 @@ std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, 
     float best_score = -1.f;
     for (auto &kv: bank_faces) {
         const std::string &gid = kv.first;
-        if (bank_faces[gid].empty() || bank_bodies[gid].empty()) continue;
+        if (bank_faces.count(gid) == 0 || bank_bodies.count(gid) == 0 || bank_faces[gid].empty() ||
+            bank_bodies[gid].empty())
+            continue;
         float face_sim = face_f.empty() ? 0.f : sim_vec(face_f, avg_feats(bank_faces[gid]));
         float body_sim = body_f.empty() ? 0.f : sim_vec(body_f, avg_feats(bank_bodies[gid]));
         float sc = W_FACE * face_sim + W_BODY * body_sim;
@@ -262,14 +269,12 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
         std::cout << "Loading ReID and Face models for feature extraction..." << std::endl;
         bool use_gpu = (device == "cuda");
         try {
-            // 初始化 PersonReid 模型
             reid_model_ = std::make_unique<PersonReid>(REID_MODEL_PATH, REID_INPUT_WIDTH, REID_INPUT_HEIGHT, use_gpu);
             std::cout << "[INFO] PersonReid model loaded successfully." << std::endl;
 
-            // 初始化 FaceAnalyzer 模型
             face_analyzer_ = std::make_unique<FaceAnalyzer>(FACE_DET_MODEL_PATH, FACE_REC_MODEL_PATH);
             std::string provider = use_gpu ? "CUDAExecutionProvider" : "CPUExecutionProvider";
-            face_analyzer_->prepare(provider, 0.5f, cv::Size(640, 640));
+            face_analyzer_->prepare(provider, FACE_DET_MIN_SCORE, cv::Size(640, 640));
             std::cout << "[INFO] FaceAnalyzer model loaded successfully." << std::endl;
 
         } catch (const std::exception &e) {
@@ -279,7 +284,8 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
 
         if (!feature_cache_path_.empty()) {
             std::cout << "Extracted features will be cached to: " << feature_cache_path_ << std::endl;
-            std::filesystem::create_directories(std::filesystem::path(feature_cache_path_).parent_path());
+            auto parent_path = std::filesystem::path(feature_cache_path_).parent_path();
+            if (!parent_path.empty()) std::filesystem::create_directories(parent_path);
         }
 
     } else if (mode_ == "load") {
@@ -330,7 +336,7 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
 }
 
 FeatureProcessor::~FeatureProcessor() {
-    if (mode_ == "realtime" && !feature_cache_path_.empty() && !features_to_save_.empty()) {
+    if (mode_ == "realtime" && !feature_cache_path_.empty() && !features_to_save_.is_null()) {
         std::cout << "\nSaving " << features_to_save_.size() << " frames of features to '" << feature_cache_path_
                   << "'..." << std::endl;
         try {
@@ -343,110 +349,109 @@ FeatureProcessor::~FeatureProcessor() {
     }
 }
 
-void FeatureProcessor::_extract_features_realtime(const Packet &pkt) {
-    using clk = std::chrono::high_resolution_clock;
-    auto t0 = clk::now();
-
+void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info,
+                                                  const cv::Mat &full_frame) {
     const auto &[stream_id, fid, patches, dets] = pkt;
     nlohmann::json extracted_features_for_this_frame;
+    cv::Size frame_size = full_frame.size();
 
-    double time_reid = 0.0;
-    double time_face_det = 0.0;
-    double time_face_rec = 0.0;
-
-    // --- 1. 行人重识别 (ReID) ---
+    // 1. 行人重识别 (ReID)
     for (size_t i = 0; i < dets.size(); ++i) {
         const auto &det = dets[i];
         const auto &patch = patches[i];
-        if (det.class_id != 0 || !is_long_patch(patch)) {
-            continue;
-        }
+        if (det.class_id != 0 || !is_long_patch(patch)) continue;
 
-        auto t1 = clk::now();
         cv::Mat resized_patch;
         cv::resize(patch, resized_patch, cv::Size(REID_INPUT_WIDTH, REID_INPUT_HEIGHT));
         cv::Mat feat_mat = reid_model_->extract_feat(resized_patch);
-        auto t2 = clk::now();
-        time_reid += std::chrono::duration<double, std::milli>(t2 - t1).count();
+        if (feat_mat.empty()) continue;
 
-        if (feat_mat.empty()) {
-            continue;
-        }
         std::vector<float> feat_vec(feat_mat.begin<float>(), feat_mat.end<float>());
         std::string tid_str = stream_id + "_" + std::to_string(det.id);
-        auto &agg = agg_pool[tid_str];
-        agg.add_body(feat_vec, det.score);
+
+        agg_pool[tid_str].add_body(feat_vec, det.score);
         last_seen[tid_str] = fid;
         if (!feature_cache_path_.empty()) {
             extracted_features_for_this_frame[tid_str]["body_feat"] = feat_vec;
         }
     }
 
-    // --- 2. 人脸检测 + 人脸特征提取 ---
-    for (size_t i = 0; i < dets.size(); ++i) {
-        const auto &det = dets[i];
-        const auto &patch = patches[i];
-        if (det.class_id != 0) continue;
-        try {
-            auto t1 = clk::now();
-            auto faces = face_analyzer_->get(patch);  // 检测 + 对齐 + embedding
-            auto t2 = clk::now();
-            time_face_det += std::chrono::duration<double, std::milli>(t2 - t1).count();
+    // 2. 人脸与人体的匹配及人脸特征提取
+    if (!face_info.empty() && !full_frame.empty() && face_analyzer_) {
+        std::set<size_t> used_face_indices;
+        for (size_t i = 0; i < dets.size(); ++i) {
+            const auto &det = dets[i];
+            if (det.class_id != 0) continue;
 
-            if (faces.size() != 1) continue;
-            const auto &face = faces[0];
+            // 2.1 查找所有与当前人体框IoA > 0.8的 *未使用* 的人脸
+            std::vector<size_t> matching_face_indices;
+            for (size_t j = 0; j < face_info.size(); ++j) {
+                if (used_face_indices.count(j)) continue;
+                if (calculate_ioa(det.tlwh, face_info[j].bbox) > 0.8) {
+                    matching_face_indices.push_back(j);
+                }
+            }
+
+            // 2.2 只有当找到的人脸数量 *正好为1* 时，才认为匹配有效
+            if (matching_face_indices.size() != 1) continue;
+
+            size_t unique_face_idx = matching_face_indices[0];
+            used_face_indices.insert(unique_face_idx);
+
+            Face face = face_info[unique_face_idx];
+
             if (face.det_score < FACE_DET_MIN_SCORE) continue;
-            if (patch.rows < 120 || patch.cols < 120) continue;
 
-            // 图像清晰度检查
+            // 2.3 图像清晰度检查
+            cv::Rect face_bbox_safe = cv::Rect(face.bbox) & cv::Rect(0, 0, frame_size.width, frame_size.height);
+            if (face_bbox_safe.width < 32 || face_bbox_safe.height < 32) continue;
+
+            cv::Mat face_crop_for_blur = full_frame(face_bbox_safe);
+            if (face_crop_for_blur.empty()) continue;
+
             cv::Mat gray, laplacian, mu, sigma;
-            cv::cvtColor(patch, gray, cv::COLOR_BGR2GRAY);
+            cv::cvtColor(face_crop_for_blur, gray, cv::COLOR_BGR2GRAY);
             cv::Laplacian(gray, laplacian, CV_64F);
             cv::meanStdDev(laplacian, mu, sigma);
             if (sigma.at<double>(0, 0) * sigma.at<double>(0, 0) < 100) continue;
 
-            auto t3 = clk::now();
-            // embedding 已在 get() 中产生
-            cv::Mat normalized_emb;
-            cv::normalize(face.embedding, normalized_emb, 1.0, 0.0, cv::NORM_L2);
-            std::vector<float> f_emb(normalized_emb.begin<float>(), normalized_emb.end<float>());
-            auto t4 = clk::now();
-            time_face_rec += std::chrono::duration<double, std::milli>(t4 - t3).count();
+            // 2.4 提取人脸特征
+            try {
+                face_analyzer_->get_embedding(full_frame, face);
+                if (face.embedding.empty()) continue;
 
-            std::string tid_str = stream_id + "_" + std::to_string(det.id);
-            auto &agg = agg_pool[tid_str];
-            agg.add_face(f_emb);
-            last_seen[tid_str] = fid;
-            if (!feature_cache_path_.empty()) {
-                extracted_features_for_this_frame[tid_str]["face_feat"] = f_emb;
+                cv::Mat normalized_emb;
+                cv::normalize(face.embedding, normalized_emb, 1.0, 0.0, cv::NORM_L2);
+                std::vector<float> f_emb(normalized_emb.begin<float>(), normalized_emb.end<float>());
+
+                std::string tid_str = stream_id + "_" + std::to_string(det.id);
+                agg_pool[tid_str].add_face(f_emb);
+                last_seen[tid_str] = fid;
+                if (!feature_cache_path_.empty()) {
+                    extracted_features_for_this_frame[tid_str]["face_feat"] = f_emb;
+                }
+            } catch (const std::exception &e) {
+                continue;
             }
-        } catch (const std::exception &e) {
-            continue;
         }
     }
 
     if (!feature_cache_path_.empty() && !extracted_features_for_this_frame.is_null()) {
         features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
     }
-
-    auto t_end = clk::now();
-    double total_time = std::chrono::duration<double, std::milli>(t_end - t0).count();
-
-    // --- 打印细分耗时 ---
-    std::cout << "[Extract f" << fid << "] ReID=" << time_reid
-              << " ms, FaceDet=" << time_face_det
-              << " ms, FaceRec=" << time_face_rec
-              << " ms, TOTAL=" << total_time
-              << " ms" << std::endl;
 }
 
 void FeatureProcessor::_load_features_from_cache(const Packet &pkt) {
     const auto &[stream_id, fid, patches, dets] = pkt;
     std::string fid_str = std::to_string(fid);
     if (!features_cache_.contains(fid_str)) return;
-    for (auto &[tid_str_json, fd]: features_cache_.at(fid_str).items()) {
+    for (auto it = features_cache_.at(fid_str).begin(); it != features_cache_.at(fid_str).end(); ++it) {
+        const std::string &tid_str_json = it.key();
+        const nlohmann::json &fd = it.value();
+
         int tid_num = -1;
         try { tid_num = std::stoi(tid_str_json.substr(tid_str_json.find('_') + 1)); } catch (...) { continue; }
+
         float score = 0.f;
         for (const auto &det: dets) {
             if (det.id == tid_num) {
@@ -454,9 +459,11 @@ void FeatureProcessor::_load_features_from_cache(const Packet &pkt) {
                 break;
             }
         }
+
         std::vector<float> bf, ff;
         if (fd.contains("body_feat") && !fd["body_feat"].is_null()) bf = fd["body_feat"].get<std::vector<float>>();
         if (fd.contains("face_feat") && !fd["face_feat"].is_null()) ff = fd["face_feat"].get<std::vector<float>>();
+
         auto &agg = agg_pool[tid_str_json];
         if (!bf.empty()) agg.add_body(bf, score);
         if (!ff.empty()) agg.add_face(ff);
@@ -493,35 +500,30 @@ void FeatureProcessor::trigger_alarm(const std::string &gid) {
     auto cur_rep = _gid_fused_rep(gid);
     if (cur_rep.empty()) return;
     for (const auto &[ogid, rep]: alarm_reprs) {
-        if (sim_vec(cur_rep, rep) >= ALARM_DUP_THR) {
-            return;
-        }
+        if (sim_vec(cur_rep, rep) >= ALARM_DUP_THR) { return; }
     }
     time_t now_time = time(0);
     char buf[80];
     strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", localtime(&now_time));
-    std::string dst_dir = std::filesystem::path(ALARM_DIR) / (gid + "_" + buf);
+    std::filesystem::path dst_dir = std::filesystem::path(ALARM_DIR) / (gid + "_" + buf);
     try {
-        if (std::filesystem::exists(std::filesystem::path(SAVE_DIR) / gid))
-            std::filesystem::copy(std::filesystem::path(SAVE_DIR) / gid, dst_dir,
-                                  std::filesystem::copy_options::recursive);
+        std::filesystem::path src_dir = std::filesystem::path(SAVE_DIR) / gid;
+        if (std::filesystem::exists(src_dir))
+            std::filesystem::copy(src_dir, dst_dir, std::filesystem::copy_options::recursive);
         alarmed.insert(gid);
         alarm_reprs[gid] = cur_rep;
+        std::cout << "\n[ALARM] GID " << gid << " triggered and backed up to " << dst_dir.string() << std::endl;
     } catch (const std::exception &e) {
-        std::cerr << "[ALARM] Failed copy for " << gid << ": " << e.what() << std::endl;
+        std::cerr << "\n[ALARM] Failed copy for " << gid << ": " << e.what() << std::endl;
     }
 }
 
-auto FeatureProcessor::process_packet(
-        const Packet &pkt) -> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
-
-    using clk = std::chrono::high_resolution_clock;
-    auto t0 = clk::now();
+auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face> &face_info, const cv::Mat &full_frame)
+-> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
 
     const auto &[stream_id, fid, patches, dets] = pkt;
 
-    // -------------------- 1. 入侵检测 --------------------
-    auto t1 = clk::now();
+    // 1. 入侵/穿越检测
     if (intrusion_detectors.count(stream_id)) {
         auto alarmed_tids = intrusion_detectors.at(stream_id).check(dets, stream_id);
         for (int tid: alarmed_tids) {
@@ -529,9 +531,6 @@ auto FeatureProcessor::process_packet(
             behavior_alarm_state[full_tid] = {fid, "_AA"};
         }
     }
-    auto t2 = clk::now();
-
-    // -------------------- 2. 线穿越检测 --------------------
     if (line_crossing_detectors.count(stream_id)) {
         auto alarmed_tids = line_crossing_detectors.at(stream_id).check(dets, stream_id);
         for (int tid: alarmed_tids) {
@@ -539,17 +538,15 @@ auto FeatureProcessor::process_packet(
             behavior_alarm_state[full_tid] = {fid, "_AL"};
         }
     }
-    auto t3 = clk::now();
 
-    // -------------------- 3. 特征提取 --------------------
+    // 2. 特征提取
     if (mode_ == "realtime") {
-        _extract_features_realtime(pkt);
+        _extract_features_realtime(pkt, face_info, full_frame);
     } else if (mode_ == "load") {
         _load_features_from_cache(pkt);
     }
-    auto t4 = clk::now();
 
-    // -------------------- 4. Probe & GID 绑定 --------------------
+    // 3. Probe & GID 绑定
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> realtime_map;
     for (auto const &[tid_str, agg]: agg_pool) {
         size_t last_underscore = tid_str.find_last_of('_');
@@ -586,7 +583,7 @@ auto FeatureProcessor::process_packet(
             int lock_elapsed = fid - state.last_bind_fid;
             if (!cand_gid.empty() && cand_gid != bound_gid && lock_elapsed < BIND_LOCK_FRAMES) {
                 int n = gid_mgr.tid_hist.count(bound_gid) ? (int) gid_mgr.tid_hist.at(bound_gid).size() : 0;
-                realtime_map[s_id][tid_num] = {tid_str + "_-3", score, n};
+                realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_-3", score, n};
                 continue;
             }
         }
@@ -602,7 +599,7 @@ auto FeatureProcessor::process_packet(
                 state.last_bind_fid = fid;
                 int n = (int) gid_mgr.tid_hist[cand_gid].size();
                 if (n >= ALARM_CNT_TH) trigger_alarm(cand_gid);
-                realtime_map[s_id][tid_num] = {tid_str + "_" + cand_gid, score, n};
+                realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
             } else {
                 std::string flag = (flag_code == -1) ? "_-4_ud_f" : (flag_code == -2) ? "_-4_ud_b" : "_-4_c";
                 realtime_map[s_id][tid_num] = {tid_str + flag, -1.0f, 0};
@@ -615,7 +612,7 @@ auto FeatureProcessor::process_packet(
             ng_state.last_new_fid = fid;
             int n = (int) gid_mgr.tid_hist[new_gid].size();
             if (n >= ALARM_CNT_TH) trigger_alarm(new_gid);
-            realtime_map[s_id][tid_num] = {tid_str + "_" + new_gid, score, n};
+            realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
         } else if (!cand_gid.empty() && score >= THR_NEW_GID) {
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
@@ -626,7 +623,7 @@ auto FeatureProcessor::process_packet(
                 ng_state = {0, fid, 0};
                 int n = (int) gid_mgr.tid_hist[new_gid].size();
                 if (n >= ALARM_CNT_TH) trigger_alarm(new_gid);
-                realtime_map[s_id][tid_num] = {tid_str + "_" + new_gid, score, n};
+                realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
             } else { realtime_map[s_id][tid_num] = {tid_str + "_-7", score, 0}; }
         } else {
             ng_state.ambig_count = 0;
@@ -640,14 +637,13 @@ auto FeatureProcessor::process_packet(
                     ng_state = {0, fid, 0};
                     int n = (int) gid_mgr.tid_hist[new_gid].size();
                     if (n >= ALARM_CNT_TH) trigger_alarm(new_gid);
-                    realtime_map[s_id][tid_num] = {tid_str + "_" + new_gid, score, n};
+                    realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
                 } else { realtime_map[s_id][tid_num] = {tid_str + "_-5", -1.0f, 0}; }
             } else { realtime_map[s_id][tid_num] = {tid_str + "_-6", -1.0f, 0}; }
         }
     }
-    auto t5 = clk::now();
 
-    // -------------------- 5. 后处理 / 清理 --------------------
+    // 4. 后处理 / 清理
     std::map<std::string, std::tuple<int, std::string>> active_alarms;
     for (const auto &[full_tid, state_tuple]: behavior_alarm_state) {
         const auto &[start_fid, alarm_type] = state_tuple;
@@ -668,7 +664,7 @@ auto FeatureProcessor::process_packet(
     }
     behavior_alarm_state = active_alarms;
 
-    for (auto it = last_seen.begin(); it != last_seen.end();) {
+    for (auto it = last_seen.cbegin(); it != last_seen.cend();) {
         if (fid - it->second >= MAX_TID_IDLE_FRAMES) {
             agg_pool.erase(it->first);
             tid2gid.erase(it->first);
@@ -676,7 +672,9 @@ auto FeatureProcessor::process_packet(
             new_gid_state.erase(it->first);
             behavior_alarm_state.erase(it->first);
             it = last_seen.erase(it);
-        } else ++it;
+        } else {
+            ++it;
+        }
     }
 
     std::vector<std::string> gids_to_del;
@@ -703,23 +701,6 @@ auto FeatureProcessor::process_packet(
         alarm_reprs.erase(gid_del);
         try { std::filesystem::remove_all(std::filesystem::path(SAVE_DIR) / gid_del); } catch (...) {}
     }
-    auto t6 = clk::now();
-
-    // -------------------- 6. 打印耗时 --------------------
-    auto d_intrusion = std::chrono::duration<double, std::milli>(t2 - t1).count();
-    auto d_linecross = std::chrono::duration<double, std::milli>(t3 - t2).count();
-    auto d_extract = std::chrono::duration<double, std::milli>(t4 - t3).count();
-    auto d_probe = std::chrono::duration<double, std::milli>(t5 - t4).count();
-    auto d_post = std::chrono::duration<double, std::milli>(t6 - t5).count();
-    auto d_total = std::chrono::duration<double, std::milli>(t6 - t0).count();
-
-    std::cout << "[Timing f" << fid << "] intr=" << d_intrusion
-              << "ms, line=" << d_linecross
-              << "ms, extract=" << d_extract
-              << "ms, probe=" << d_probe
-              << "ms, post=" << d_post
-              << "ms, TOTAL=" << d_total << "ms"
-              << std::endl;
 
     return realtime_map;
 }

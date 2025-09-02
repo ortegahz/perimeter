@@ -12,8 +12,7 @@
 #include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
 
-// 1. 包含你提供的真实模型头文件
-//    (假设这些文件位于 cores/ 目录下)
+// 包含模型头文件
 #include "cores/personReid/PersonReid.hpp"
 #include "cores/face/FaceAnalyzer.hpp"
 
@@ -48,20 +47,18 @@ constexpr int EMB_FACE_DIM = 512;
 constexpr int EMB_BODY_DIM = 2048;
 constexpr int BEHAVIOR_ALARM_DURATION_FRAMES = 256;
 
-// 2. 从 Python 端移植的常量，用于实时特征提取
 constexpr float MIN_HW_RATIO = 1.5f;
 constexpr float FACE_DET_MIN_SCORE = 0.60f;
 
-const std::string SAVE_DIR = "/mnt/nfs/perimeter_cpp";
-const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
-/* ------------------------------------------------ */
+// 注意：C++版本统一使用 /mnt/nfs/ 路径下的目录
+const std::string SAVE_DIR = "/home/manu/nfs/perimeter_cpp";
+const std::string ALARM_DIR = "/home/manu/perimeter_alarm_cpp";
 
 /* ---------- 数据结构定义 ---------- */
 struct Detection {
     cv::Rect2f tlwh;
     float score;
     int id;
-    // 3. 增加 class_id 以匹配 Python 端的过滤逻辑
     int class_id = 0;
 };
 
@@ -178,7 +175,6 @@ private:
     std::set<int> alarmed_tids_;
 };
 
-/* ---------- TrackAgg, GlobalID 等结构体  ---------- */
 struct TrackAgg {
     void add_body(const std::vector<float> &feat, float score);
 
@@ -223,7 +219,6 @@ struct NewGidState {
     int ambig_count = 0;
 };
 
-/* ---------- FeatureProcessor 类定义 ---------- */
 class FeatureProcessor {
 public:
     explicit FeatureProcessor(const std::string &mode,
@@ -233,12 +228,16 @@ public:
 
     ~FeatureProcessor();
 
+    // ======================= 【修改的部分在此】 =======================
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>>
-    process_packet(const Packet &pkt);
+    process_packet(const Packet &pkt, const std::vector<Face> &face_info, const cv::Mat &full_frame);
+    // ======================= 【修改结束】 =======================
 
 private:
-    void _extract_features_realtime(const Packet &pkt);
+    // ======================= 【修改的部分在此】 =======================
+    void _extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info, const cv::Mat &full_frame);
 
+    // ======================= 【修改结束】 =======================
     void _load_features_from_cache(const Packet &pkt);
 
     std::vector<float> _fuse_feat(const std::vector<float> &face_f, const std::vector<float> &body_f);
@@ -247,14 +246,12 @@ private:
 
     void trigger_alarm(const std::string &gid);
 
-    // --- 成员变量 ---
     std::string mode_;
     std::string device_;
     std::string feature_cache_path_;
     nlohmann::json features_cache_;
     nlohmann::json features_to_save_;
 
-    // 4. 使用真实的模型类替换占位符
     std::unique_ptr<PersonReid> reid_model_;
     std::unique_ptr<FaceAnalyzer> face_analyzer_;
 

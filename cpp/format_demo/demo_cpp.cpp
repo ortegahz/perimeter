@@ -4,15 +4,25 @@
 #include <algorithm>
 #include <numeric>
 #include <stdexcept>
-#include <sstream> // 用于 std::ostringstream
-#include <chrono>  // <-- 新增：用于耗时统计
+#include <sstream>
+#include <chrono>
 #include "feature_processor.h" // Includes all necessary headers like opencv and json
 
-// 工具函数：从缓存目录加载一个 packet (保持不变)
-Packet load_packet_from_cache(const std::string &cam_id, int fid, const std::string &root_dir) {
-    Packet pkt;
-    pkt.cam_id = cam_id;
-    pkt.fid = fid;
+// -------- 新增：模型路径常量，与 feature_processor.cpp 保持一致 --------
+const std::string FACE_DET_MODEL_PATH = "/home/manu/nfs/det_10g_simplified.onnx";
+const std::string FACE_REC_MODEL_PATH = "/home/manu/nfs/w600k_r50_simplified.onnx";
+// ----------------------------------------------------------------------
+
+// -------- 修改：load_packet_from_cache 返回一个包含 packet 和 face_info 的结构体 --------
+struct LoadedData {
+    Packet packet;
+    std::vector<Face> face_info;
+};
+
+LoadedData load_packet_from_cache(const std::string &cam_id, int fid, const std::string &root_dir) {
+    LoadedData data;
+    data.packet.cam_id = cam_id;
+    data.packet.fid = fid;
 
     char fid_str[7];
     sprintf(fid_str, "%06d", fid);
@@ -29,18 +39,19 @@ Packet load_packet_from_cache(const std::string &cam_id, int fid, const std::str
     nlohmann::json meta;
     ifs >> meta;
 
+    // 加载 Patches
     std::map<int, cv::Mat> patch_map_by_idx;
     if (meta.contains("patches")) {
         std::vector<std::string> patch_names = meta["patches"].get<std::vector<std::string>>();
         for (const auto &name: patch_names) {
-            // patch_00.bmp -> 0
             int patch_idx = std::stoi(name.substr(name.find('_') + 1, 2));
             patch_map_by_idx[patch_idx] = cv::imread((frame_dir / name).string());
         }
     }
 
+    // 加载并排序 Dets
     std::vector<Detection> temp_dets;
-    std::vector<int> original_indices; // 记录每个det在json中的原始索引
+    std::vector<int> original_indices;
     int current_idx = 0;
     for (const auto &d_json: meta["dets"]) {
         Detection det;
@@ -48,11 +59,12 @@ Packet load_packet_from_cache(const std::string &cam_id, int fid, const std::str
         det.tlwh = cv::Rect2f(tlwh_vec[0], tlwh_vec[1], tlwh_vec[2], tlwh_vec[3]);
         det.score = d_json.value("score", 0.0f);
         det.id = d_json.value("id", -1);
+        // 新增: 从json中读取class_id，以匹配Python过滤逻辑
+        det.class_id = d_json.value("class_id", 0);
         temp_dets.push_back(det);
         original_indices.push_back(current_idx++);
     }
 
-    // 按照 python 的 sort_dets_and_patches 逻辑排序
     std::sort(original_indices.begin(), original_indices.end(), [&](int a, int b) {
         const auto &det_a = temp_dets[a];
         const auto &det_b = temp_dets[b];
@@ -67,44 +79,76 @@ Packet load_packet_from_cache(const std::string &cam_id, int fid, const std::str
     });
 
     for (int original_idx: original_indices) {
-        pkt.dets.push_back(temp_dets[original_idx]);
+        data.packet.dets.push_back(temp_dets[original_idx]);
         if (patch_map_by_idx.count(original_idx)) {
-            pkt.patches.push_back(patch_map_by_idx[original_idx]);
+            data.packet.patches.push_back(patch_map_by_idx[original_idx]);
         }
     }
 
-    return pkt;
+    // 新增：加载 face_info
+    if (meta.contains("face_info") && meta["face_info"].is_array()) {
+        for (const auto &face_json: meta["face_info"]) {
+            Face face;
+            auto bbox_vec = face_json["bbox"].get<std::vector<float>>();
+            face.bbox = cv::Rect2d(bbox_vec[0], bbox_vec[1], bbox_vec[2] - bbox_vec[0], bbox_vec[3] - bbox_vec[1]);
+            face.det_score = face_json.value("score", 0.0f);
+            if (face_json.contains("kps") && !face_json["kps"].is_null()) {
+                for (const auto &kp_json: face_json["kps"]) {
+                    face.kps.emplace_back(kp_json[0].get<float>(), kp_json[1].get<float>());
+                }
+            }
+            data.face_info.push_back(face);
+        }
+    }
+    return data;
 }
 
 int main(int argc, char **argv) {
     // --- 可调参数 ---
-    std::string VIDEO_PATH = "/mnt/nfs/64.mp4";
-    std::string RAW_DIR = "/mnt/nfs/cache_v1";
+    std::string VIDEO_PATH = "/home/manu/tmp/64.mp4";
+    // 注意：请确保 RAW_DIR 指向与 Python 端一致的 v2 版本缓存（包含face_info）
+    std::string RAW_DIR = "/home/manu/tmp/cache_v2";
     std::string CAM_ID = "cam1";
     int SKIP = 2;
-    float SHOW_SCALE = 0.5; // <-- 新增：与Python对齐
+    float SHOW_SCALE = 0.5;
 
-    // 根据模式选择不同的输入/输出
-    std::string MODE = "realtime"; // 默认为 "load" 模式
+    std::string MODE = "load"; // 默认为 "load" 模式
     if (argc > 1) {
         MODE = argv[1];
     }
 
+    std::cout << "Running in " << MODE << " mode." << std::endl;
+
     std::string FEATURE_CACHE_JSON, OUTPUT_TXT, OUTPUT_VIDEO_PATH;
     if (MODE == "load") {
-        FEATURE_CACHE_JSON = "/mnt/nfs/features_cache_v1.json";
-        OUTPUT_TXT = "/mnt/nfs/output_result_cpp_load.txt";
-        OUTPUT_VIDEO_PATH = "/mnt/nfs/output_video_cpp_load.mp4";
+        FEATURE_CACHE_JSON = "/home/manu/tmp/features_cache_v2.json";
+        OUTPUT_TXT = "/home/manu/tmp/output_result_cpp_load.txt";
+        OUTPUT_VIDEO_PATH = "/home/manu/tmp/output_video_cpp_load.mp4";
     } else { // realtime
-        FEATURE_CACHE_JSON = "/mnt/nfs/features_cache_realtime_output.json";
-        OUTPUT_TXT = "/mnt/nfs/output_result_cpp_realtime.txt";
-        OUTPUT_VIDEO_PATH = "/mnt/nfs/output_video_cpp_realtime.mp4";
+        // 注意：realtime模式的C++版本依赖ByteTrack的C++实现，此处未提供
+        // 为演示逻辑，假设ByteTrack已运行并将结果存入cache_v2
+        std::cout << "Warning: C++ realtime mode assumes trackers (like ByteTrack) are implemented separately."
+                  << std::endl;
+        std::cout << "This example will read from RAW_DIR even in realtime mode, but will re-extract features."
+                  << std::endl;
+        RAW_DIR = "/home/manu/tmp/cache_v2"; // realtime模式也从这里读检测结果
+        FEATURE_CACHE_JSON = "/home/manu/tmp/features_cache_cpp_realtime_output.json";
+        OUTPUT_TXT = "/home/manu/tmp/output_result_cpp_realtime.txt";
+        OUTPUT_VIDEO_PATH = "/home/manu/tmp/output_video_cpp_realtime.mp4";
     }
 
     nlohmann::json boundary_config; // 留空
 
     try {
         FeatureProcessor processor(MODE, "cuda", FEATURE_CACHE_JSON, boundary_config);
+
+        // 新增：在realtime模式下，主循环外创建FaceAnalyzer实例
+        std::unique_ptr<FaceAnalyzer> face_analyzer = nullptr;
+        if (MODE == "realtime") {
+            face_analyzer = std::make_unique<FaceAnalyzer>(FACE_DET_MODEL_PATH, FACE_REC_MODEL_PATH);
+            std::string provider = "CUDAExecutionProvider";
+            face_analyzer->prepare(provider, FACE_DET_MIN_SCORE, cv::Size(640, 640));
+        }
 
         cv::VideoCapture cap(VIDEO_PATH);
         if (!cap.isOpened()) {
@@ -131,10 +175,8 @@ int main(int argc, char **argv) {
         int fid = 0;
         cv::Mat frame;
 
-        // ----------------- 新增：性能统计 -----------------
         double total_proc_time = 0.0;
         int proc_count = 0;
-        // -------------------------------------------------
 
         while (cap.read(frame)) {
             fid++;
@@ -145,63 +187,105 @@ int main(int argc, char **argv) {
             int processed_frames_count = fid / SKIP;
             int total_to_process = total_frames / SKIP;
             std::cout << "\rProcessing frame " << fid << "/" << total_frames
-                      << " (" << processed_frames_count << "/" << total_to_process << ")" << std::flush;
+                      << " (" << processed_frames_count << "/" << total_to_process << ")";
 
             try {
-                Packet packet = load_packet_from_cache(CAM_ID, fid, RAW_DIR);
+                // 修改：统一从缓存加载基础检测信息
+                LoadedData loaded_data = load_packet_from_cache(CAM_ID, fid, RAW_DIR);
+                Packet &packet = loaded_data.packet;
+                std::vector<Face> &face_info = loaded_data.face_info;
 
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();
-                auto mp = processor.process_packet(packet);
+                // 修改：调用新的 process_packet 接口
+                auto mp = processor.process_packet(packet, face_info, frame);
                 auto t2 = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double, std::milli> proc_time = t2 - t1;
-                std::cout << "  [process_packet took " << proc_time.count() << " ms]" << std::endl;
+                std::cout << "  [proc_packet took " << proc_time.count() << " ms]" << std::endl;
 
                 total_proc_time += proc_time.count();
                 proc_count++;
-                // --------------
 
                 // --- 可视化 ---
                 cv::Mat vis;
-                cv::resize(frame, vis, vis_size); // 先缩放画布
+                cv::resize(frame, vis, vis_size);
 
                 const auto &cam_map = mp.count(CAM_ID) ? mp.at(CAM_ID)
                                                        : std::map<int, std::tuple<std::string, float, int>>{};
 
                 for (const auto &det: packet.dets) {
-                    std::string gid_str = "-1";
+                    std::string full_gid_str = std::to_string(det.id) + "_-?";
                     float score = -1.0f;
                     int n_tid = 0;
 
                     if (cam_map.count(det.id)) {
                         const auto &tpl = cam_map.at(det.id);
-                        gid_str = std::get<0>(tpl);
+                        full_gid_str = std::get<0>(tpl);
                         score = std::get<1>(tpl);
                         n_tid = std::get<2>(tpl);
                     }
 
-                    cv::Scalar color = (n_tid < 2) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
+                    size_t gid_pos = full_gid_str.find_last_of('_');
+                    std::string gid_str = full_gid_str.substr(gid_pos + 1);
+
+                    int color_id = det.id;
+                    if (gid_str.rfind("G", 0) == 0) {
+                        try { color_id = std::stoi(gid_str.substr(1)); } catch (...) {}
+                    }
+
+                    // 蓝色(0,0,255) -> BGR(255,0,0) / 绿色(0,255,0) -> BGR(0,255,0) / 红色(255,0,0) -> BGR(0,0,255)
+                    const cv::Scalar colors[] = {{0,   0,   255},
+                                                 {0,   255, 0},
+                                                 {255, 255, 0},
+                                                 {0,   255, 255},
+                                                 {255, 0,   255},
+                                                 {128, 0,   0},
+                                                 {0,   128, 0},
+                                                 {0,   0,   128}};
+                    cv::Scalar color = colors[color_id % (sizeof(colors) / sizeof(cv::Scalar))];
 
                     int x = static_cast<int>(det.tlwh.x * SHOW_SCALE);
                     int y = static_cast<int>(det.tlwh.y * SHOW_SCALE);
                     int w = static_cast<int>(det.tlwh.width * SHOW_SCALE);
                     int h = static_cast<int>(det.tlwh.height * SHOW_SCALE);
 
-                    cv::rectangle(vis, cv::Rect(x, y, w, h), color, 2);
+                    std::string display_text = "T:" + std::to_string(det.id) + " G:" + gid_str;
+                    if (full_gid_str.find("_AA") != std::string::npos ||
+                        full_gid_str.find("_AL") != std::string::npos) {
+                        color = {0, 0, 255}; // 红色
+                    }
 
-                    std::string text1 = "G:" + gid_str;
-                    cv::putText(vis, text1, cv::Point(x, std::max(y + 15, 15)), cv::FONT_HERSHEY_SIMPLEX, 0.5, color,
-                                1);
+                    cv::rectangle(vis, cv::Rect(x, y, w, h), color, 2);
+                    cv::putText(vis, display_text, cv::Point(x, std::max(y - 5, 10)), cv::FONT_HERSHEY_SIMPLEX, 0.5,
+                                color, 1);
 
                     std::ostringstream ss;
                     ss << "n=" << n_tid << " s=" << std::fixed << std::setprecision(2) << score;
-                    std::string text2 = ss.str();
-                    cv::putText(vis, text2, cv::Point(x, std::max(y + 30, 30)), cv::FONT_HERSHEY_SIMPLEX, 0.4, color,
-                                1);
+                    cv::putText(vis, ss.str(), cv::Point(x, std::max(y + h + 15, 15)), cv::FONT_HERSHEY_SIMPLEX, 0.4,
+                                color, 1);
                 }
 
+                // 新增：可视化人脸框
+                for (const auto &face: face_info) {
+                    int x1 = static_cast<int>(face.bbox.x * SHOW_SCALE);
+                    int y1 = static_cast<int>(face.bbox.y * SHOW_SCALE);
+                    int x2 = static_cast<int>((face.bbox.x + face.bbox.width) * SHOW_SCALE);
+                    int y2 = static_cast<int>((face.bbox.y + face.bbox.height) * SHOW_SCALE);
+                    cv::rectangle(vis, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 0, 255), 2); // 红色
+
+                    std::ostringstream ss;
+                    ss << std::fixed << std::setprecision(2) << face.det_score;
+                    cv::putText(vis, ss.str(), cv::Point(x1, std::max(y1 - 2, 0)), cv::FONT_HERSHEY_SIMPLEX, 0.4,
+                                cv::Scalar(0, 128, 255), 1);
+
+                    for (const auto &kp: face.kps) {
+                        cv::circle(vis, cv::Point(kp.x * SHOW_SCALE, kp.y * SHOW_SCALE), 1, cv::Scalar(255, 0, 0),
+                                   2); // 蓝色
+                    }
+                }
                 writer.write(vis);
 
+                // 写入结果文件
                 if (mp.count(CAM_ID)) {
                     std::vector<int> sorted_tids;
                     for (const auto &pair: mp.at(CAM_ID)) {
@@ -224,13 +308,11 @@ int main(int argc, char **argv) {
             }
         }
 
-        // ----------------- 输出平均耗时 -----------------
         if (proc_count > 0) {
             std::cout << "\nAverage process_packet time = "
                       << (total_proc_time / proc_count) << " ms over "
                       << proc_count << " frames." << std::endl;
         }
-        // ------------------------------------------------
 
         std::cout << "\nDONE -> " << OUTPUT_TXT << " and " << OUTPUT_VIDEO_PATH << std::endl;
         cap.release();
