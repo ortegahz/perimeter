@@ -3,13 +3,13 @@
 #include <stdexcept>
 #include <map>
 #include <numeric>
+#include <chrono>
 
 // FOR EXPERIMENT: 实现新函数
 cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::Mat &aligned_img) {
     if (aligned_img.size() != cv::Size(112, 112)) {
         throw std::runtime_error("Input for get_embedding_from_aligned must be a 112x112 image.");
     }
-    // 预处理步骤与之前 get() 函数中的完全相同
     cv::Mat blob = cv::dnn::blobFromImage(aligned_img, 1.0 / 128.0, cv::Size(112, 112),
                                           cv::Scalar(127.5, 127.5, 127.5), true, false);
     rec_net_.setInput(blob);
@@ -30,34 +30,38 @@ FaceAnalyzer::FaceAnalyzer(const std::string &det_model_path, const std::string 
 void FaceAnalyzer::prepare(const std::string &provider, float det_thresh, cv::Size det_size) {
     if (provider == "CUDAExecutionProvider") {
         std::cout << "[INFO] Attempting to use CUDA backend." << std::endl;
-        // 设置推理后端为CUDA
         det_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
         det_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
         rec_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
         rec_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
-        // 如果您的GPU支持FP16并希望获得更高性能，可以尝试使用 DNN_TARGET_CUDA_FP16
-        // det_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA_FP16);
-        // rec_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA_FP16);
     } else {
         std::cout << "[INFO] Using CPU backend." << std::endl;
-        // 使用 CPU 后端（作为备选）
         det_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
         det_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
         rec_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
         rec_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
     }
-
     det_thresh_ = det_thresh;
     det_size_ = det_size;
 }
 
+// -------------------- 修改的 get() --------------------
 std::vector<Face> FaceAnalyzer::get(const cv::Mat &img) {
-    // 1. 人脸检测 (获取带关键点的人脸)
-    auto detected_faces = detect(img);
+    using clk = std::chrono::high_resolution_clock;
 
-    // 2. 对每个检测到的人脸进行特征提取
+    // 1. 人脸检测
+    auto t0 = clk::now();
+    auto detected_faces = detect(img);
+    auto t1 = clk::now();
+    double t_det = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    double t_align = 0.0;
+    double t_rec = 0.0;
+
+    // 2. 对齐 + 特征提取
     for (auto &face: detected_faces) {
-        // 人脸对齐：使用5个关键点进行仿射变换，将人脸区域校正到 112x112
+        // ---- 对齐 ----
+        auto ta0 = clk::now();
         cv::Mat aligned_face;
         std::vector<cv::Point2f> dst_pts = {
                 {38.2946f, 51.6963f},
@@ -66,23 +70,33 @@ std::vector<Face> FaceAnalyzer::get(const cv::Mat &img) {
                 {41.5493f, 92.3655f},
                 {70.7299f, 92.2041f}
         };
-
-        // 使用相似变换进行对齐
         cv::Mat M = cv::estimateAffinePartial2D(face.kps, dst_pts);
         cv::warpAffine(img, aligned_face, M, cv::Size(112, 112));
-
-        // 将对齐后的人脸图像存入face结构体
         face.aligned_face = aligned_face.clone();
+        auto ta1 = clk::now();
+        t_align += std::chrono::duration<double, std::milli>(ta1 - ta0).count();
 
-        // 此处我们复用新函数
+        // ---- 特征提取 ----
+        auto tr0 = clk::now();
         face.embedding = get_embedding_from_aligned(aligned_face);
+        auto tr1 = clk::now();
+        t_rec += std::chrono::duration<double, std::milli>(tr1 - tr0).count();
     }
+
+    auto t2 = clk::now();
+    double total = std::chrono::duration<double, std::milli>(t2 - t0).count();
+
+    std::cout << "[FaceAnalyzer] det=" << t_det
+              << " ms, align=" << t_align
+              << " ms, rec=" << t_rec
+              << " ms, total=" << total
+              << " ms" << std::endl;
 
     return detected_faces;
 }
 
+// -------------------- detect() 保持逻辑不变 --------------------
 std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
-    // --- 图像预处理 ---
     cv::Mat input_blob;
     float scale = 1.0f;
     float im_ratio = (float) img.rows / (float) img.cols;
@@ -96,14 +110,13 @@ std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
         new_h = static_cast<int>(new_w * im_ratio);
     }
     scale = (float) new_h / (float) img.rows;
-    if (scale == 0) scale = 1.0f; // 防止除以零
+    if (scale == 0) scale = 1.0f;
     cv::Mat resized_img;
     cv::resize(img, resized_img, cv::Size(new_w, new_h));
     cv::Mat det_img = cv::Mat::zeros(det_size_, img.type());
     resized_img.copyTo(det_img(cv::Rect(0, 0, new_w, new_h)));
     cv::dnn::blobFromImage(det_img, input_blob, 1.0 / 128.0, det_size_, cv::Scalar(127.5, 127.5, 127.5), true, false);
 
-    // --- 推理 ---
     std::vector<std::string> out_names = {
             "448", "471", "494",
             "451", "474", "497",
@@ -113,7 +126,6 @@ std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
     det_net_.setInput(input_blob);
     det_net_.forward(outs, out_names);
 
-    // --- 后处理 ---
     std::vector<cv::Rect2d> bboxes;
     std::vector<float> scores;
     std::vector<std::vector<cv::Point2f>> all_kps;
@@ -135,10 +147,9 @@ std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
 
         for (int y = 0; y < height; ++y) {
             for (int x = 0; x < width; ++x) {
-                for (int anchor = 0; anchor < 2; ++anchor) { // num_anchors = 2
+                for (int anchor = 0; anchor < 2; ++anchor) {
                     int idx = (y * width + x) * 2 + anchor;
                     float score = score_data[idx];
-
                     if (score < det_thresh_) continue;
 
                     const float *bbox_ptr = &bbox_data[idx * 4];
@@ -167,7 +178,6 @@ std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
         }
     }
 
-    // NMS
     std::vector<int> indices;
     cv::dnn::NMSBoxes(bboxes, scores, det_thresh_, 0.4, indices);
 

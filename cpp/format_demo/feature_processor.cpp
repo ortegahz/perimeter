@@ -344,8 +344,15 @@ FeatureProcessor::~FeatureProcessor() {
 }
 
 void FeatureProcessor::_extract_features_realtime(const Packet &pkt) {
+    using clk = std::chrono::high_resolution_clock;
+    auto t0 = clk::now();
+
     const auto &[stream_id, fid, patches, dets] = pkt;
     nlohmann::json extracted_features_for_this_frame;
+
+    double time_reid = 0.0;
+    double time_face_det = 0.0;
+    double time_face_rec = 0.0;
 
     // --- 1. 行人重识别 (ReID) ---
     for (size_t i = 0; i < dets.size(); ++i) {
@@ -354,9 +361,14 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt) {
         if (det.class_id != 0 || !is_long_patch(patch)) {
             continue;
         }
+
+        auto t1 = clk::now();
         cv::Mat resized_patch;
         cv::resize(patch, resized_patch, cv::Size(REID_INPUT_WIDTH, REID_INPUT_HEIGHT));
         cv::Mat feat_mat = reid_model_->extract_feat(resized_patch);
+        auto t2 = clk::now();
+        time_reid += std::chrono::duration<double, std::milli>(t2 - t1).count();
+
         if (feat_mat.empty()) {
             continue;
         }
@@ -370,32 +382,37 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt) {
         }
     }
 
-    // --- 2. 人脸识别 ---
+    // --- 2. 人脸检测 + 人脸特征提取 ---
     for (size_t i = 0; i < dets.size(); ++i) {
         const auto &det = dets[i];
         const auto &patch = patches[i];
         if (det.class_id != 0) continue;
         try {
-            auto faces = face_analyzer_->get(patch);
+            auto t1 = clk::now();
+            auto faces = face_analyzer_->get(patch);  // 检测 + 对齐 + embedding
+            auto t2 = clk::now();
+            time_face_det += std::chrono::duration<double, std::milli>(t2 - t1).count();
+
             if (faces.size() != 1) continue;
             const auto &face = faces[0];
             if (face.det_score < FACE_DET_MIN_SCORE) continue;
             if (patch.rows < 120 || patch.cols < 120) continue;
+
+            // 图像清晰度检查
             cv::Mat gray, laplacian, mu, sigma;
             cv::cvtColor(patch, gray, cv::COLOR_BGR2GRAY);
             cv::Laplacian(gray, laplacian, CV_64F);
             cv::meanStdDev(laplacian, mu, sigma);
-
-            // ======================= 【FIXED】 =======================
-            // 错误：sigma.val[0]
-            // 正确：sigma.at<double>(0, 0)
-            // Python .var() 返回方差，C++ .at<double> 返回标准差，所以需要平方
             if (sigma.at<double>(0, 0) * sigma.at<double>(0, 0) < 100) continue;
-            // ======================= 【修改结束】 =======================
 
+            auto t3 = clk::now();
+            // embedding 已在 get() 中产生
             cv::Mat normalized_emb;
             cv::normalize(face.embedding, normalized_emb, 1.0, 0.0, cv::NORM_L2);
             std::vector<float> f_emb(normalized_emb.begin<float>(), normalized_emb.end<float>());
+            auto t4 = clk::now();
+            time_face_rec += std::chrono::duration<double, std::milli>(t4 - t3).count();
+
             std::string tid_str = stream_id + "_" + std::to_string(det.id);
             auto &agg = agg_pool[tid_str];
             agg.add_face(f_emb);
@@ -411,6 +428,16 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt) {
     if (!feature_cache_path_.empty() && !extracted_features_for_this_frame.is_null()) {
         features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
     }
+
+    auto t_end = clk::now();
+    double total_time = std::chrono::duration<double, std::milli>(t_end - t0).count();
+
+    // --- 打印细分耗时 ---
+    std::cout << "[Extract f" << fid << "] ReID=" << time_reid
+              << " ms, FaceDet=" << time_face_det
+              << " ms, FaceRec=" << time_face_rec
+              << " ms, TOTAL=" << total_time
+              << " ms" << std::endl;
 }
 
 void FeatureProcessor::_load_features_from_cache(const Packet &pkt) {
@@ -487,7 +514,14 @@ void FeatureProcessor::trigger_alarm(const std::string &gid) {
 
 auto FeatureProcessor::process_packet(
         const Packet &pkt) -> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
+
+    using clk = std::chrono::high_resolution_clock;
+    auto t0 = clk::now();
+
     const auto &[stream_id, fid, patches, dets] = pkt;
+
+    // -------------------- 1. 入侵检测 --------------------
+    auto t1 = clk::now();
     if (intrusion_detectors.count(stream_id)) {
         auto alarmed_tids = intrusion_detectors.at(stream_id).check(dets, stream_id);
         for (int tid: alarmed_tids) {
@@ -495,6 +529,9 @@ auto FeatureProcessor::process_packet(
             behavior_alarm_state[full_tid] = {fid, "_AA"};
         }
     }
+    auto t2 = clk::now();
+
+    // -------------------- 2. 线穿越检测 --------------------
     if (line_crossing_detectors.count(stream_id)) {
         auto alarmed_tids = line_crossing_detectors.at(stream_id).check(dets, stream_id);
         for (int tid: alarmed_tids) {
@@ -502,16 +539,23 @@ auto FeatureProcessor::process_packet(
             behavior_alarm_state[full_tid] = {fid, "_AL"};
         }
     }
+    auto t3 = clk::now();
+
+    // -------------------- 3. 特征提取 --------------------
     if (mode_ == "realtime") {
         _extract_features_realtime(pkt);
     } else if (mode_ == "load") {
         _load_features_from_cache(pkt);
     }
+    auto t4 = clk::now();
+
+    // -------------------- 4. Probe & GID 绑定 --------------------
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> realtime_map;
     for (auto const &[tid_str, agg]: agg_pool) {
         size_t last_underscore = tid_str.find_last_of('_');
         std::string s_id = tid_str.substr(0, last_underscore);
         int tid_num = std::stoi(tid_str.substr(last_underscore + 1));
+
         if ((int) agg.body.size() < MIN_BODY4GID) {
             std::string gid_str = tid_str + "_-1_b_" + std::to_string(agg.body.size());
             realtime_map[s_id][tid_num] = {gid_str, -1.f, 0};
@@ -536,6 +580,7 @@ auto FeatureProcessor::process_packet(
         auto &state = candidate_state[tid_str];
         auto &ng_state = new_gid_state[tid_str];
         int time_since_last_new = fid - ng_state.last_new_fid;
+
         if (tid2gid.count(tid_str)) {
             std::string bound_gid = tid2gid.at(tid_str);
             int lock_elapsed = fid - state.last_bind_fid;
@@ -545,6 +590,7 @@ auto FeatureProcessor::process_packet(
                 continue;
             }
         }
+
         if (!cand_gid.empty() && score >= MATCH_THR) {
             ng_state.ambig_count = 0;
             state.count = (state.cand_gid == cand_gid) ? state.count + 1 : 1;
@@ -599,6 +645,9 @@ auto FeatureProcessor::process_packet(
             } else { realtime_map[s_id][tid_num] = {tid_str + "_-6", -1.0f, 0}; }
         }
     }
+    auto t5 = clk::now();
+
+    // -------------------- 5. 后处理 / 清理 --------------------
     std::map<std::string, std::tuple<int, std::string>> active_alarms;
     for (const auto &[full_tid, state_tuple]: behavior_alarm_state) {
         const auto &[start_fid, alarm_type] = state_tuple;
@@ -618,6 +667,7 @@ auto FeatureProcessor::process_packet(
         }
     }
     behavior_alarm_state = active_alarms;
+
     for (auto it = last_seen.begin(); it != last_seen.end();) {
         if (fid - it->second >= MAX_TID_IDLE_FRAMES) {
             agg_pool.erase(it->first);
@@ -628,6 +678,7 @@ auto FeatureProcessor::process_packet(
             it = last_seen.erase(it);
         } else ++it;
     }
+
     std::vector<std::string> gids_to_del;
     for (auto const &[gid_del, last_fid]: gid_mgr.last_update) {
         if (fid - last_fid >= GID_MAX_IDLE_FRAMES)
@@ -652,5 +703,23 @@ auto FeatureProcessor::process_packet(
         alarm_reprs.erase(gid_del);
         try { std::filesystem::remove_all(std::filesystem::path(SAVE_DIR) / gid_del); } catch (...) {}
     }
+    auto t6 = clk::now();
+
+    // -------------------- 6. 打印耗时 --------------------
+    auto d_intrusion = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    auto d_linecross = std::chrono::duration<double, std::milli>(t3 - t2).count();
+    auto d_extract = std::chrono::duration<double, std::milli>(t4 - t3).count();
+    auto d_probe = std::chrono::duration<double, std::milli>(t5 - t4).count();
+    auto d_post = std::chrono::duration<double, std::milli>(t6 - t5).count();
+    auto d_total = std::chrono::duration<double, std::milli>(t6 - t0).count();
+
+    std::cout << "[Timing f" << fid << "] intr=" << d_intrusion
+              << "ms, line=" << d_linecross
+              << "ms, extract=" << d_extract
+              << "ms, probe=" << d_probe
+              << "ms, post=" << d_post
+              << "ms, TOTAL=" << d_total << "ms"
+              << std::endl;
+
     return realtime_map;
 }

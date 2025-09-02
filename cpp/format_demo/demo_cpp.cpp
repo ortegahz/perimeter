@@ -5,6 +5,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <sstream> // 用于 std::ostringstream
+#include <chrono>  // <-- 新增：用于耗时统计
 #include "feature_processor.h" // Includes all necessary headers like opencv and json
 
 // 工具函数：从缓存目录加载一个 packet (保持不变)
@@ -130,13 +131,14 @@ int main(int argc, char **argv) {
         int fid = 0;
         cv::Mat frame;
 
+        // ----------------- 新增：性能统计 -----------------
+        double total_proc_time = 0.0;
+        int proc_count = 0;
+        // -------------------------------------------------
+
         while (cap.read(frame)) {
             fid++;
             if (fid % SKIP != 0) {
-                // 对于跳过的帧，直接缩放后写入，以保证视频时间线正确
-//                cv::Mat vis;
-//                cv::resize(frame, vis, vis_size);
-//                writer.write(vis);
                 continue;
             }
 
@@ -147,7 +149,17 @@ int main(int argc, char **argv) {
 
             try {
                 Packet packet = load_packet_from_cache(CAM_ID, fid, RAW_DIR);
+
+                // ---- 计时 ----
+                auto t1 = std::chrono::high_resolution_clock::now();
                 auto mp = processor.process_packet(packet);
+                auto t2 = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double, std::milli> proc_time = t2 - t1;
+                std::cout << "  [process_packet took " << proc_time.count() << " ms]" << std::endl;
+
+                total_proc_time += proc_time.count();
+                proc_count++;
+                // --------------
 
                 // --- 可视化 ---
                 cv::Mat vis;
@@ -157,7 +169,6 @@ int main(int argc, char **argv) {
                                                        : std::map<int, std::tuple<std::string, float, int>>{};
 
                 for (const auto &det: packet.dets) {
-                    // 1. 获取 GID, score, n_tid (如果不存在则使用默认值)
                     std::string gid_str = "-1";
                     float score = -1.0f;
                     int n_tid = 0;
@@ -169,19 +180,15 @@ int main(int argc, char **argv) {
                         n_tid = std::get<2>(tpl);
                     }
 
-                    // 2. 根据 n_tid 决定颜色
-                    cv::Scalar color = (n_tid < 2) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255); // Green vs Red
+                    cv::Scalar color = (n_tid < 2) ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
 
-                    // 3. 计算缩放后的坐标
                     int x = static_cast<int>(det.tlwh.x * SHOW_SCALE);
                     int y = static_cast<int>(det.tlwh.y * SHOW_SCALE);
                     int w = static_cast<int>(det.tlwh.width * SHOW_SCALE);
                     int h = static_cast<int>(det.tlwh.height * SHOW_SCALE);
 
-                    // 4. 绘制矩形框
                     cv::rectangle(vis, cv::Rect(x, y, w, h), color, 2);
 
-                    // 5. 绘制两行文本
                     std::string text1 = "G:" + gid_str;
                     cv::putText(vis, text1, cv::Point(x, std::max(y + 15, 15)), cv::FONT_HERSHEY_SIMPLEX, 0.5, color,
                                 1);
@@ -193,9 +200,8 @@ int main(int argc, char **argv) {
                                 1);
                 }
 
-                writer.write(vis); // 将绘制好的帧写入视频
+                writer.write(vis);
 
-                // --- 写入文本结果到文件 (和以前一样，但需要排序) ---
                 if (mp.count(CAM_ID)) {
                     std::vector<int> sorted_tids;
                     for (const auto &pair: mp.at(CAM_ID)) {
@@ -211,13 +217,20 @@ int main(int argc, char **argv) {
                 }
 
             } catch (const std::runtime_error &e) {
-                // 加载 packet 失败，写入原始缩放帧
                 std::cout << "\nWarning: Failed to process frame " << fid << ". " << e.what() << std::endl;
                 cv::Mat vis;
                 cv::resize(frame, vis, vis_size);
                 writer.write(vis);
             }
         }
+
+        // ----------------- 输出平均耗时 -----------------
+        if (proc_count > 0) {
+            std::cout << "\nAverage process_packet time = "
+                      << (total_proc_time / proc_count) << " ms over "
+                      << proc_count << " frames." << std::endl;
+        }
+        // ------------------------------------------------
 
         std::cout << "\nDONE -> " << OUTPUT_TXT << " and " << OUTPUT_VIDEO_PATH << std::endl;
         cap.release();
