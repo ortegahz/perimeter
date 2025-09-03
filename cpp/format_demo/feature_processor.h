@@ -33,13 +33,10 @@ constexpr int NEW_GID_TIME_WINDOW = 50;
 constexpr int BIND_LOCK_FRAMES = 15;
 constexpr int CANDIDATE_FRAMES = 2;
 constexpr int MAX_TID_IDLE_FRAMES = 256;
-// ======================= 【FIXED】 =======================
-// 已将此值从 25*60 (1500) 修改为与 Python (25/2*60*60*24) 一致
 constexpr int GID_MAX_IDLE_FRAMES = 1080000;
-// ======================= 【修改结束】 =======================
 constexpr int WAIT_FRAMES_AMBIGUOUS = 10;
 
-constexpr int ALARM_CNT_TH = 8;
+constexpr int ALARM_CNT_TH = 2;
 constexpr float ALARM_DUP_THR = 0.4f;
 constexpr float FUSE_W_FACE = 0.6f;
 constexpr float FUSE_W_BODY = 0.4f;
@@ -50,9 +47,11 @@ constexpr int BEHAVIOR_ALARM_DURATION_FRAMES = 256;
 constexpr float MIN_HW_RATIO = 1.5f;
 constexpr float FACE_DET_MIN_SCORE = 0.60f;
 
-// 注意：C++版本统一使用 /mnt/nfs/ 路径下的目录
-const std::string SAVE_DIR = "/home/manu/nfs/perimeter_cpp";
-const std::string ALARM_DIR = "/home/manu/perimeter_alarm_cpp";
+// ======================= 【MODIFIED】 =======================
+// 路径修改为与 Python 版本在同一目录下，以方便对比
+const std::string SAVE_DIR = "/mnt/nfs/perimeter_cpp";
+const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
+// ======================= 【修改结束】 =======================
 
 /* ---------- 数据结构定义 ---------- */
 struct Detection {
@@ -176,18 +175,24 @@ private:
 };
 
 struct TrackAgg {
-    void add_body(const std::vector<float> &feat, float score);
+    // ======================= 【MODIFIED】 =======================
+    void add_body(const std::vector<float> &feat, float score, const cv::Mat &patch);
 
-    void add_face(const std::vector<float> &feat);
+    void add_face(const std::vector<float> &feat, const cv::Mat &patch);
 
-    std::vector<float> main_body_feat() const;
+    std::pair<std::vector<float>, cv::Mat> main_body_feat_and_patch() const;
 
-    std::vector<float> main_face_feat() const;
+    std::pair<std::vector<float>, cv::Mat> main_face_feat_and_patch() const;
+
+    std::vector<cv::Mat> body_patches() const;
+
+    std::vector<cv::Mat> face_patches() const;
 
     static bool check_consistency(const std::deque<std::vector<float>> &feats, float thr = 0.5f);
 
-    std::deque<std::tuple<std::vector<float>, float>> body;
-    std::deque<std::vector<float>> face;
+    std::deque<std::tuple<std::vector<float>, float, cv::Mat>> body;
+    std::deque<std::tuple<std::vector<float>, cv::Mat>> face;
+    // ======================= 【修改结束】 =======================
 };
 
 struct GlobalID {
@@ -195,8 +200,9 @@ struct GlobalID {
 
     int can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f);
 
-    void bind(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f,
-              const std::string &tid, int current_ts);
+    // ======================= 【MODIFIED】 =======================
+    void bind(const std::string &gid, const std::string &tid, int current_ts, const TrackAgg &agg);
+    // ======================= 【修改结束】 =======================
 
     std::pair<std::string, float> probe(const std::vector<float> &face_f, const std::vector<float> &body_f);
 
@@ -228,17 +234,11 @@ public:
 
     ~FeatureProcessor();
 
-    // ======================= 【修改的部分在此】 =======================
-    // 移除了 const cv::Mat& full_frame 参数
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>>
     process_packet(const Packet &pkt, const std::vector<Face> &face_info);
-    // ======================= 【修改结束】 =======================
 
 private:
-    // ======================= 【修改的部分在此】 =======================
-    // 移除了 const cv::Mat& full_frame 参数
     void _extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info);
-    // ======================= 【修改结束】 =======================
 
     void _load_features_from_cache(const Packet &pkt);
 
@@ -246,7 +246,9 @@ private:
 
     std::vector<float> _gid_fused_rep(const std::string &gid);
 
-    void trigger_alarm(const std::string &gid);
+    // ======================= 【MODIFIED】 =======================
+    void trigger_alarm(const std::string &gid, const TrackAgg &agg);
+    // ======================= 【修改结束】 =======================
 
     std::string mode_;
     std::string device_;
