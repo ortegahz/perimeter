@@ -68,6 +68,11 @@ void FaceAnalyzer::get_embedding(const cv::Mat &full_img, Face &face) {
     cv::warpAffine(full_img, aligned_face, M, cv::Size(112, 112));
     face.aligned_face = aligned_face.clone();
 
+//    // 保存对齐后的人脸图像
+//    static int aligned_face_counter = 0;
+//    std::string save_path = "/home/manu/tmp/aligned_cpp_bmp/" + std::to_string(aligned_face_counter++) + ".bmp";
+//    cv::imwrite(save_path, aligned_face);
+
     // 从对齐后的人脸提取特征
     face.embedding = get_embedding_from_aligned(aligned_face);
 }
