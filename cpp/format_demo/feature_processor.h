@@ -11,12 +11,18 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
+// 新增多线程相关头文件
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <queue>
 
 // 包含模型头文件
 #include "cores/personReid/PersonReid.hpp"
 #include "cores/face/FaceAnalyzer.hpp"
 
-/* ---------- 与 python 保持一致的常量 ---------- */
+/* ---------- 常量定义 ---------- */
 constexpr int MIN_BODY4GID = 8;
 constexpr int MIN_FACE4GID = 8;
 constexpr float W_FACE = 0.6f;
@@ -47,11 +53,8 @@ constexpr int BEHAVIOR_ALARM_DURATION_FRAMES = 256;
 constexpr float MIN_HW_RATIO = 1.5f;
 constexpr float FACE_DET_MIN_SCORE = 0.60f;
 
-// ======================= 【MODIFIED】 =======================
-// 路径修改为与 Python 版本在同一目录下，以方便对比
 const std::string SAVE_DIR = "/mnt/nfs/perimeter_cpp";
 const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
-// ======================= 【修改结束】 =======================
 
 /* ---------- 数据结构定义 ---------- */
 struct Detection {
@@ -175,7 +178,6 @@ private:
 };
 
 struct TrackAgg {
-    // ======================= 【MODIFIED】 =======================
     void add_body(const std::vector<float> &feat, float score, const cv::Mat &patch);
 
     void add_face(const std::vector<float> &feat, const cv::Mat &patch);
@@ -192,7 +194,6 @@ struct TrackAgg {
 
     std::deque<std::tuple<std::vector<float>, float, cv::Mat>> body;
     std::deque<std::tuple<std::vector<float>, cv::Mat>> face;
-    // ======================= 【修改结束】 =======================
 };
 
 struct GlobalID {
@@ -200,9 +201,8 @@ struct GlobalID {
 
     int can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f);
 
-    // ======================= 【MODIFIED】 =======================
-    void bind(const std::string &gid, const std::string &tid, int current_ts, const TrackAgg &agg);
-    // ======================= 【修改结束】 =======================
+    void bind(const std::string &gid, const std::string &tid, int current_ts, const TrackAgg &agg,
+              class FeatureProcessor *fp);
 
     std::pair<std::string, float> probe(const std::vector<float> &face_f, const std::vector<float> &body_f);
 
@@ -225,6 +225,26 @@ struct NewGidState {
     int ambig_count = 0;
 };
 
+// 定义I/O任务
+enum class IoTaskType {
+    SAVE_PROTOTYPE,
+    REMOVE_FILES,
+    BACKUP_ALARM,
+    CLEANUP_GID_DIR,
+    CREATE_DIRS
+};
+
+struct IoTask {
+    IoTaskType type;
+    std::string gid;
+    cv::Mat image;
+    std::string path_suffix;
+    std::vector<std::string> files_to_remove;
+    std::string timestamp;
+    std::vector<cv::Mat> face_patches_backup;
+    std::vector<cv::Mat> body_patches_backup;
+};
+
 class FeatureProcessor {
 public:
     explicit FeatureProcessor(const std::string &mode,
@@ -237,6 +257,8 @@ public:
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>>
     process_packet(const Packet &pkt, const std::vector<Face> &face_info);
 
+    void submit_io_task(IoTask task);
+
 private:
     void _extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info);
 
@@ -246,9 +268,16 @@ private:
 
     std::vector<float> _gid_fused_rep(const std::string &gid);
 
-    // ======================= 【MODIFIED】 =======================
     void trigger_alarm(const std::string &gid, const TrackAgg &agg);
-    // ======================= 【修改结束】 =======================
+
+    // I/O线程相关
+    void _io_worker();
+
+    std::thread io_thread_;
+    std::queue<IoTask> io_queue_;
+    std::mutex queue_mutex_;
+    std::condition_variable queue_cond_;
+    std::atomic<bool> stop_io_thread_{false};
 
     std::string mode_;
     std::string device_;
@@ -268,6 +297,6 @@ private:
     std::set<std::string> alarmed;
     std::map<std::string, std::vector<float>> alarm_reprs;
     std::map<std::string, std::tuple<int, std::string>> behavior_alarm_state;
-    std::map<std::string, IntrusionDetector> intrusion_detectors;
-    std::map<std::string, LineCrossingDetector> line_crossing_detectors;
+    std::map<std::string, std::unique_ptr<IntrusionDetector>> intrusion_detectors;
+    std::map<std::string, std::unique_ptr<LineCrossingDetector>> line_crossing_detectors;
 };

@@ -217,22 +217,25 @@ std::pair<std::vector<float>, cv::Mat> TrackAgg::main_face_feat_and_patch() cons
 
 std::vector<cv::Mat> TrackAgg::body_patches() const {
     std::vector<cv::Mat> patches;
-    for (const auto &item: body) patches.push_back(std::get<2>(item));
+    for (const auto &item: body) patches.push_back(std::get<2>(item).clone());
     return patches;
 }
 
 std::vector<cv::Mat> TrackAgg::face_patches() const {
     std::vector<cv::Mat> patches;
-    for (const auto &item: face) patches.push_back(std::get<1>(item));
+    for (const auto &item: face) patches.push_back(std::get<1>(item).clone());
     return patches;
 }
 
 /* ================= GlobalID ================= */
-static void _add_proto_with_patch(
+static void _add_or_update_prototype(
         std::vector<std::vector<float>> &feat_list,
         const std::vector<float> &new_feat,
         const cv::Mat &new_patch,
-        const std::string &dir_path) {
+        const std::string &gid,
+        const std::string &type, // "faces" or "bodies"
+        FeatureProcessor *fp) {
+
     if (new_feat.empty() || new_patch.empty()) return;
 
     if (!feat_list.empty()) {
@@ -240,10 +243,6 @@ static void _add_proto_with_patch(
         for (const auto &x: feat_list) max_sim = std::max(max_sim, sim_vec(new_feat, x));
         if (max_sim < UPDATE_THR) return;
     }
-
-#ifdef ENABLE_DISK_IO
-    std::filesystem::create_directories(dir_path);
-#endif
 
     int idx_to_replace = -1;
     if ((int) feat_list.size() < MAX_PROTO_PER_TYPE) {
@@ -258,44 +257,44 @@ static void _add_proto_with_patch(
                 idx_to_replace = i;
             }
         }
-        feat_list[idx_to_replace] = blend(feat_list[idx_to_replace], new_feat);
+        if (idx_to_replace != -1) {
+            feat_list[idx_to_replace] = blend(feat_list[idx_to_replace], new_feat);
+        }
     }
 
-#ifdef ENABLE_DISK_IO
     if (idx_to_replace != -1) {
         char filename[32];
         sprintf(filename, "%02d.jpg", idx_to_replace);
-        cv::imwrite((std::filesystem::path(dir_path) / filename).string(), new_patch);
+        IoTask task;
+        task.type = IoTaskType::SAVE_PROTOTYPE;
+        task.gid = gid;
+        task.path_suffix = std::string(type) + "/" + filename;
+        task.image = new_patch.clone(); // Deep copy for thread safety
+        fp->submit_io_task(task);
     }
-#endif
 
+    // 保留了离群点检测，但只提交删除任务
+    auto original_size = feat_list.size();
     auto [new_lst, keep_mask] = remove_outliers_cpp(feat_list, 3.0f);
-    if (new_lst.size() != feat_list.size()) {
-        std::cout << "[GlobalID] Outlier removed: " << feat_list.size() - new_lst.size() << " from " << dir_path
-                  << std::endl;
+    if (new_lst.size() != original_size) {
+        std::cout << "[GlobalID] Outlier detected: " << original_size - new_lst.size() << " from GID " << gid << "/"
+                  << type << std::endl;
 
-#ifdef ENABLE_DISK_IO
-        std::vector<std::string> img_paths;
-        try {
-            if (std::filesystem::exists(dir_path)) {
-                for (const auto &entry: std::filesystem::directory_iterator(dir_path)) {
-                    if (entry.path().extension() == ".jpg") img_paths.push_back(entry.path().string());
-                }
-            }
-        } catch (...) {}
-
-        std::sort(img_paths.begin(), img_paths.end());
-
-        for (size_t i = 0; i < img_paths.size(); ++i) {
-            if (i >= keep_mask.size() || !keep_mask[i]) {
-                try {
-                    std::filesystem::remove(img_paths[i]);
-                } catch (const std::exception &e) {
-                    std::cerr << "Failed to remove outlier image: " << e.what() << std::endl;
-                }
+        std::vector<std::string> files_to_del;
+        // 注意：这里的索引逻辑需要基于原始列表，而不是已删除的列表
+        for (size_t i = 0; i < keep_mask.size(); ++i) {
+            if (!keep_mask[i]) {
+                char filename[32];
+                sprintf(filename, "%02zu.jpg", i);
+                files_to_del.push_back((std::filesystem::path(SAVE_DIR) / gid / type / filename).string());
             }
         }
-#endif
+        if (!files_to_del.empty()) {
+            IoTask task;
+            task.type = IoTaskType::REMOVE_FILES;
+            task.files_to_remove = files_to_del;
+            fp->submit_io_task(task);
+        }
         feat_list = new_lst;
     }
 }
@@ -308,35 +307,28 @@ std::string GlobalID::new_gid() {
     bank_bodies[gid] = {};
     tid_hist[gid] = {};
     last_update[gid] = 0;
-#ifdef ENABLE_DISK_IO
-    try {
-        std::filesystem::create_directories(std::filesystem::path(SAVE_DIR) / gid / "faces");
-        std::filesystem::create_directories(std::filesystem::path(SAVE_DIR) / gid / "bodies");
-    } catch (...) {}
-#endif
     std::cout << "[GlobalID] new " << gid << std::endl;
     return gid;
 }
 
 int
 GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f) {
-    if (bank_faces.find(gid) == bank_faces.end()) return 0;
-    if (!bank_faces[gid].empty() && !face_f.empty() &&
-        sim_vec(face_f, avg_feats(bank_faces[gid])) < FACE_THR_STRICT)
+    if (!bank_faces.count(gid)) return 0;
+    if (!bank_faces[gid].empty() && !face_f.empty() && sim_vec(face_f, avg_feats(bank_faces[gid])) < FACE_THR_STRICT)
         return -1;
-    if (!bank_bodies[gid].empty() && !body_f.empty() &&
-        sim_vec(body_f, avg_feats(bank_bodies[gid])) < BODY_THR_STRICT)
+    if (!bank_bodies.count(gid) || (bank_bodies.count(gid) && !bank_bodies[gid].empty() && !body_f.empty() &&
+                                    sim_vec(body_f, avg_feats(bank_bodies[gid])) < BODY_THR_STRICT))
         return -2;
     return 0;
 }
 
-void GlobalID::bind(const std::string &gid, const std::string &tid, int current_ts, const TrackAgg &agg) {
+void GlobalID::bind(const std::string &gid, const std::string &tid, int current_ts, const TrackAgg &agg,
+                    FeatureProcessor *fp) {
     auto [face_f, face_p] = agg.main_face_feat_and_patch();
     auto [body_f, body_p] = agg.main_body_feat_and_patch();
 
-    _add_proto_with_patch(bank_faces[gid], face_f, face_p, (std::filesystem::path(SAVE_DIR) / gid / "faces").string());
-    _add_proto_with_patch(bank_bodies[gid], body_f, body_p,
-                          (std::filesystem::path(SAVE_DIR) / gid / "bodies").string());
+    _add_or_update_prototype(bank_faces[gid], face_f, face_p, gid, "faces", fp);
+    _add_or_update_prototype(bank_bodies[gid], body_f, body_p, gid, "bodies", fp);
 
     auto &v = tid_hist[gid];
     if (std::find(v.begin(), v.end(), tid) == v.end()) v.push_back(tid);
@@ -347,7 +339,7 @@ std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, 
     std::string best_gid;
     float best_score = -1.f;
     for (auto const &[gid, face_pool]: bank_faces) {
-        if (bank_bodies.count(gid) == 0 || face_pool.empty() || bank_bodies.at(gid).empty()) continue;
+        if (!bank_bodies.count(gid) || face_pool.empty() || bank_bodies.at(gid).empty()) continue;
         float face_sim = face_f.empty() ? 0.f : sim_vec(face_f, avg_feats(face_pool));
         float body_sim = body_f.empty() ? 0.f : sim_vec(body_f, avg_feats(bank_bodies.at(gid)));
         float sc = W_FACE * face_sim + W_BODY * body_sim;
@@ -398,7 +390,7 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
                 for (const auto &pt_json: config["intrusion_poly"]) {
                     poly.emplace_back(pt_json[0].get<int>(), pt_json[1].get<int>());
                 }
-                intrusion_detectors.emplace(stream_id, IntrusionDetector(poly));
+                intrusion_detectors[stream_id] = std::make_unique<IntrusionDetector>(poly);
                 std::cout << "Initialized IntrusionDetector for stream '" << stream_id << "'." << std::endl;
             }
             if (config.contains("crossing_line")) {
@@ -406,35 +398,107 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
                 cv::Point start(line_cfg["start"][0].get<int>(), line_cfg["start"][1].get<int>());
                 cv::Point end(line_cfg["end"][0].get<int>(), line_cfg["end"][1].get<int>());
                 std::string direction = line_cfg.value("direction", "any");
-                line_crossing_detectors.emplace(stream_id, LineCrossingDetector(start, end, direction));
+                line_crossing_detectors[stream_id] = std::make_unique<LineCrossingDetector>(start, end, direction);
                 std::cout << "Initialized LineCrossingDetector for stream '" << stream_id << "'." << std::endl;
             }
         }
     }
 
-#ifdef ENABLE_DISK_IO
-    try {
-        if (std::filesystem::exists(SAVE_DIR)) std::filesystem::remove_all(SAVE_DIR);
-        if (std::filesystem::exists(ALARM_DIR)) std::filesystem::remove_all(ALARM_DIR);
-        std::filesystem::create_directories(SAVE_DIR);
-        std::filesystem::create_directories(ALARM_DIR);
-    } catch (const std::exception &e) { std::cerr << "Error creating base directories: " << e.what() << std::endl; }
-#endif
+    submit_io_task({IoTaskType::CREATE_DIRS});
+
+    io_thread_ = std::thread(&FeatureProcessor::_io_worker, this);
 }
 
 FeatureProcessor::~FeatureProcessor() {
-#ifdef ENABLE_DISK_IO
-    if (mode_ == "realtime" && !feature_cache_path_.empty() && !features_to_save_.is_null()) {
-        std::cout << "\nSaving " << features_to_save_.size() << " frames of features to '" << feature_cache_path_
-                  << "'..." << std::endl;
+    stop_io_thread_ = true;
+    queue_cond_.notify_one();
+    if (io_thread_.joinable()) {
+        io_thread_.join();
+    }
+    std::cout << "I/O thread finished." << std::endl;
+}
+
+void FeatureProcessor::submit_io_task(IoTask task) {
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        io_queue_.push(std::move(task));
+    }
+    queue_cond_.notify_one();
+}
+
+void FeatureProcessor::_io_worker() {
+    while (true) {
+        IoTask task;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cond_.wait(lock, [this] { return !io_queue_.empty() || stop_io_thread_; });
+            if (stop_io_thread_ && io_queue_.empty()) {
+                return;
+            }
+            task = std::move(io_queue_.front());
+            io_queue_.pop();
+        }
+
         try {
-            std::ofstream of(feature_cache_path_);
-            of << features_to_save_.dump(4);
+            switch (task.type) {
+                case IoTaskType::CREATE_DIRS: {
+                    if (std::filesystem::exists(SAVE_DIR)) std::filesystem::remove_all(SAVE_DIR);
+                    if (std::filesystem::exists(ALARM_DIR)) std::filesystem::remove_all(ALARM_DIR);
+                    std::filesystem::create_directories(SAVE_DIR);
+                    std::filesystem::create_directories(ALARM_DIR);
+                    break;
+                }
+                case IoTaskType::SAVE_PROTOTYPE: {
+                    auto full_path = std::filesystem::path(SAVE_DIR) / task.gid / task.path_suffix;
+                    std::filesystem::create_directories(full_path.parent_path());
+                    cv::imwrite(full_path.string(), task.image);
+                    break;
+                }
+                case IoTaskType::REMOVE_FILES: {
+                    for (const auto &file_path: task.files_to_remove) {
+                        if (std::filesystem::exists(file_path)) std::filesystem::remove(file_path);
+                    }
+                    break;
+                }
+                case IoTaskType::BACKUP_ALARM: {
+                    std::filesystem::path dst_dir =
+                            std::filesystem::path(ALARM_DIR) / (task.gid + "_" + task.timestamp);
+                    std::filesystem::path src_dir = std::filesystem::path(SAVE_DIR) / task.gid;
+                    if (std::filesystem::exists(src_dir))
+                        std::filesystem::copy(src_dir, dst_dir, std::filesystem::copy_options::recursive |
+                                                                std::filesystem::copy_options::overwrite_existing);
+
+                    std::filesystem::path seq_face_dir = dst_dir / "agg_sequence/face";
+                    std::filesystem::path seq_body_dir = dst_dir / "agg_sequence/body";
+                    std::filesystem::create_directories(seq_face_dir);
+                    std::filesystem::create_directories(seq_body_dir);
+
+                    for (size_t i = 0; i < task.face_patches_backup.size(); ++i) {
+                        char fname[16];
+                        sprintf(fname, "%03zu.jpg", i);
+                        cv::imwrite((seq_face_dir / fname).string(), task.face_patches_backup[i]);
+                    }
+                    for (size_t i = 0; i < task.body_patches_backup.size(); ++i) {
+                        char fname[16];
+                        sprintf(fname, "%03zu.jpg", i);
+                        cv::imwrite((seq_body_dir / fname).string(), task.body_patches_backup[i]);
+                    }
+                    std::cout << "\n[ALARM] GID " << task.gid << " triggered and backed up to " << dst_dir.string()
+                              << std::endl;
+                    break;
+                }
+                case IoTaskType::CLEANUP_GID_DIR: {
+                    auto dir_to_del = std::filesystem::path(SAVE_DIR) / task.gid;
+                    if (std::filesystem::exists(dir_to_del)) {
+                        std::filesystem::remove_all(dir_to_del);
+                    }
+                    break;
+                }
+            }
         } catch (const std::exception &e) {
-            std::cerr << "Failed to save features to '" << feature_cache_path_ << "': " << e.what() << std::endl;
+            std::cerr << "I/O worker error: " << e.what() << std::endl;
         }
     }
-#endif
 }
 
 void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info) {
@@ -506,11 +570,9 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::
             } catch (const std::exception &e) { continue; }
         }
     }
-#ifdef ENABLE_DISK_IO
     if (!feature_cache_path_.empty() && !extracted_features_for_this_frame.is_null()) {
         features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
     }
-#endif
 }
 
 void FeatureProcessor::_load_features_from_cache(const Packet &pkt) {
@@ -559,7 +621,7 @@ std::vector<float> FeatureProcessor::_fuse_feat(const std::vector<float> &face_f
 }
 
 std::vector<float> FeatureProcessor::_gid_fused_rep(const std::string &gid) {
-    if (gid_mgr.bank_faces.find(gid) == gid_mgr.bank_faces.end()) return {};
+    if (!gid_mgr.bank_faces.count(gid)) return {};
     auto face_pool = gid_mgr.bank_faces.at(gid);
     auto body_pool = gid_mgr.bank_bodies.at(gid);
     auto face_f = face_pool.empty() ? std::vector<float>() : avg_feats(face_pool);
@@ -579,44 +641,20 @@ void FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg
         }
     }
 
-#ifdef ENABLE_DISK_IO
+    alarmed.insert(gid);
+    alarm_reprs[gid] = cur_rep;
+
     time_t now_time = time(0);
     char buf[80];
     strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", localtime(&now_time));
-    std::filesystem::path dst_dir = std::filesystem::path(ALARM_DIR) / (gid + "_" + buf);
 
-    try {
-        std::filesystem::path src_dir = std::filesystem::path(SAVE_DIR) / gid;
-        if (std::filesystem::exists(src_dir))
-            std::filesystem::copy(src_dir, dst_dir, std::filesystem::copy_options::recursive |
-                                                    std::filesystem::copy_options::overwrite_existing);
-
-        std::filesystem::path seq_face_dir = dst_dir / "agg_sequence/face";
-        std::filesystem::path seq_body_dir = dst_dir / "agg_sequence/body";
-        std::filesystem::create_directories(seq_face_dir);
-        std::filesystem::create_directories(seq_body_dir);
-
-        int i = 0;
-        for (const auto &img: agg.face_patches()) {
-            char fname[16];
-            sprintf(fname, "%03d.jpg", i++);
-            cv::imwrite((seq_face_dir / fname).string(), img);
-        }
-
-        i = 0;
-        for (const auto &img: agg.body_patches()) {
-            char fname[16];
-            sprintf(fname, "%03d.jpg", i++);
-            cv::imwrite((seq_body_dir / fname).string(), img);
-        }
-    } catch (const std::exception &e) {
-        std::cerr << "\n[ALARM] Failed copy/write for " << gid << ": " << e.what() << std::endl;
-    }
-#endif
-
-    alarmed.insert(gid);
-    alarm_reprs[gid] = cur_rep;
-    std::cout << "\n[ALARM] GID " << gid << " triggered and backed up." << std::endl;
+    IoTask task;
+    task.type = IoTaskType::BACKUP_ALARM;
+    task.gid = gid;
+    task.timestamp = std::string(buf);
+    task.face_patches_backup = agg.face_patches();
+    task.body_patches_backup = agg.body_patches();
+    submit_io_task(task);
 }
 
 auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face> &face_info)
@@ -624,11 +662,11 @@ auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face>
     const auto &[stream_id, fid, patches, dets] = pkt;
 
     if (intrusion_detectors.count(stream_id)) {
-        for (int tid: intrusion_detectors.at(stream_id).check(dets, stream_id))
+        for (int tid: intrusion_detectors.at(stream_id)->check(dets, stream_id))
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AA"};
     }
     if (line_crossing_detectors.count(stream_id)) {
-        for (int tid: line_crossing_detectors.at(stream_id).check(dets, stream_id))
+        for (int tid: line_crossing_detectors.at(stream_id)->check(dets, stream_id))
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AL"};
     }
 
@@ -684,7 +722,7 @@ auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face>
             state.cand_gid = cand_gid;
             int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f);
             if (state.count >= CANDIDATE_FRAMES && flag_code == 0) {
-                gid_mgr.bind(cand_gid, tid_str, fid, agg);
+                gid_mgr.bind(cand_gid, tid_str, fid, agg, this);
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = (int) gid_mgr.tid_hist[cand_gid].size();
@@ -696,7 +734,7 @@ auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face>
             }
         } else if (gid_mgr.bank_faces.empty()) {
             std::string new_gid = gid_mgr.new_gid();
-            gid_mgr.bind(new_gid, tid_str, fid, agg);
+            gid_mgr.bind(new_gid, tid_str, fid, agg, this);
             tid2gid[tid_str] = new_gid;
             state = {new_gid, CANDIDATE_FRAMES, fid};
             ng_state.last_new_fid = fid;
@@ -707,7 +745,7 @@ auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face>
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 std::string new_gid = gid_mgr.new_gid();
-                gid_mgr.bind(new_gid, tid_str, fid, agg);
+                gid_mgr.bind(new_gid, tid_str, fid, agg, this);
                 tid2gid[tid_str] = new_gid;
                 state = {new_gid, CANDIDATE_FRAMES, fid};
                 ng_state = {0, fid, 0};
@@ -723,7 +761,7 @@ auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face>
                 ng_state.count++;
                 if (ng_state.count >= NEW_GID_MIN_FRAMES) {
                     std::string new_gid = gid_mgr.new_gid();
-                    gid_mgr.bind(new_gid, tid_str, fid, agg);
+                    gid_mgr.bind(new_gid, tid_str, fid, agg, this);
                     tid2gid[tid_str] = new_gid;
                     state = {new_gid, CANDIDATE_FRAMES, fid};
                     ng_state = {0, fid, 0};
@@ -790,15 +828,11 @@ auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face>
         gid_mgr.last_update.erase(gid_del);
         alarmed.erase(gid_del);
         alarm_reprs.erase(gid_del);
-#ifdef ENABLE_DISK_IO
-        try {
-            if (std::filesystem::exists(std::filesystem::path(SAVE_DIR) / gid_del)) {
-                std::filesystem::remove_all(std::filesystem::path(SAVE_DIR) / gid_del);
-            }
-        } catch (const std::exception &e) {
-            std::cerr << "Failed to remove GID directory: " << gid_del << " " << e.what() << std::endl;
-        }
-#endif
+
+        IoTask task;
+        task.type = IoTaskType::CLEANUP_GID_DIR;
+        task.gid = gid_del;
+        submit_io_task(task);
     }
 
     return realtime_map;
