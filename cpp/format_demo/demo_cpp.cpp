@@ -9,8 +9,8 @@
 #include "feature_processor.h" // Includes all necessary headers like opencv and json
 
 // -------- 新增：模型路径常量，与 feature_processor.cpp 保持一致 --------
-const std::string FACE_DET_MODEL_PATH = "/home/manu/nfs/det_10g_simplified.onnx";
-const std::string FACE_REC_MODEL_PATH = "/home/manu/nfs/w600k_r50_simplified.onnx";
+const std::string FACE_DET_MODEL_PATH = "/mnt/nfs/det_10g_simplified.onnx";
+const std::string FACE_REC_MODEL_PATH = "/mnt/nfs/w600k_r50_simplified.onnx";
 // ----------------------------------------------------------------------
 
 // -------- 修改：load_packet_from_cache 返回一个包含 packet 和 face_info 的结构体 --------
@@ -105,9 +105,9 @@ LoadedData load_packet_from_cache(const std::string &cam_id, int fid, const std:
 
 int main(int argc, char **argv) {
     // --- 可调参数 ---
-    std::string VIDEO_PATH = "/home/manu/tmp/64.mp4";
+    std::string VIDEO_PATH = "/mnt/nfs/64.mp4";
     // 注意：请确保 RAW_DIR 指向与 Python 端一致的 v2 版本缓存（包含face_info）
-    std::string RAW_DIR = "/home/manu/tmp/cache_v2";
+    std::string RAW_DIR = "/mnt/nfs/cache_v2";
     std::string CAM_ID = "cam1";
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
@@ -121,9 +121,9 @@ int main(int argc, char **argv) {
 
     std::string FEATURE_CACHE_JSON, OUTPUT_TXT, OUTPUT_VIDEO_PATH;
     if (MODE == "load") {
-        FEATURE_CACHE_JSON = "/home/manu/tmp/features_cache_v2.json";
-        OUTPUT_TXT = "/home/manu/tmp/output_result_cpp_load.txt";
-        OUTPUT_VIDEO_PATH = "/home/manu/tmp/output_video_cpp_load.mp4";
+        FEATURE_CACHE_JSON = "/mnt/nfs/features_cache_v2.json";
+        OUTPUT_TXT = "/mnt/nfs/output_result_cpp_load.txt";
+        OUTPUT_VIDEO_PATH = "/mnt/nfs/output_video_cpp_load.mp4";
     } else { // realtime
         // 注意：realtime模式的C++版本依赖ByteTrack的C++实现，此处未提供
         // 为演示逻辑，假设ByteTrack已运行并将结果存入cache_v2
@@ -131,10 +131,10 @@ int main(int argc, char **argv) {
                   << std::endl;
         std::cout << "This example will read from RAW_DIR even in realtime mode, but will re-extract features."
                   << std::endl;
-        RAW_DIR = "/home/manu/tmp/cache_v2"; // realtime模式也从这里读检测结果
-        FEATURE_CACHE_JSON = "/home/manu/tmp/features_cache_cpp_realtime_output.json";
-        OUTPUT_TXT = "/home/manu/tmp/output_result_cpp_realtime.txt";
-        OUTPUT_VIDEO_PATH = "/home/manu/tmp/output_video_cpp_realtime.mp4";
+        RAW_DIR = "/mnt/nfs/cache_v2"; // realtime模式也从这里读检测结果
+        FEATURE_CACHE_JSON = "/mnt/nfs/features_cache_cpp_realtime_output.json";
+        OUTPUT_TXT = "/mnt/nfs/output_result_cpp_realtime.txt";
+        OUTPUT_VIDEO_PATH = "/mnt/nfs/output_video_cpp_realtime.mp4";
     }
 
     nlohmann::json boundary_config; // 留空

@@ -7,9 +7,9 @@
 #include <iostream>
 #include <chrono>
 
-const std::string REID_MODEL_PATH = "/home/manu/nfs/reid_model.onnx";
-const std::string FACE_DET_MODEL_PATH = "/home/manu/nfs/det_10g_simplified.onnx";
-const std::string FACE_REC_MODEL_PATH = "/home/manu/nfs/w600k_r50_simplified.onnx";
+const std::string REID_MODEL_PATH = "/mnt/nfs/reid_model.onnx";
+const std::string FACE_DET_MODEL_PATH = "/mnt/nfs/det_10g_simplified.onnx";
+const std::string FACE_REC_MODEL_PATH = "/mnt/nfs/w600k_r50_simplified.onnx";
 const int REID_INPUT_WIDTH = 128;
 const int REID_INPUT_HEIGHT = 256;
 
@@ -353,11 +353,14 @@ FeatureProcessor::~FeatureProcessor() {
 // ======================= 【修改的部分在此】 =======================
 // 函数定义移除了 const cv::Mat& full_frame 参数
 // 内部逻辑修改为从人体 patch 中提取人脸 patch
+// 增加了内部更细致的耗时打印和数量统计
 void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info) {
+    auto total_start = std::chrono::high_resolution_clock::now();
     const auto &[stream_id, fid, patches, dets] = pkt;
     nlohmann::json extracted_features_for_this_frame;
 
     // 1. 行人重识别 (ReID) - 此部分逻辑不变
+    auto reid_start = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < dets.size(); ++i) {
         const auto &det = dets[i];
         if (i >= patches.size()) continue;
@@ -378,8 +381,14 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::
             extracted_features_for_this_frame[tid_str]["body_feat"] = feat_vec;
         }
     }
+    auto reid_end = std::chrono::high_resolution_clock::now();
 
     // 2. 人脸与人体的匹配及人脸特征提取 (核心修改逻辑)
+    auto face_total_start = std::chrono::high_resolution_clock::now();
+    long long duration_match_us = 0;
+    long long duration_preproc_us = 0;
+    long long duration_infer_us = 0;
+
     if (!face_info.empty() && !patches.empty() && face_analyzer_) {
         std::set<size_t> used_face_indices;
         for (size_t i = 0; i < dets.size(); ++i) {
@@ -388,7 +397,8 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::
             if (i >= patches.size()) continue; // 安全检查
             const auto &person_patch = patches[i];
 
-            // 2.1 查找所有与当前人体框IoA > 0.8的 *未使用* 的人脸（匹配逻辑不变，使用全局坐标）
+            // --- 2.1 匹配计时开始 ---
+            auto match_start = std::chrono::high_resolution_clock::now();
             std::vector<size_t> matching_face_indices;
             for (size_t j = 0; j < face_info.size(); ++j) {
                 if (used_face_indices.count(j)) continue;
@@ -396,52 +406,67 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::
                     matching_face_indices.push_back(j);
                 }
             }
+            duration_match_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::high_resolution_clock::now() - match_start).count();
+            // --- 匹配计时结束 ---
 
-            // 2.2 只有当找到的人脸数量 *正好为1* 时，才认为匹配有效
             if (matching_face_indices.size() != 1) continue;
-
             size_t unique_face_idx = matching_face_indices[0];
 
+            // --- 2.3 预处理与过滤计时开始 ---
+            auto preproc_start = std::chrono::high_resolution_clock::now();
             const Face &face_global_coords = face_info[unique_face_idx];
-            if (face_global_coords.det_score < FACE_DET_MIN_SCORE) continue;
+            if (face_global_coords.det_score < FACE_DET_MIN_SCORE) {
+                duration_preproc_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::high_resolution_clock::now() - preproc_start).count();
+                continue;
+            }
 
-            // 分数达标，声明占用此人脸
             used_face_indices.insert(unique_face_idx);
-
-            // 2.3 将人脸坐标转换为人体patch的相对坐标, 并进行清晰度检查
-            Face face_relative_coords = face_global_coords; // 复制一份用于修改
-
-            // 将全局人脸BBox转换为相对于人体patch的BBox
+            Face face_relative_coords = face_global_coords;
             face_relative_coords.bbox.x -= det.tlwh.x;
             face_relative_coords.bbox.y -= det.tlwh.y;
-
-            // 将全局人脸关键点转换为相对于人体patch的关键点
             for (auto &kp: face_relative_coords.kps) {
                 kp.x -= det.tlwh.x;
                 kp.y -= det.tlwh.y;
             }
 
-            // 安全地裁剪出人脸patch并检查
             cv::Rect face_bbox_in_patch_safe =
                     cv::Rect(face_relative_coords.bbox) & cv::Rect(0, 0, person_patch.cols, person_patch.rows);
-            if (face_bbox_in_patch_safe.width < 32 || face_bbox_in_patch_safe.height < 32) continue;
-
+            if (face_bbox_in_patch_safe.width < 32 || face_bbox_in_patch_safe.height < 32) {
+                duration_preproc_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::high_resolution_clock::now() - preproc_start).count();
+                continue;
+            }
             cv::Mat face_crop = person_patch(face_bbox_in_patch_safe);
-            if (face_crop.empty()) continue;
+            if (face_crop.empty()) {
+                duration_preproc_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::high_resolution_clock::now() - preproc_start).count();
+                continue;
+            }
 
-            // 清晰度检查
             cv::Mat gray, laplacian, mu, sigma;
             cv::cvtColor(face_crop, gray, cv::COLOR_BGR2GRAY);
             cv::Laplacian(gray, laplacian, CV_64F);
             cv::meanStdDev(laplacian, mu, sigma);
-            if (sigma.at<double>(0, 0) * sigma.at<double>(0, 0) < 100) continue;
+            if (sigma.at<double>(0, 0) * sigma.at<double>(0, 0) < 100) {
+                duration_preproc_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::high_resolution_clock::now() - preproc_start).count();
+                continue;
+            }
+            duration_preproc_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::high_resolution_clock::now() - preproc_start).count();
+            // --- 预处理与过滤计时结束 ---
 
-            // 2.4 从人体patch中提取人脸特征
+            // --- 2.4 推理计时开始 ---
+            auto infer_start = std::chrono::high_resolution_clock::now();
             try {
-                // 将人体patch和相对坐标的人脸信息传给分析器
                 face_analyzer_->get_embedding(person_patch, face_relative_coords);
-                if (face_relative_coords.embedding.empty()) continue;
-
+                if (face_relative_coords.embedding.empty()) {
+                    duration_infer_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::high_resolution_clock::now() - infer_start).count();
+                    continue;
+                }
                 cv::Mat normalized_emb;
                 cv::normalize(face_relative_coords.embedding, normalized_emb, 1.0, 0.0, cv::NORM_L2);
                 std::vector<float> f_emb(normalized_emb.begin<float>(), normalized_emb.end<float>());
@@ -455,13 +480,36 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::
             } catch (const std::exception &e) {
                 std::cerr << "\n[WARN] Exception during face embedding extraction for tid " << det.id << " in frame "
                           << fid << ": " << e.what() << std::endl;
+                duration_infer_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::high_resolution_clock::now() - infer_start).count();
                 continue;
             }
+            duration_infer_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::high_resolution_clock::now() - infer_start).count();
+            // --- 推理计时结束 ---
         }
     }
+    auto face_total_end = std::chrono::high_resolution_clock::now();
 
     if (!feature_cache_path_.empty() && !extracted_features_for_this_frame.is_null()) {
         features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
+    }
+    auto total_end = std::chrono::high_resolution_clock::now();
+
+    auto duration_reid_us = std::chrono::duration_cast<std::chrono::microseconds>(reid_end - reid_start).count();
+    auto duration_face_total_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            face_total_end - face_total_start).count();
+    auto duration_total_us = std::chrono::duration_cast<std::chrono::microseconds>(total_end - total_start).count();
+
+    if (duration_total_us > 1000) { // Only print if it takes more than 1ms
+        std::cout << "  [PERF _extract] Frame " << fid << " (Persons: " << dets.size() << ", Faces: "
+                  << face_info.size() << "): "
+                  << "Total: " << duration_total_us / 1000.0 << "ms | "
+                  << "ReID: " << duration_reid_us / 1000.0 << "ms, "
+                  << "Face: " << duration_face_total_us / 1000.0 << "ms ("
+                  << "Match: " << duration_match_us / 1000.0 << "ms, "
+                  << "Preproc: " << duration_preproc_us / 1000.0 << "ms, "
+                  << "Infer: " << duration_infer_us / 1000.0 << "ms)\n";
     }
 }
 // ======================= 【修改结束】 =======================
@@ -547,10 +595,12 @@ void FeatureProcessor::trigger_alarm(const std::string &gid) {
 // 函数定义移除了 const cv::Mat& full_frame 参数
 auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face> &face_info)
 -> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
-// ======================= 【修改结束】 =======================
+    // 启动总计时器
+    auto total_start = std::chrono::high_resolution_clock::now();
     const auto &[stream_id, fid, patches, dets] = pkt;
 
     // 1. 入侵/穿越检测
+    auto s1_start = std::chrono::high_resolution_clock::now();
     if (intrusion_detectors.count(stream_id)) {
         auto alarmed_tids = intrusion_detectors.at(stream_id).check(dets, stream_id);
         for (int tid: alarmed_tids) {
@@ -565,18 +615,19 @@ auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face>
             behavior_alarm_state[full_tid] = {fid, "_AL"};
         }
     }
+    auto s1_end = std::chrono::high_resolution_clock::now();
 
     // 2. 特征提取
+    auto s2_start = std::chrono::high_resolution_clock::now();
     if (mode_ == "realtime") {
-        // ======================= 【修改的部分在此】 =======================
-        // 调用修改后的_extract_features_realtime，不再传递full_frame
         _extract_features_realtime(pkt, face_info);
-        // ======================= 【修改结束】 =======================
     } else if (mode_ == "load") {
         _load_features_from_cache(pkt);
     }
+    auto s2_end = std::chrono::high_resolution_clock::now();
 
     // 3. Probe & GID 绑定
+    auto s3_start = std::chrono::high_resolution_clock::now();
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> realtime_map;
     for (auto const &[tid_str, agg]: agg_pool) {
         size_t last_underscore = tid_str.find_last_of('_');
@@ -672,8 +723,10 @@ auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face>
             } else { realtime_map[s_id][tid_num] = {tid_str + "_-6", -1.0f, 0}; }
         }
     }
+    auto s3_end = std::chrono::high_resolution_clock::now();
 
     // 4. 后处理 / 清理
+    auto s4_start = std::chrono::high_resolution_clock::now();
     std::map<std::string, std::tuple<int, std::string>> active_alarms;
     for (const auto &[full_tid, state_tuple]: behavior_alarm_state) {
         const auto &[start_fid, alarm_type] = state_tuple;
@@ -731,6 +784,23 @@ auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face>
         alarm_reprs.erase(gid_del);
         try { std::filesystem::remove_all(std::filesystem::path(SAVE_DIR) / gid_del); } catch (...) {}
     }
+    auto s4_end = std::chrono::high_resolution_clock::now();
+    auto total_end = std::chrono::high_resolution_clock::now();
+
+    // 计算并打印各部分耗时
+    auto duration_s1 = std::chrono::duration_cast<std::chrono::microseconds>(s1_end - s1_start).count();
+    auto duration_s2 = std::chrono::duration_cast<std::chrono::microseconds>(s2_end - s2_start).count();
+    auto duration_s3 = std::chrono::duration_cast<std::chrono::microseconds>(s3_end - s3_start).count();
+    auto duration_s4 = std::chrono::duration_cast<std::chrono::microseconds>(s4_end - s4_start).count();
+    auto total_duration = std::chrono::duration_cast<std::chrono::microseconds>(total_end - total_start).count();
+
+    std::cout << "[PERF] Frame " << fid << " (Persons: " << dets.size() << ", Faces: " << face_info.size()
+              << ") | Total: " << total_duration / 1000.0 << "ms | "
+              << "Behavior: " << duration_s1 / 1000.0 << "ms, "
+              << "Feature: " << duration_s2 / 1000.0 << "ms, "
+              << "GID: " << duration_s3 / 1000.0 << "ms, "
+              << "Cleanup: " << duration_s4 / 1000.0 << "ms\n";
 
     return realtime_map;
 }
+// ======================= 【修改结束】 =======================

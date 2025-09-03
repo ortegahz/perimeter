@@ -38,17 +38,44 @@ cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::Mat &aligned_img) {
     if (aligned_img.size() != cv::Size(112, 112)) {
         throw std::runtime_error("Input for get_embedding_from_aligned must be a 112x112 image.");
     }
+
+    // --- Blob 预处理计时开始 ---
+    auto blob_start = std::chrono::high_resolution_clock::now();
     cv::Mat blob = cv::dnn::blobFromImage(aligned_img, 1.0 / 128.0, cv::Size(112, 112), cv::Scalar(127.5, 127.5, 127.5),
                                           true, false);
+    auto blob_end = std::chrono::high_resolution_clock::now();
+
+    // --- setInput 计时开始 ---
+    auto set_input_start = std::chrono::high_resolution_clock::now();
     rec_net_.setInput(blob);
-    return rec_net_.forward().clone();
+    auto set_input_end = std::chrono::high_resolution_clock::now();
+
+    // --- forward 计时开始 ---
+    cv::Mat result = rec_net_.forward().clone();
+    auto forward_end = std::chrono::high_resolution_clock::now();
+
+    // --- 计算并打印耗时 ---
+    auto duration_blob_us = std::chrono::duration_cast<std::chrono::microseconds>(blob_end - blob_start).count();
+    auto duration_set_input_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            set_input_end - set_input_start).count();
+    auto duration_forward_us = std::chrono::duration_cast<std::chrono::microseconds>(
+            forward_end - set_input_end).count();
+
+    // 使用更多缩进以表示这是子步骤的耗时
+    std::cout << "        [PERF ...from_aligned] Blob: " << duration_blob_us / 1000.0 << "ms, "
+              << "SetInput: " << duration_set_input_us / 1000.0 << "ms, "
+              << "Forward: " << duration_forward_us / 1000.0 << "ms\n";
+
+    return result;
 }
 
-// ======================= 【新增功能实现】 =======================
 void FaceAnalyzer::get_embedding(const cv::Mat &full_img, Face &face) {
     if (face.kps.size() != 5) {
         throw std::runtime_error("Face object must have 5 keypoints for alignment.");
     }
+
+    // --- 对齐计时开始 ---
+    auto align_start = std::chrono::high_resolution_clock::now();
 
     // 对齐
     const std::vector<cv::Point2f> dst_pts = {
@@ -68,15 +95,34 @@ void FaceAnalyzer::get_embedding(const cv::Mat &full_img, Face &face) {
     cv::warpAffine(full_img, aligned_face, M, cv::Size(112, 112));
     face.aligned_face = aligned_face.clone();
 
+    // --- 对齐计时结束 ---
+    auto align_end = std::chrono::high_resolution_clock::now();
+
 //    // 保存对齐后的人脸图像
 //    static int aligned_face_counter = 0;
-//    std::string save_path = "/home/manu/tmp/aligned_cpp_bmp/" + std::to_string(aligned_face_counter++) + ".bmp";
+//    std::string save_path = "/mnt/nfs/aligned_cpp_bmp/" + std::to_string(aligned_face_counter++) + ".bmp";
 //    cv::imwrite(save_path, aligned_face);
+
+    // --- 特征提取计时开始 ---
+    auto infer_start = std::chrono::high_resolution_clock::now();
 
     // 从对齐后的人脸提取特征
     face.embedding = get_embedding_from_aligned(aligned_face);
+
+    // --- 特征提取计时结束 ---
+    auto infer_end = std::chrono::high_resolution_clock::now();
+
+    // --- 计算并打印耗时 ---
+    auto duration_align_us = std::chrono::duration_cast<std::chrono::microseconds>(align_end - align_start).count();
+    auto duration_infer_us = std::chrono::duration_cast<std::chrono::microseconds>(infer_end - infer_start).count();
+    auto total_us = duration_align_us + duration_infer_us;
+
+    if (total_us > 1000) { // 仅当总耗时超过1ms时打印，避免刷屏
+        std::cout << "      [PERF get_embedding] Total: " << total_us / 1000.0 << "ms | "
+                  << "Align: " << duration_align_us / 1000.0 << "ms, "
+                  << "Infer(total): " << duration_infer_us / 1000.0 << "ms\n";
+    }
 }
-// ======================= 【修改结束】 =======================
 
 // -------------------- get() 现在使用新的 get_embedding() 并增加计时 --------------------
 std::vector<Face> FaceAnalyzer::get(const cv::Mat &img) {
