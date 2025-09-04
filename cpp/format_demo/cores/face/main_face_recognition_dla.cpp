@@ -234,15 +234,17 @@ int main() {
             cudaMemcpyAsync(buffers[input_idx], preprocessed_input.data(), input_size * sizeof(float),
                             cudaMemcpyHostToDevice, stream);
 
-            // 2. 异步执行推理
-            context->enqueueV2(buffers.data(), stream, nullptr);
+            // 2. 连续执行推理 n 次
+            for (int infer_iter = 0; infer_iter < 1000; ++infer_iter) {
+                context->enqueueV2(buffers.data(), stream, nullptr);
+            }
 
-            // 3. 将结果从GPU拷贝回CPU
-            cv::Mat embedding_raw(1, output_size, CV_32F); // 用cv::Mat接收结果
+            // 3. 将结果从GPU拷贝回CPU（取最后一次推理结果即可）
+            cv::Mat embedding_raw(1, output_size, CV_32F);
             cudaMemcpyAsync(embedding_raw.ptr<float>(), buffers[output_idx], output_size * sizeof(float),
                             cudaMemcpyDeviceToHost, stream);
 
-            // 4. 等待流中所有操作完成
+            // 4. 等待所有任务完成
             cudaStreamSynchronize(stream);
 
             if (embedding_raw.empty()) {
