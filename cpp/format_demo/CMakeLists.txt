@@ -68,6 +68,21 @@ add_executable(demo_cpp
         cores/face/FaceAnalyzer.cpp
 )
 
+add_executable(face_extractor
+        cores/face/main_face_detect.cpp
+        cores/face/FaceAnalyzer.cpp
+)
+
+add_executable(face_recognizer
+        cores/face/main_face_recognition.cpp
+        cores/face/FaceAnalyzer.cpp
+)
+
+add_executable(reid_demo
+        cores/personReid/reid_main.cpp
+        cores/personReid/PersonReid.cpp
+)
+
 # ----------------- 链接库 -----------------
 # ======================= 【已修复】 =======================
 # 移除了不稳定的 ${CUDA_npp_LIBRARY}。我们手动找到的库已包含在 ${CUDA_EXTRA_LIBS} 中
@@ -80,8 +95,29 @@ target_link_libraries(demo_cpp PRIVATE
 )
 # ======================= 【修复结束】 =======================
 
+target_link_libraries(face_extractor PRIVATE
+        ${OpenCV_LIBS}
+        nlohmann_json
+)
+
+target_link_libraries(face_recognizer PRIVATE
+        ${OpenCV_LIBS}
+        nlohmann_json
+)
+
+target_link_libraries(reid_demo PRIVATE
+        ${OpenCV_LIBS}
+        eigen
+        nvinfer             # for TensorRT
+        ${CUDA_LIBRARIES}
+        ${CUDA_EXTRA_LIBS}
+)
+
 # ----------------- 文件系统库 -----------------
 if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
     target_link_libraries(demo_cpp PRIVATE stdc++fs)
+    target_link_libraries(face_extractor PRIVATE stdc++fs)
+    target_link_libraries(face_recognizer PRIVATE stdc++fs)
+    target_link_libraries(reid_demo PRIVATE stdc++fs)
     message(STATUS "Linking against stdc++fs for GCC < 9")
 endif ()
