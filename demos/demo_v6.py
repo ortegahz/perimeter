@@ -45,40 +45,49 @@ class LatestQueue(mpq.Queue):
 
 
 def dec_det_proc(stream_id, src, q_det2feat, q_det2disp, stop_evt, skip):
-    try:  # Robustness: ensure sentinel is sent on error
+    try:
         cap = cv2.VideoCapture(src)
         if not cap.isOpened():
             logger.error(f"[{stream_id}] open failed: {src}")
             return
         bt = ByteTrackPipeline(device="cuda")
-        # face_app = FaceSearcher(provider="CUDAExecutionProvider").app  # 仅初始化一次
+        face_app = FaceSearcher(provider="CUDAExecutionProvider").app
         logger.info(f"[{stream_id}] ready")
         fid = 0
         while not stop_evt.is_set():
             ok, frm = cap.read()
-            if not ok: break
+            if not ok:
+                break
             fid += 1
-            if fid % skip: continue
+            if fid % skip:
+                continue
             dets = bt.update(frm, debug=False)
             small = cv2.resize(frm, None, fx=SHOW_SCALE, fy=SHOW_SCALE)
             H, W = frm.shape[:2]
             patches = [
-                frm[max(int(y), 0):min(int(y + h), H), max(int(x), 0):min(int(x + w), W)].copy()
+                frm[max(int(y), 0):min(int(y + h), H),
+                max(int(x), 0):min(int(x + w), W)].copy()
                 for x, y, w, h in (d["tlwh"] for d in dets)
             ]
-            # faces_bboxes, faces_kpss = face_app.det_model.detect(small, max_num=0, metric='default')
+            faces_bboxes, faces_kpss = face_app.det_model.detect(small, max_num=0, metric='default')
             face_info = []
-            # if faces_bboxes is not None and faces_bboxes.shape[0] > 0:
-            #     for i in range(faces_bboxes.shape[0]):
-            #         bi = faces_bboxes[i, :4].astype(int)
-            #         x1, y1, x2, y2 = [int(b / SHOW_SCALE) for b in bi]
-            #         score = float(faces_bboxes[i, 4])
-            #         kps = faces_kpss[i].astype(int).tolist() if faces_kpss is not None else None
-            #         if kps is not None:
-            #             kps = [[int(kp[0] / SHOW_SCALE), int(kp[1] / SHOW_SCALE)] for kp in kps]
-            #         face_info.append({"bbox": [x1, y1, x2, y2], "score": score, "kps": kps})
+            if faces_bboxes is not None and faces_bboxes.shape[0] > 0:
+                for i in range(faces_bboxes.shape[0]):
+                    bi = faces_bboxes[i, :4].astype(int)
+                    x1, y1, x2, y2 = [int(b / SHOW_SCALE) for b in bi]
+                    score = float(faces_bboxes[i, 4])
+                    kps = faces_kpss[i].astype(int).tolist() if faces_kpss is not None else None
+                    if kps is not None:
+                        kps = [[int(kp[0] / SHOW_SCALE), int(kp[1] / SHOW_SCALE)] for kp in kps]
+                    face_info.append({"bbox": [x1, y1, x2, y2], "score": score, "kps": kps})
+            # === 这里保持原 q_det2disp 数据结构不变 ===
             q_det2disp.put((stream_id, fid, small, dets, face_info))
-            q_det2feat.put((stream_id, fid, patches, dets))
+            # === 修改这里：把 face_info 和 full_frame 一起传给 feature_proc ===
+            q_det2feat.put({
+                "packet": (stream_id, fid, patches, dets),
+                "face_info": face_info,
+                "full_frame": frm
+            })
     finally:
         q_det2feat.put(SENTINEL)
         q_det2disp.put(SENTINEL)
