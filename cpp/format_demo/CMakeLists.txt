@@ -1,16 +1,8 @@
 cmake_minimum_required(VERSION 3.12)
 project(det_video_deterministic)
 
-# ======================= 【已修复】 =======================
-# 删除了旧版CMake不兼容的 cmake_policy(SET CMP0146 OLD) 这一行
-# ======================= 【修复结束】 =======================
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-#if(CMAKE_BINARY_DIR MATCHES "^/tmp")
-#    message(FATAL_ERROR "禁止在 /tmp 目录进行构建，请在项目目录中创建 cmake-build-* 目录。")
-#endif()
 
 set(PERIMETER_LIBS_DIR /home/nvidia/VSCodeProject/smartboxcore/third_libraries)
 message(STATUS "Using centralized third-party library directory: ${PERIMETER_LIBS_DIR}")
@@ -31,8 +23,6 @@ find_package(CUDA REQUIRED)
 
 set(CUDA_EXTRA_LIBS "")
 if (CUDA_VERSION VERSION_GREATER_EQUAL "11.0")
-    # ======================= 【已修复】 =======================
-    # 修正了变量名的拼写错误：CUDA_nppicom_LIBRARY -> CUDA_nppim_LIBRARY
     find_library(CUDA_nppim_LIBRARY nppim
             PATHS ${CUDA_TOOLKIT_ROOT_DIR}/lib64 ${CUDA_TOOLKIT_ROOT_DIR}/lib64/stubs
             NO_DEFAULT_PATH
@@ -43,10 +33,26 @@ if (CUDA_VERSION VERSION_GREATER_EQUAL "11.0")
     else ()
         message(WARNING "CUDA >= 11.0 but libnppim.so not found, skipping link.")
     endif ()
-    # ======================= 【修复结束】 =======================
 endif ()
 
 include_directories(${CUDA_INCLUDE_DIRS})
+
+# ======================= 【修改的部分在此】 =======================
+# ----------------- TensorRT -----------------
+# 查找原生 TensorRT 推理所需的库
+find_library(NVINFER_LIB nvinfer HINTS /usr/lib/aarch64-linux-gnu/)
+find_library(NVONNXPARSER_LIB nvonnxparser HINTS /usr/lib/aarch64-linux-gnu/)
+
+if (NOT NVINFER_LIB OR NOT NVONNXPARSER_LIB)
+    message(FATAL_ERROR "TensorRT libraries ('nvinfer', 'nvonnxparser') not found. Please check your Jetson environment.")
+else ()
+    message(STATUS "Found TensorRT library: ${NVINFER_LIB}")
+    message(STATUS "Found TensorRT ONNX Parser library: ${NVONNXPARSER_LIB}")
+endif ()
+
+# 将找到的库放入一个变量中方便使用
+set(TRT_LIBS ${NVINFER_LIB} ${NVONNXPARSER_LIB})
+# ======================= 【修改结束】 =======================
 
 # ----------------- nlohmann/json (header-only) -----------------
 add_library(nlohmann_json INTERFACE)
@@ -78,46 +84,67 @@ add_executable(face_recognizer
         cores/face/FaceAnalyzer.cpp
 )
 
+add_executable(face_recognizer_dla
+        cores/face/main_face_recognition_dla.cpp
+        cores/face/FaceAnalyzer_dla.cpp
+)
+
 add_executable(reid_demo
         cores/personReid/reid_main.cpp
         cores/personReid/PersonReid.cpp
 )
 
 # ----------------- 链接库 -----------------
-# ======================= 【已修复】 =======================
-# 移除了不稳定的 ${CUDA_npp_LIBRARY}。我们手动找到的库已包含在 ${CUDA_EXTRA_LIBS} 中
+# ======================= 【修改的部分在此】 =======================
+# 为所有使用了 FaceAnalyzer.cpp 和原生TRT API的目标链接必要的库
 target_link_libraries(demo_cpp PRIVATE
         ${OpenCV_LIBS}
         nlohmann_json
         eigen
+        ${TRT_LIBS}         # <-- 新增 TensorRT 库
         ${CUDA_LIBRARIES}
         ${CUDA_EXTRA_LIBS}
 )
-# ======================= 【修复结束】 =======================
 
 target_link_libraries(face_extractor PRIVATE
         ${OpenCV_LIBS}
         nlohmann_json
+        ${TRT_LIBS}         # <-- 新增 TensorRT 库
+        ${CUDA_LIBRARIES}   # <-- 新增 CUDA 库
+        ${CUDA_EXTRA_LIBS}
 )
 
 target_link_libraries(face_recognizer PRIVATE
         ${OpenCV_LIBS}
         nlohmann_json
+        ${TRT_LIBS}         # <-- 新增 TensorRT 库
+        ${CUDA_LIBRARIES}   # <-- 新增 CUDA 库
+        ${CUDA_EXTRA_LIBS}
+)
+
+target_link_libraries(face_recognizer_dla PRIVATE
+        ${OpenCV_LIBS}
+        nlohmann_json
+        ${TRT_LIBS}         # <-- 新增 TensorRT 库
+        ${CUDA_LIBRARIES}   # <-- 新增 CUDA 库
+        ${CUDA_EXTRA_LIBS}
 )
 
 target_link_libraries(reid_demo PRIVATE
         ${OpenCV_LIBS}
         eigen
-        nvinfer             # for TensorRT
+        ${TRT_LIBS}         # <-- 统一使用 TRT_LIBS 变量
         ${CUDA_LIBRARIES}
         ${CUDA_EXTRA_LIBS}
 )
+# ======================= 【修改结束】 =======================
 
 # ----------------- 文件系统库 -----------------
 if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
     target_link_libraries(demo_cpp PRIVATE stdc++fs)
     target_link_libraries(face_extractor PRIVATE stdc++fs)
     target_link_libraries(face_recognizer PRIVATE stdc++fs)
+    target_link_libraries(face_recognizer_dla PRIVATE stdc++fs)
     target_link_libraries(reid_demo PRIVATE stdc++fs)
     message(STATUS "Linking against stdc++fs for GCC < 9")
 endif ()
