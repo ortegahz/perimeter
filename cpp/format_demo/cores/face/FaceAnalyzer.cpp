@@ -205,16 +205,16 @@ std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
                     float score = score_data[idx];
                     if (score < det_thresh_) continue;
 
+                    // ======================= 【修改的部分在此】 =======================
+                    // 将解码逻辑还原为与原始版本一致
                     const float *bbox_ptr = &bbox_data[idx * 4];
-                    float x1 = (x + 0.5f - bbox_ptr[0]) * stride;
-                    float y1 = (y + 0.5f - bbox_ptr[1]) * stride;
-                    float x2 = (x + 0.5f + bbox_ptr[2]) * stride;
-                    float y2 = (y + 0.5f + bbox_ptr[3]) * stride;
+                    float cx = (float) x * stride;
+                    float cy = (float) y * stride;
 
-                    x1 /= scale;
-                    y1 /= scale;
-                    x2 /= scale;
-                    y2 /= scale;
+                    float x1 = (cx - bbox_ptr[0] * stride) / scale;
+                    float y1 = (cy - bbox_ptr[1] * stride) / scale;
+                    float x2 = (cx + bbox_ptr[2] * stride) / scale;
+                    float y2 = (cy + bbox_ptr[3] * stride) / scale;
 
                     bboxes.emplace_back(x1, y1, x2 - x1, y2 - y1);
                     scores.push_back(score);
@@ -222,11 +222,12 @@ std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
                     std::vector<cv::Point2f> kps;
                     const float *kps_ptr = &kps_data[idx * 10];
                     for (int k = 0; k < 5; ++k) {
-                        float kx = (x + 0.5f + kps_ptr[k * 2]) * stride / scale;
-                        float ky = (y + 0.5f + kps_ptr[k * 2 + 1]) * stride / scale;
+                        float kx = (cx + kps_ptr[k * 2] * stride) / scale;
+                        float ky = (cy + kps_ptr[k * 2 + 1] * stride) / scale;
                         kps.emplace_back(kx, ky);
                     }
                     all_kps.push_back(kps);
+                    // ======================= 【修改结束】 =======================
                 }
             }
         }
