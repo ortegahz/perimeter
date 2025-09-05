@@ -95,7 +95,7 @@ int main() {
         PersonReidDLA reid(onnx_model_path, MODEL_INPUT_WIDTH, MODEL_INPUT_HEIGHT, dla_core_id, engine_cache_path);
         std::cout << "DLA 模型加载完成。" << std::endl;
 
-        const int runs_per_image = 100;
+        const int runs_per_image = 500;
 
         std::cout << "开始从 " << bmp_paths.size() << " 张图片中提取特征 (每张图片运行 " << runs_per_image << " 次)..."
                   << std::endl;
