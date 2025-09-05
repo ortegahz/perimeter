@@ -42,6 +42,10 @@ PersonReidDLA::PersonReidDLA(const std::string &onnx_path,
     runtime_.reset(nvinfer1::createInferRuntime(gLogger_));
     if (!runtime_) throw std::runtime_error("Failed to create TensorRT Runtime.");
 
+    /* 新增 ↓↓↓ 让 Runtime 在反序列化/执行阶段绑定到期望的 DLA Core */
+    runtime_->setDLACore(dla_core_);
+    /* 新增 ↑↑↑ */
+
     // 检查是否有缓存的引擎文件
     if (!engine_cache.empty() && std::ifstream(engine_cache).good()) {
         std::cout << "Loading TRT engine from cache: " << engine_cache << std::endl;
