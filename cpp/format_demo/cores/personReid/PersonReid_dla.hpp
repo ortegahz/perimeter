@@ -1,52 +1,79 @@
-// include/PersonReid.h
-
-#ifndef PERSON_REID_H
-#define PERSON_REID_H
-
-#include <string>
-#include <vector>
+#pragma once
+/*
+ *  Jetson-DLA 版本的 ReID 推理器（基于 TensorRT 原生 API）
+ *  - 支持 ONNX->TRT 引擎自动构建并缓存
+ *  - 支持 DLA0 / DLA1 选择
+ *  - extract_feat() 的行为与原先 PersonReid 类（使用OpenCV DNN）保持一致
+ */
 #include <opencv2/core.hpp>
-#include <opencv2/dnn.hpp>
+#include <NvInfer.h>
+#include <NvOnnxParser.h>
+#include <memory>
+#include <string>
 
-class PersonReid {
-public:
-    /**
-     * @brief Constructor for the PersonReid class.
-     *
-     * @param onnx_model_path Path to the .onnx model file.
-     * @param input_width The width of the model's input tensor.
-     * @param input_height The height of the model's input tensor.
-     * @param use_gpu Flag to enable CUDA backend for inference.
-     */
-    PersonReid(const std::string &onnx_model_path, int input_width, int input_height, bool use_gpu = true);
-
-    /**
-     * @brief Extracts a feature vector from a single image.
-     * It mimics the Python script's logic: inference on original + flipped, sum, and normalize.
-     *
-     * @param image The input image (cv::Mat, assumes BGR color format from cv::imread).
-     * @return cv::Mat The normalized feature vector (1xN dimensions). Returns an empty Mat on failure.
-     */
-    cv::Mat extract_feat(const cv::Mat &image);
-
-private:
-    /**
-     * @brief Internal function to preprocess an image and run a single inference pass.
-     *
-     * @param image The input image.
-     * @param flip True to flip the image horizontally before processing.
-     * @return cv::Mat The raw feature vector from the model.
-     */
-    cv::Mat run_inference(const cv::Mat &image, bool flip);
-
-private:
-    cv::dnn::Net net_;
-    cv::Size input_size_;
-    // ########################### MODIFICATION START ###########################
-    // Normalization parameters from PyTorch's ImageNet normalization (for RGB color order)
-    cv::Scalar mean_ = {0.485, 0.456, 0.406}; // Mean for R, G, B channels
-    cv::Scalar std_ = {0.229, 0.224, 0.225};  // Std for R, G, B channels
-    // ############################ MODIFICATION END ############################
+// TensorRT 日志记录器
+class TRTLogger : public nvinfer1::ILogger {
+    void log(Severity severity, const char *msg) noexcept override;
 };
 
-#endif // PERSON_REID_H
+class PersonReidDLA {
+public:
+    /**
+     * @brief 构造函数：初始化 DLA 引擎。
+     * @param onnx_path   ONNX 模型的路径。
+     * @param input_w     模型输入的宽度 (e.g., 128)。
+     * @param input_h     模型输入的高度 (e.g., 256)。
+     * @param dla_core    要使用的 DLA核心 (0 或 1)。默认为 0。
+     * @param engine_path （可选）用于缓存 TensorRT 引擎的路径。如果文件存在，则直接加载；否则，构建后保存于此。如果为空，则每次都重新构建引擎。
+     */
+    PersonReidDLA(const std::string &onnx_path,
+                  int input_w,
+                  int input_h,
+                  int dla_core = 0,
+                  const std::string &engine_path = "");
+
+    /**
+     * @brief 析构函数：释放 CUDA 内存。
+     */
+    ~PersonReidDLA();
+
+    /**
+     * @brief 提取特征向量，逻辑与原版完全一致。
+     * @param bgr 从 cv::imread 加载的 BGR 格式图像。
+     * @return cv::Mat 1xN 的浮点型特征向量 (CV_32F)，经过 L2 归一化。
+     */
+    cv::Mat extract_feat(const cv::Mat &bgr);
+
+private:
+    /**
+     * @brief 内部函数：对单张图像（可选择翻转）执行一次完整的预处理和推理流程。
+     * @param bgr 输入图像。
+     * @param flip 是否水平翻转。
+     * @return cv::Mat 未经归一化的原始特征向量。
+     */
+    cv::Mat run(const cv::Mat &bgr, bool flip);
+
+    // --- TensorRT 引擎管理 ---
+    void buildEngineFromOnnx(const std::string &onnx_path);
+
+    void loadEngineFromFile(const std::string &engine_path);
+
+    void saveEngineToFile(const std::string &engine_path);
+
+private:
+    cv::Size input_size_;
+    int dla_core_;
+    TRTLogger gLogger_; // Logger 实例
+
+    // --- TensorRT 核心组件 ---
+    std::unique_ptr<nvinfer1::IRuntime> runtime_;
+    std::unique_ptr<nvinfer1::ICudaEngine> engine_;
+    std::unique_ptr<nvinfer1::IExecutionContext> context_;
+
+    // --- CUDA 内存缓冲区 ---
+    void *buffers_[2]{nullptr, nullptr};
+    int input_index_ = -1;
+    int output_index_ = -1;
+    size_t input_bytes_ = 0;
+    size_t output_bytes_ = 0;
+};

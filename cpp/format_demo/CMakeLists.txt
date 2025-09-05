@@ -37,7 +37,6 @@ endif ()
 
 include_directories(${CUDA_INCLUDE_DIRS})
 
-# ======================= 【修改的部分在此】 =======================
 # ----------------- TensorRT -----------------
 # 查找原生 TensorRT 推理所需的库
 find_library(NVINFER_LIB nvinfer HINTS /usr/lib/aarch64-linux-gnu/)
@@ -52,7 +51,6 @@ endif ()
 
 # 将找到的库放入一个变量中方便使用
 set(TRT_LIBS ${NVINFER_LIB} ${NVONNXPARSER_LIB})
-# ======================= 【修改结束】 =======================
 
 # ----------------- nlohmann/json (header-only) -----------------
 add_library(nlohmann_json INTERFACE)
@@ -68,7 +66,7 @@ target_include_directories(eigen INTERFACE
 
 # ----------------- 可执行文件 -----------------
 add_executable(demo_cpp
-        demo_cpp.cpp # 请确保这是您的主文件名
+        demo_cpp.cpp
         feature_processor.cpp
         cores/personReid/PersonReid.cpp
         cores/face/FaceAnalyzer.cpp
@@ -89,24 +87,26 @@ add_executable(face_recognizer_dla
         cores/face/FaceAnalyzer_dla.cpp
 )
 
+# 使用 OpenCV DNN 的原始 ReID Demo
 add_executable(reid_demo
         cores/personReid/reid_main.cpp
         cores/personReid/PersonReid.cpp
 )
 
+# ======================= 【修改的部分在此】 =======================
+# 使用 TensorRT DLA 的新 ReID Demo
 add_executable(reid_demo_dla
         cores/personReid/reid_main_dla.cpp
         cores/personReid/PersonReid_dla.cpp
 )
+# ======================= 【修改结束】 =======================
 
 # ----------------- 链接库 -----------------
-# ======================= 【修改的部分在此】 =======================
-# 为所有使用了 FaceAnalyzer.cpp 和原生TRT API的目标链接必要的库
 target_link_libraries(demo_cpp PRIVATE
         ${OpenCV_LIBS}
         nlohmann_json
         eigen
-        ${TRT_LIBS}         # <-- 新增 TensorRT 库
+        ${TRT_LIBS}
         ${CUDA_LIBRARIES}
         ${CUDA_EXTRA_LIBS}
 )
@@ -114,52 +114,51 @@ target_link_libraries(demo_cpp PRIVATE
 target_link_libraries(face_extractor PRIVATE
         ${OpenCV_LIBS}
         nlohmann_json
-        ${TRT_LIBS}         # <-- 新增 TensorRT 库
-        ${CUDA_LIBRARIES}   # <-- 新增 CUDA 库
+        ${TRT_LIBS}
+        ${CUDA_LIBRARIES}
         ${CUDA_EXTRA_LIBS}
 )
 
 target_link_libraries(face_recognizer PRIVATE
         ${OpenCV_LIBS}
         nlohmann_json
-        ${TRT_LIBS}         # <-- 新增 TensorRT 库
-        ${CUDA_LIBRARIES}   # <-- 新增 CUDA 库
+        ${TRT_LIBS}
+        ${CUDA_LIBRARIES}
         ${CUDA_EXTRA_LIBS}
 )
 
 target_link_libraries(face_recognizer_dla PRIVATE
         ${OpenCV_LIBS}
         nlohmann_json
-        ${TRT_LIBS}         # <-- 新增 TensorRT 库
-        ${CUDA_LIBRARIES}   # <-- 新增 CUDA 库
+        ${TRT_LIBS}
+        ${CUDA_LIBRARIES}
         ${CUDA_EXTRA_LIBS}
 )
 
 target_link_libraries(reid_demo PRIVATE
         ${OpenCV_LIBS}
         eigen
-        ${TRT_LIBS}         # <-- 统一使用 TRT_LIBS 变量
-        ${CUDA_LIBRARIES}
-        ${CUDA_EXTRA_LIBS}
 )
 
+# ======================= 【修改的部分在此】 =======================
+# 为新的 DLA Demo 链接必要的库
 target_link_libraries(reid_demo_dla PRIVATE
         ${OpenCV_LIBS}
         eigen
-        ${TRT_LIBS}         # <-- 统一使用 TRT_LIBS 变量
+        ${TRT_LIBS}
         ${CUDA_LIBRARIES}
         ${CUDA_EXTRA_LIBS}
 )
-
 # ======================= 【修改结束】 =======================
 
 # ----------------- 文件系统库 -----------------
+# 为所有目标统一处理 C++17 filesystem 链接问题
+foreach (TARGET demo_cpp face_extractor face_recognizer face_recognizer_dla reid_demo reid_demo_dla)
+    if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+        target_link_libraries(${TARGET} PRIVATE stdc++fs)
+    endif ()
+endforeach ()
+
 if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
-    target_link_libraries(demo_cpp PRIVATE stdc++fs)
-    target_link_libraries(face_extractor PRIVATE stdc++fs)
-    target_link_libraries(face_recognizer PRIVATE stdc++fs)
-    target_link_libraries(face_recognizer_dla PRIVATE stdc++fs)
-    target_link_libraries(reid_demo PRIVATE stdc++fs)
-    target_link_libraries(reid_demo_dla PRIVATE stdc++fs)
     message(STATUS "Linking against stdc++fs for GCC < 9")
 endif ()
