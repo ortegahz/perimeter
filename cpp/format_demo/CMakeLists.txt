@@ -94,6 +94,11 @@ add_executable(reid_demo
         cores/personReid/PersonReid.cpp
 )
 
+add_executable(reid_demo_dla
+        cores/personReid/reid_main_dla.cpp
+        cores/personReid/PersonReid_dla.cpp
+)
+
 # ----------------- 链接库 -----------------
 # ======================= 【修改的部分在此】 =======================
 # 为所有使用了 FaceAnalyzer.cpp 和原生TRT API的目标链接必要的库
@@ -137,6 +142,15 @@ target_link_libraries(reid_demo PRIVATE
         ${CUDA_LIBRARIES}
         ${CUDA_EXTRA_LIBS}
 )
+
+target_link_libraries(reid_demo_dla PRIVATE
+        ${OpenCV_LIBS}
+        eigen
+        ${TRT_LIBS}         # <-- 统一使用 TRT_LIBS 变量
+        ${CUDA_LIBRARIES}
+        ${CUDA_EXTRA_LIBS}
+)
+
 # ======================= 【修改结束】 =======================
 
 # ----------------- 文件系统库 -----------------
@@ -146,5 +160,6 @@ if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
     target_link_libraries(face_recognizer PRIVATE stdc++fs)
     target_link_libraries(face_recognizer_dla PRIVATE stdc++fs)
     target_link_libraries(reid_demo PRIVATE stdc++fs)
+    target_link_libraries(reid_demo_dla PRIVATE stdc++fs)
     message(STATUS "Linking against stdc++fs for GCC < 9")
 endif ()
