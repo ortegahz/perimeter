@@ -109,7 +109,6 @@ int main() {
     std::cout << "[INFO] Starting batch feature extraction test..." << std::endl;
     std::cout << "[INFO] Reading BMP images from: " << bmp_folder_path << std::endl;
 
-    // ======================= 【修改的部分在此】 =======================
     // --- 1. 初始化 TensorRT Logger, Runtime 和 Engine ---
     Logger logger;
     TrtUniquePtr<nvinfer1::IRuntime> runtime(nvinfer1::createInferRuntime(logger));
@@ -178,10 +177,14 @@ int main() {
     cudaStream_t stream;
     cudaStreamCreate(&stream);
 
+    // ======================= 【新增】创建 CUDA Events 用于计时 =======================
+    cudaEvent_t start_event, stop_event;
+    cudaEventCreate(&start_event);
+    cudaEventCreate(&stop_event);
+
     // 用于预处理的CPU端buffer
     std::vector<float> preprocessed_input(input_size);
     std::cout << "[INFO] TensorRT engine and buffers ready for DLA inference." << std::endl;
-    // ======================= 【修改结束】 =======================
 
     try {
         // --- 3. 准备输出文件 (打开一次，准备写入) ---
@@ -213,7 +216,6 @@ int main() {
                 continue; // 跳过这个文件，继续处理下一个
             }
 
-            // ======================= 【修改的部分在此】 =======================
             // --- 手动图像预处理 (HWC->CHW, BGR->RGB, Normalize) ---
             int C = input_dims.d[1];
             int H = input_dims.d[2];
@@ -229,15 +231,17 @@ int main() {
                 }
             }
 
-            // --- 执行推理 ---
+            // --- 执行推理并计时 ---
             // 1. 将预处理好的数据从CPU拷贝到GPU
             cudaMemcpyAsync(buffers[input_idx], preprocessed_input.data(), input_size * sizeof(float),
                             cudaMemcpyHostToDevice, stream);
 
-            // 2. 连续执行推理 n 次
+            // 2. 连续执行推理 n 次，并记录时间
+            cudaEventRecord(start_event, stream); // 记录开始时间点
             for (int infer_iter = 0; infer_iter < 1000; ++infer_iter) {
                 context->enqueueV2(buffers.data(), stream, nullptr);
             }
+            cudaEventRecord(stop_event, stream); // 记录结束时间点
 
             // 3. 将结果从GPU拷贝回CPU（取最后一次推理结果即可）
             cv::Mat embedding_raw(1, output_size, CV_32F);
@@ -247,11 +251,18 @@ int main() {
             // 4. 等待所有任务完成
             cudaStreamSynchronize(stream);
 
+            // --- 新增：计算并打印耗时 ---
+            float milliseconds = 0;
+            cudaEventElapsedTime(&milliseconds, start_event, stop_event);
+            std::cout << "Time for 1000 inferences: " << std::fixed << std::setprecision(3) << milliseconds << " ms"
+                      << std::endl;
+            std::cout << "Average latency per inference: " << std::fixed << std::setprecision(5)
+                      << milliseconds / 1000.0f << " ms" << std::endl;
+
             if (embedding_raw.empty()) {
                 std::cerr << "[WARNING] Failed to get embedding for: " << bmp_path << std::endl;
                 continue;
             }
-            // ======================= 【修改结束】 =======================
 
             // --- L2归一化 ---
             cv::Mat embedding_normalized;
@@ -274,6 +285,10 @@ int main() {
         // --- 6. 释放资源 ---
         out_file.close();
         cudaStreamDestroy(stream);
+        // ======================= 【新增】销毁 CUDA Events =======================
+        cudaEventDestroy(start_event);
+        cudaEventDestroy(stop_event);
+        // ======================================================================
         cudaFree(buffers[input_idx]);
         cudaFree(buffers[output_idx]);
 
