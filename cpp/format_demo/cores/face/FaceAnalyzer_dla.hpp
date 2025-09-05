@@ -5,19 +5,9 @@
 #include <string>
 #include <memory>
 #include <opencv2/opencv.hpp>
-
 #include <cuda_runtime_api.h>
 
-// TRT 前向声明
-namespace nvinfer1 {
-    class IRuntime;
-
-    class ICudaEngine;
-
-    class IExecutionContext;
-
-    class ILogger;
-}
+#include <NvInfer.h>
 
 // 定义TRT对象的自定义Deleter (非匿名)
 template<typename T>
@@ -45,6 +35,7 @@ struct Face {
 
 class FaceAnalyzer {
 public:
+    // [MODIFICATION] Constructor restored to accept both model paths
     FaceAnalyzer(const std::string &det_model_path, const std::string &rec_model_path);
 
     ~FaceAnalyzer();
@@ -53,14 +44,16 @@ public:
 
     std::vector<Face> get(const cv::Mat &img);
 
+private:
     std::vector<Face> detect(const cv::Mat &img);
 
+    // [MODIFICATION] Recognition-related methods restored
     void get_embedding(const cv::Mat &full_img, Face &face);
 
-private:
     cv::Mat get_embedding_from_aligned(const cv::Mat &aligned_img);
 
 private:
+    // TensorRT 核心组件
     std::unique_ptr<nvinfer1::ILogger> m_logger;
     TrtUniquePtr<nvinfer1::IRuntime> m_runtime;
 
@@ -70,14 +63,18 @@ private:
     std::vector<size_t> m_buffer_sizes_det;
     std::vector<std::string> m_det_output_names = {"448", "471", "494", "451", "474", "497", "454", "477", "500"};
 
+    // [MODIFICATION] Recognition model members restored
     TrtUniquePtr<nvinfer1::ICudaEngine> m_rec_engine;
     TrtUniquePtr<nvinfer1::IExecutionContext> m_rec_context;
     std::vector<void *> m_buffers_rec;
     std::vector<size_t> m_buffer_sizes_rec;
 
+    // CUDA 资源
     cudaStream_t m_stream;
 
+    // 配置和路径
     std::string m_det_model_path;
+    // [MODIFICATION] Recognition model path restored
     std::string m_rec_model_path;
     float det_thresh_ = 0.5f;
     cv::Size det_size_ = {640, 640};

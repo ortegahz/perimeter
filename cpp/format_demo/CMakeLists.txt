@@ -78,8 +78,8 @@ add_executable(face_extractor
 )
 
 add_executable(face_extractor_dla
-        cores/face/main_face_detect.cpp
-        cores/face/FaceAnalyzer.cpp
+        cores/face/main_face_detect_dla.cpp
+        cores/face/FaceAnalyzer_dla.cpp
 )
 
 add_executable(face_recognizer

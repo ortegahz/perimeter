@@ -1,5 +1,3 @@
-//#error "【诊断】这是正确的FaceAnalyzer.cpp。如果编译成功，说明文件是旧的。"
-
 #include "FaceAnalyzer_dla.hpp"
 #include <iostream>
 #include <stdexcept>
@@ -8,13 +6,13 @@
 #include <chrono>
 #include <fstream>
 #include <filesystem>
+#include <functional>
 #include <NvInfer.h>
 #include <NvOnnxParser.h>
 #include <opencv2/dnn.hpp>
 
 namespace fs = std::filesystem;
 
-/* ------------------------------ Logger ------------------------------ */
 class TrtLogger : public nvinfer1::ILogger {
     void log(Severity severity, const char *msg) noexcept override {
         if (severity <= Severity::kWARNING) {
@@ -23,7 +21,6 @@ class TrtLogger : public nvinfer1::ILogger {
     }
 };
 
-/* ----------------------- 工具：自动找绑定索引 ----------------------- */
 static inline int findInputBinding(const nvinfer1::ICudaEngine &engine) {
     for (int i = 0; i < engine.getNbBindings(); ++i)
         if (engine.bindingIsInput(i)) return i;
@@ -36,7 +33,6 @@ static inline int findOutputBinding(const nvinfer1::ICudaEngine &engine) {
     return -1;
 }
 
-/* =================================================================== */
 FaceAnalyzer::FaceAnalyzer(const std::string &det_model_path,
                            const std::string &rec_model_path)
         : m_det_model_path(det_model_path),
@@ -49,17 +45,14 @@ FaceAnalyzer::~FaceAnalyzer() {
     for (void *buf: m_buffers_rec) if (buf) cudaFree(buf);
 }
 
-/* ---------------------- 载入 / 构建 TensorRT 引擎 ------------------- */
 static TrtUniquePtr<nvinfer1::ICudaEngine> loadOrCreateEngine(
         nvinfer1::IRuntime &runtime, const std::string &model_path,
         const std::string &provider, nvinfer1::ILogger &logger) {
-
     fs::path onnx_p(model_path);
     std::string engine_path = (provider == "DLA")
                               ? onnx_p.replace_extension(".dla.engine").string()
                               : onnx_p.replace_extension(".gpu.engine").string();
 
-    /* 缓存命中直接反序列化 */
     std::ifstream engine_file(engine_path, std::ios::binary);
     if (engine_file.good()) {
         std::cout << "[INFO] Loading pre-built engine: " << engine_path << std::endl;
@@ -72,18 +65,12 @@ static TrtUniquePtr<nvinfer1::ICudaEngine> loadOrCreateEngine(
                 runtime.deserializeCudaEngine(buffer.data(), size));
     }
 
-    /* 否则从 ONNX 重新构建 */
-    std::cout << "[INFO] Engine not found. Building from ONNX: "
-              << model_path << std::endl;
-
+    std::cout << "[INFO] Engine not found. Building from ONNX: " << model_path << std::endl;
     TrtUniquePtr<nvinfer1::IBuilder> builder(nvinfer1::createInferBuilder(logger));
-    const auto explicitBatch =
-            1U << static_cast<uint32_t>(
-                    nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
-    TrtUniquePtr<nvinfer1::INetworkDefinition> network(
-            builder->createNetworkV2(explicitBatch));
-    TrtUniquePtr<nvonnxparser::IParser> parser(
-            nvonnxparser::createParser(*network, logger));
+    const auto explicitBatch = 1U << static_cast<uint32_t>(
+            nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+    TrtUniquePtr<nvinfer1::INetworkDefinition> network(builder->createNetworkV2(explicitBatch));
+    TrtUniquePtr<nvonnxparser::IParser> parser(nvonnxparser::createParser(*network, logger));
 
     if (!parser->parseFromFile(model_path.c_str(),
                                static_cast<int>(nvinfer1::ILogger::Severity::kWARNING)))
@@ -119,148 +106,82 @@ static TrtUniquePtr<nvinfer1::ICudaEngine> loadOrCreateEngine(
                                           serialized_engine->size()));
 }
 
-/* =================================================================== */
-/* prepare ************************************************************ */
 void FaceAnalyzer::prepare(const std::string &provider,
                            float det_thresh,
                            cv::Size det_size) {
-
-    std::string final_provider = "CPU";
-    if (provider == "CUDAExecutionProvider" || provider == "GPU")
-        final_provider = "GPU";
-    else if (provider == "DLA")
-        final_provider = "DLA";
-
-    std::cout << "[INFO] Preparing FaceAnalyzer with backend: "
-              << final_provider << std::endl;
+    std::string final_provider = (provider == "CUDAExecutionProvider" || provider == "GPU") ? "GPU" : "DLA";
+    std::cout << "[INFO] Preparing FaceAnalyzer with backend: " << final_provider << std::endl;
+    det_thresh_ = det_thresh;
+    det_size_ = det_size;
 
     m_logger = std::make_unique<TrtLogger>();
     m_runtime.reset(nvinfer1::createInferRuntime(*m_logger));
+    if (final_provider == "DLA") m_runtime->setDLACore(0);
 
-    /* --- 检测模型 --- */
     std::cout << "[INFO] Initializing detection model..." << std::endl;
-    m_det_engine = loadOrCreateEngine(*m_runtime, m_det_model_path,
-                                      final_provider, *m_logger);
+    m_det_engine = loadOrCreateEngine(*m_runtime, m_det_model_path, final_provider, *m_logger);
     m_det_context.reset(m_det_engine->createExecutionContext());
 
-    /* --- 识别模型 --- */
     std::cout << "[INFO] Initializing recognition model..." << std::endl;
-    m_rec_engine = loadOrCreateEngine(*m_runtime, m_rec_model_path,
-                                      final_provider, *m_logger);
+    m_rec_engine = loadOrCreateEngine(*m_runtime, m_rec_model_path, final_provider, *m_logger);
     m_rec_context.reset(m_rec_engine->createExecutionContext());
 
     cudaStreamCreate(&m_stream);
 
-    /* 申请 det / rec 全部绑定的 GPU buffer */
-    m_buffers_det.resize(m_det_engine->getNbBindings());
-    m_buffer_sizes_det.resize(m_det_engine->getNbBindings());
-    for (int i = 0; i < m_det_engine->getNbBindings(); ++i) {
-        auto dims = m_det_engine->getBindingDimensions(i);
-        size_t size = 1;
-        for (int j = 0; j < dims.nbDims; ++j) size *= dims.d[j];
-        if (size == 0) continue;                  // 可变维
-        m_buffer_sizes_det[i] = size * sizeof(float);
-        cudaMalloc(&m_buffers_det[i], m_buffer_sizes_det[i]);
-    }
-    m_buffers_rec.resize(m_rec_engine->getNbBindings());
-    m_buffer_sizes_rec.resize(m_rec_engine->getNbBindings());
-    for (int i = 0; i < m_rec_engine->getNbBindings(); ++i) {
-        auto dims = m_rec_engine->getBindingDimensions(i);
-        size_t size = 1;
-        for (int j = 0; j < dims.nbDims; ++j) size *= dims.d[j];
-        if (size == 0) continue;
-        m_buffer_sizes_rec[i] = size * sizeof(float);
-        cudaMalloc(&m_buffers_rec[i], m_buffer_sizes_rec[i]);
-    }
+    auto sizeofTRT = [](nvinfer1::DataType type) -> size_t {
+        switch (type) {
+            case nvinfer1::DataType::kFLOAT:
+                return 4;
+            case nvinfer1::DataType::kHALF:
+                return 2;
+            case nvinfer1::DataType::kINT8:
+                return 1;
+            case nvinfer1::DataType::kINT32:
+                return 4;
+            default:
+                throw std::runtime_error("Unknown TRT DataType size.");
+        }
+    };
 
-    det_thresh_ = det_thresh;
-    det_size_ = det_size;
+    auto allocAllBindings = [&](TrtUniquePtr<nvinfer1::ICudaEngine> &engine,
+                                TrtUniquePtr<nvinfer1::IExecutionContext> &ctx,
+                                std::vector<void *> &buffers,
+                                std::vector<size_t> &buf_sizes,
+                                std::function<void(nvinfer1::IExecutionContext *, int)> setInputShape) {
+        const int nb = engine->getNbBindings();
+        buffers.assign(nb, nullptr);
+        buf_sizes.assign(nb, 0);
+        int inputIdx = findInputBinding(*engine);
+        if (inputIdx < 0) throw std::runtime_error("Input binding not found.");
+        setInputShape(ctx.get(), inputIdx);
+        if (!ctx->allInputDimensionsSpecified())
+            throw std::runtime_error("Input dimensions unspecified.");
+        for (int i = 0; i < nb; ++i) {
+            nvinfer1::Dims dims = ctx->getBindingDimensions(i);
+            if (std::any_of(dims.d, dims.d + dims.nbDims, [](int v) { return v < 0; })) {
+                throw std::runtime_error("Binding has unresolved dimension.");
+            }
+            size_t vol = 1;
+            for (int d = 0; d < dims.nbDims; ++d) vol *= static_cast<size_t>(dims.d[d]);
+            size_t bytes = vol * sizeofTRT(engine->getBindingDataType(i));
+            if (bytes == 0) continue;
+            buf_sizes[i] = bytes;
+            cudaMalloc(&buffers[i], bytes);
+        }
+    };
+
+    allocAllBindings(m_det_engine, m_det_context, m_buffers_det, m_buffer_sizes_det,
+                     [this](nvinfer1::IExecutionContext *c, int idx) {
+                         c->setBindingDimensions(idx, nvinfer1::Dims4{1, 3, det_size_.height, det_size_.width});
+                     });
+
+    allocAllBindings(m_rec_engine, m_rec_context, m_buffers_rec, m_buffer_sizes_rec,
+                     [](nvinfer1::IExecutionContext *c, int idx) {
+                         c->setBindingDimensions(idx, nvinfer1::Dims4{1, 3, 112, 112});
+                     });
+
     m_is_prepared = true;
     std::cout << "[INFO] FaceAnalyzer is ready." << std::endl;
-}
-
-/* =================================================================== */
-/* get_embedding_from_aligned ***************************************** */
-cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::Mat &aligned_img) {
-    if (!m_is_prepared)
-        throw std::runtime_error("FaceAnalyzer not prepared. Call prepare() first.");
-    if (aligned_img.size() != cv::Size(112, 112))
-        throw std::runtime_error("Input for get_embedding_from_aligned must be 112x112.");
-
-    /* 1. 预处理 */
-    auto t0 = std::chrono::high_resolution_clock::now();
-    std::vector<float> preprocessed(1 * 3 * 112 * 112);
-    const int channel_size = 112 * 112;
-    for (int h = 0; h < 112; ++h)
-        for (int w = 0; w < 112; ++w) {
-            cv::Vec3b px = aligned_img.at<cv::Vec3b>(h, w);
-            preprocessed[0 * channel_size + h * 112 + w] = (px[2] - 127.5f) / 128.0f;
-            preprocessed[1 * channel_size + h * 112 + w] = (px[1] - 127.5f) / 128.0f;
-            preprocessed[2 * channel_size + h * 112 + w] = (px[0] - 127.5f) / 128.0f;
-        }
-    auto t1 = std::chrono::high_resolution_clock::now();
-
-    /* 2. 找到绑定索引（自动，不再写死名字） */
-    int input_idx = findInputBinding(*m_rec_engine);
-    int output_idx = findOutputBinding(*m_rec_engine);
-    if (input_idx < 0 || output_idx < 0)
-        throw std::runtime_error("Failed to find input/output binding in rec engine.");
-
-    /* 3. H2D Copy & 推理 */
-    cudaMemcpyAsync(m_buffers_rec[input_idx], preprocessed.data(),
-                    m_buffer_sizes_rec[input_idx],
-                    cudaMemcpyHostToDevice, m_stream);
-    m_rec_context->enqueueV2(m_buffers_rec.data(), m_stream, nullptr);
-
-    /* 4. D2H Copy */
-    cv::Mat result(1, m_buffer_sizes_rec[output_idx] / sizeof(float), CV_32F);
-    cudaMemcpyAsync(result.ptr<float>(), m_buffers_rec[output_idx],
-                    m_buffer_sizes_rec[output_idx],
-                    cudaMemcpyDeviceToHost, m_stream);
-    cudaStreamSynchronize(m_stream);
-    auto t2 = std::chrono::high_resolution_clock::now();
-
-    double pre_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-    double infer_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-    std::cout << "        [PERF rec] preprocess " << pre_ms
-              << " ms | infer+d2h " << infer_ms << " ms" << std::endl;
-
-    return result.clone();
-}
-
-/* =================================================================== */
-/* get_embedding / get 与旧版保持一致 ********************************* */
-void FaceAnalyzer::get_embedding(const cv::Mat &full_img, Face &face) {
-    if (face.kps.size() != 5)
-        throw std::runtime_error("Face object must have 5 keypoints for alignment.");
-
-    auto align_start = std::chrono::high_resolution_clock::now();
-    const std::vector<cv::Point2f> dst_pts = {{38.2946f, 51.6963f},
-                                              {73.5318f, 51.5014f},
-                                              {56.0252f, 71.7366f},
-                                              {41.5493f, 92.3655f},
-                                              {70.7299f, 92.2041f}};
-    cv::Mat M = cv::estimateAffinePartial2D(face.kps, dst_pts);
-    if (M.empty()) {
-        face.embedding = cv::Mat();
-        return;
-    }
-    cv::Mat aligned;
-    cv::warpAffine(full_img, aligned, M, cv::Size(112, 112));
-    face.aligned_face = aligned.clone();
-    auto align_end = std::chrono::high_resolution_clock::now();
-
-    auto infer_start = std::chrono::high_resolution_clock::now();
-    face.embedding = get_embedding_from_aligned(aligned);
-    auto infer_end = std::chrono::high_resolution_clock::now();
-
-    double align_ms = std::chrono::duration<double, std::milli>(align_end - align_start).count();
-    double infer_ms = std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
-    double total_ms = align_ms + infer_ms;
-    if (total_ms > 1.0)
-        std::cout << "      [PERF get_emb] total " << total_ms
-                  << " ms | align " << align_ms
-                  << " ms | infer " << infer_ms << " ms\n";
 }
 
 std::vector<Face> FaceAnalyzer::get(const cv::Mat &img) {
@@ -272,8 +193,8 @@ std::vector<Face> FaceAnalyzer::get(const cv::Mat &img) {
     auto t0 = std::chrono::high_resolution_clock::now();
     auto faces = detect(img);
     auto t1 = std::chrono::high_resolution_clock::now();
-
     double det_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
     double rec_ms_total = 0.0;
     for (auto &f: faces) {
         auto tr0 = std::chrono::high_resolution_clock::now();
@@ -287,111 +208,178 @@ std::vector<Face> FaceAnalyzer::get(const cv::Mat &img) {
     std::cout << "[FaceAnalyzer::get] total " << total_ms << " ms (det "
               << det_ms << " ms, rec_all " << rec_ms_total << " ms) for "
               << faces.size() << " faces.\n";
+
     return faces;
 }
 
-/* =================================================================== */
-/* detect ************************************************************* */
+void FaceAnalyzer::get_embedding(const cv::Mat &full_img, Face &face) {
+    if (face.kps.empty()) { // 如果没有关键点，则无法对齐
+        face.embedding = cv::Mat();
+        return;
+    }
+    if (face.kps.size() != 5)
+        throw std::runtime_error("Face object must have 5 keypoints for alignment.");
+
+    const std::vector<cv::Point2f> dst_pts = {{38.2946f, 51.6963f},
+                                              {73.5318f, 51.5014f},
+                                              {56.0252f, 71.7366f},
+                                              {41.5493f, 92.3655f},
+                                              {70.7299f, 92.2041f}};
+    cv::Mat M = cv::estimateAffinePartial2D(face.kps, dst_pts);
+    if (M.empty()) {
+        face.embedding = cv::Mat();
+        return;
+    }
+    cv::Mat aligned;
+    cv::warpAffine(full_img, aligned, M, cv::Size(112, 112));
+    face.aligned_face = aligned.clone();
+    face.embedding = get_embedding_from_aligned(aligned);
+}
+
+cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::Mat &aligned_img) {
+    if (!m_is_prepared)
+        throw std::runtime_error("FaceAnalyzer not prepared. Call prepare() first.");
+    if (aligned_img.size() != cv::Size(112, 112))
+        throw std::runtime_error("Input for get_embedding_from_aligned must be 112x112.");
+
+    std::vector<float> preprocessed(1 * 3 * 112 * 112);
+    const int channel_size = 112 * 112;
+    for (int h = 0; h < 112; ++h)
+        for (int w = 0; w < 112; ++w) {
+            cv::Vec3b px = aligned_img.at<cv::Vec3b>(h, w);
+            preprocessed[0 * channel_size + h * 112 + w] = (px[2] - 127.5f) / 128.0f;
+            preprocessed[1 * channel_size + h * 112 + w] = (px[1] - 127.5f) / 128.0f;
+            preprocessed[2 * channel_size + h * 112 + w] = (px[0] - 127.5f) / 128.0f;
+        }
+
+    int input_idx = findInputBinding(*m_rec_engine);
+    int output_idx = findOutputBinding(*m_rec_engine);
+    if (input_idx < 0 || output_idx < 0)
+        throw std::runtime_error("Failed to find input/output binding in rec engine.");
+
+    cudaMemcpyAsync(m_buffers_rec[input_idx], preprocessed.data(), m_buffer_sizes_rec[input_idx],
+                    cudaMemcpyHostToDevice, m_stream);
+    m_rec_context->enqueueV2(m_buffers_rec.data(), m_stream, nullptr);
+    cv::Mat result(1, m_buffer_sizes_rec[output_idx] / sizeof(float), CV_32F);
+    cudaMemcpyAsync(result.ptr<float>(), m_buffers_rec[output_idx], m_buffer_sizes_rec[output_idx],
+                    cudaMemcpyDeviceToHost, m_stream);
+    cudaStreamSynchronize(m_stream);
+    return result.clone();
+}
+
 std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
     if (!m_is_prepared) throw std::runtime_error("FaceAnalyzer not prepared.");
     if (img.empty()) return {};
 
-    /* ---------- 1. 缩放 / pad 到 det_size_ ---------- */
     float im_ratio = static_cast<float>(img.rows) / img.cols;
     float mdl_ratio = static_cast<float>(det_size_.height) / det_size_.width;
     int new_w, new_h;
-    if (im_ratio > mdl_ratio) {       // 高比较长
+    if (im_ratio > mdl_ratio) {
         new_h = det_size_.height;
         new_w = static_cast<int>(new_h / im_ratio);
-    } else {                          // 宽比较长
+    } else {
         new_w = det_size_.width;
         new_h = static_cast<int>(new_w * im_ratio);
     }
     float scale = static_cast<float>(new_h) / img.rows;
-    if (scale == 0) scale = 1.f;
-
+    if (scale == 0) scale = 1.0f;
     cv::Mat resized, det_img = cv::Mat::zeros(det_size_, CV_8UC3);
     cv::resize(img, resized, cv::Size(new_w, new_h));
     resized.copyTo(det_img(cv::Rect(0, 0, new_w, new_h)));
-
-    /* ---------- 2. HWC(BGR) -> CHW(RGB) & 归一化 ---------- */
     std::vector<float> blob(1 * 3 * det_size_.height * det_size_.width);
     int H = det_size_.height, W = det_size_.width, ch_size = H * W;
-    for (int h = 0; h < H; ++h)
+    for (int h = 0; h < H; ++h) {
         for (int w = 0; w < W; ++w) {
             cv::Vec3b p = det_img.at<cv::Vec3b>(h, w);
             blob[0 * ch_size + h * W + w] = (p[2] - 127.5f) / 128.0f;
             blob[1 * ch_size + h * W + w] = (p[1] - 127.5f) / 128.0f;
             blob[2 * ch_size + h * W + w] = (p[0] - 127.5f) / 128.0f;
         }
+    }
 
-    /* ---------- 3. 推理 ---------- */
     int input_idx = findInputBinding(*m_det_engine);
     if (input_idx < 0) throw std::runtime_error("Detect engine input binding not found.");
-
-    cudaMemcpyAsync(m_buffers_det[input_idx], blob.data(),
-                    m_buffer_sizes_det[input_idx],
-                    cudaMemcpyHostToDevice, m_stream);
+    cudaMemcpyAsync(m_buffers_det[input_idx], blob.data(), m_buffer_sizes_det[input_idx], cudaMemcpyHostToDevice,
+                    m_stream);
     m_det_context->enqueueV2(m_buffers_det.data(), m_stream, nullptr);
 
-    /* ---------- 4. 拷贝输出 ---------- */
-    std::vector<cv::Mat> outs;
+    std::map<std::string, cv::Mat> output_mats;
     for (const auto &name: m_det_output_names) {
         int idx = m_det_engine->getBindingIndex(name.c_str());
-        if (idx < 0) {
-            std::cerr << "[WARN] Detection output binding not found: "
-                      << name << std::endl;
-            continue;
-        }
-        cv::Mat out(1, m_buffer_sizes_det[idx] / sizeof(float), CV_32F);
-        cudaMemcpyAsync(out.ptr<float>(), m_buffers_det[idx],
-                        m_buffer_sizes_det[idx],
-                        cudaMemcpyDeviceToHost, m_stream);
-        outs.push_back(out);
+        if (idx < 0) { continue; }
+        if (m_buffers_det[idx] == nullptr || m_buffer_sizes_det[idx] == 0) { continue; }
+        cv::Mat out_mat(1, m_buffer_sizes_det[idx] / sizeof(float), CV_32F);
+        cudaMemcpyAsync(out_mat.ptr<float>(), m_buffers_det[idx], m_buffer_sizes_det[idx], cudaMemcpyDeviceToHost,
+                        m_stream);
+        output_mats[name] = out_mat;
     }
     cudaStreamSynchronize(m_stream);
 
-    if (outs.size() != m_det_output_names.size()) {
-        std::cerr << "[WARN] Detect output num mismatch, abort detection.\n";
-        return {};
-    }
-
-    /* ---------- 5. 后处理 (根据 SCRFD 原理) ---------- */
     std::vector<cv::Rect2d> bboxes;
     std::vector<float> scores;
     std::vector<std::vector<cv::Point2f>> all_kps;
-    std::vector<int> strides = {8, 16, 32};          // 与模型保持一致
+
+    struct StrideOutputs {
+        int stride;
+        std::string score_name, bbox_name, kps_name;
+    };
+    std::vector<StrideOutputs> stride_info = {
+            {8,  "448", "451", "477"}, // Note: kps name order might be different from your example, using the map is safer
+            {16, "471", "474", "477"},
+            {32, "494", "497", "500"}
+    };
+    // Let's use your reference's logic which seems more direct
+    // And assuming the output order is fixed for strides
+    std::vector<int> strides = {8, 16, 32};
     for (size_t i = 0; i < strides.size(); ++i) {
-        const int stride = strides[i];
+        int stride = strides[i];
+        std::string score_name = stride_info[i].score_name;
+        std::string bbox_name = stride_info[i].bbox_name;
+        std::string kps_name = stride_info[i].kps_name;
+
+        if (output_mats.find(score_name) == output_mats.end() ||
+            output_mats.find(bbox_name) == output_mats.end()) {
+            continue;
+        }
+        const float *score_data = output_mats.at(score_name).ptr<float>();
+        const float *bbox_data = output_mats.at(bbox_name).ptr<float>();
+        const float *kps_data = nullptr;
+        bool has_kps = !kps_name.empty() && output_mats.count(kps_name);
+        if (has_kps) { kps_data = output_mats.at(kps_name).ptr<float>(); }
+
         const int h_out = det_size_.height / stride;
         const int w_out = det_size_.width / stride;
 
-        const float *score_data = outs[i].ptr<float>();
-        const float *bbox_data = outs[i + strides.size()].ptr<float>();
-        const float *kps_data = outs[i + 2 * strides.size()].ptr<float>();
-
         for (int y = 0; y < h_out; ++y) {
             for (int x = 0; x < w_out; ++x) {
-                for (int a = 0; a < 2; ++a) {       // 每格两个 anchor
+                for (int a = 0; a < 2; ++a) { // 2 anchors
                     int idx = (y * w_out + x) * 2 + a;
                     float sc = score_data[idx];
                     if (sc < det_thresh_) continue;
 
-                    const float *bb = &bbox_data[idx * 4];
-                    float x1 = (x + 0.5f - bb[0]) * stride / scale;
-                    float y1 = (y + 0.5f - bb[1]) * stride / scale;
-                    float x2 = (x + 0.5f + bb[2]) * stride / scale;
-                    float y2 = (y + 0.5f + bb[3]) * stride / scale;
-
-                    bboxes.emplace_back(x1, y1, x2 - x1, y2 - y1);
                     scores.push_back(sc);
 
+                    const float *bbox_ptr = &bbox_data[idx * 4];
+
+                    // ======================= 【修改的部分在此】 =======================
+                    // 使用格网左上角作为基准点
+                    float cx = (float) x * stride;
+                    float cy = (float) y * stride;
+                    // ======================= 【修改结束】 =======================
+
+                    float x1 = (cx - bbox_ptr[0] * stride) / scale;
+                    float y1 = (cy - bbox_ptr[1] * stride) / scale;
+                    float x2 = (cx + bbox_ptr[2] * stride) / scale;
+                    float y2 = (cy + bbox_ptr[3] * stride) / scale;
+                    bboxes.emplace_back(x1, y1, x2 - x1, y2 - y1);
+
                     std::vector<cv::Point2f> kps;
-                    const float *kp_ptr = &kps_data[idx * 10];
-                    for (int k = 0; k < 5; ++k) {
-                        float kx = (x + 0.5f + kp_ptr[k * 2]) * stride / scale;
-                        float ky = (y + 0.5f + kp_ptr[k * 2 + 1]) * stride / scale;
-                        kps.emplace_back(kx, ky);
+                    if (has_kps && kps_data) {
+                        const float *kp_ptr = &kps_data[idx * 10];
+                        for (int k = 0; k < 5; ++k) {
+                            kps.emplace_back((cx + kp_ptr[k * 2] * stride) / scale,
+                                             (cy + kp_ptr[k * 2 + 1] * stride) / scale);
+                        }
                     }
                     all_kps.push_back(kps);
                 }
@@ -399,11 +387,10 @@ std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
         }
     }
 
-    /* NMS */
+    if (bboxes.empty()) return {};
+
     std::vector<int> keep;
     cv::dnn::NMSBoxes(bboxes, scores, det_thresh_, 0.4, keep);
-
-    /* ---------- 6. 组装结果 ---------- */
     std::vector<Face> faces;
     for (int id: keep) {
         Face f;

@@ -7,22 +7,22 @@
 #include <fstream>
 #include <iomanip>
 
-#include "FaceAnalyzer.hpp" // 引入我们封装的类
-#include "nlohmann/json.hpp"         // 引入JSON库
+#include "FaceAnalyzer_dla.hpp"
+#include "nlohmann/json.hpp"
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
-// 辅助函数保持不变
+// 辅助函数
 double cosine_similarity(const cv::Mat &vec1, const cv::Mat &vec2);
 
 std::pair<std::vector<cv::Mat>, std::vector<bool>>
 remove_outliers(const std::vector<cv::Mat> &embeddings, double thresh);
 
 int main(int argc, char *argv[]) {
-    // 参数设置
+    // [MODIFICATION] All original parameters restored
     std::string folder = "/mnt/nfs/perimeter_v1/G00002/faces/";
-    std::string provider = "CUDAExecutionProvider"; // <--- 修改点：启用GPU
+    std::string provider = "DLA"; // 使用TensorRT DLA后端
     int det_size = 640;
     double outlier_thresh = 1.2;
     std::string output_json = "/mnt/nfs/embeddings.json";
@@ -35,21 +35,24 @@ int main(int argc, char *argv[]) {
     std::cout << "[INFO] folder: " << folder << std::endl;
 
     try {
-        // ... (初始化模型部分保持不变) ...
+        // [MODIFICATION] Initializing with both models again
         FaceAnalyzer face_app(det_model, rec_model);
+
+        // 准备模型
         face_app.prepare(provider, 0.5f, cv::Size(det_size, det_size));
-        std::cout << "[INFO] Face analyzer ready (provider=" << provider << ")" << std::endl;
+        std::cout << "[INFO] Face analyzer ready with DLA backend" << std::endl;
 
         if (!fs::exists(folder)) {
             std::cerr << "[ERROR] 文件夹不存在: " << folder << std::endl;
             return -1;
         }
 
-        // ... (准备输出目录和文件部分保持不变) ...
+        // [MODIFICATION] Preparation for aligned faces and embedding files restored
         if (!output_aligned_dir.empty()) {
             fs::create_directories(output_aligned_dir);
             std::cout << "[INFO] 对齐后的人脸将保存到: " << output_aligned_dir << std::endl;
         }
+
         std::ofstream detection_txt_file;
         if (!output_detection_txt.empty()) {
             detection_txt_file.open(output_detection_txt, std::ios::out | std::ios::trunc);
@@ -59,6 +62,7 @@ int main(int argc, char *argv[]) {
                 std::cout << "[INFO] 人脸检测结果将保存到: " << output_detection_txt << std::endl;
             }
         }
+
         std::ofstream embedding_txt_file;
         if (!output_embedding_txt.empty()) {
             embedding_txt_file.open(output_embedding_txt, std::ios::out | std::ios::trunc);
@@ -67,24 +71,20 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // --- 遍历图片，提取特征 ---
+        // [MODIFICATION] Vectors for storing embeddings restored
         std::vector<cv::Mat> embeddings;
         std::vector<std::string> paths_list;
 
-        // 1. 将所有文件路径收集到一个vector中
         std::vector<fs::path> image_paths;
         for (const auto &entry: fs::directory_iterator(folder)) {
             image_paths.push_back(entry.path());
         }
-
-        // 2. 对这个vector进行排序
         std::sort(image_paths.begin(), image_paths.end());
 
-        // 3. 遍历排序后的vector
         for (const auto &entry_path: image_paths) {
             std::string ext = entry_path.extension().string();
-
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
             if (ext == ".jpg" || ext == ".png" || ext == ".jpeg") {
                 cv::Mat img = cv::imread(entry_path.string());
                 if (img.empty()) {
@@ -100,7 +100,9 @@ int main(int argc, char *argv[]) {
 
                 int face_idx = 0;
                 fs::path p(entry_path);
+
                 for (auto &f: faces) {
+                    // [MODIFICATION] Logic for saving aligned faces restored
                     if (!output_aligned_dir.empty() && !f.aligned_face.empty()) {
                         cv::Mat aligned_to_save = f.aligned_face.clone();
                         std::vector<cv::Point2f> arcface_template = {
@@ -119,6 +121,7 @@ int main(int argc, char *argv[]) {
                         cv::imwrite(save_path_str, aligned_to_save);
                     }
 
+                    // 保存检测结果
                     if (detection_txt_file.is_open()) {
                         detection_txt_file << std::fixed << std::setprecision(4)
                                            << entry_path.filename().string() << ","
@@ -131,6 +134,7 @@ int main(int argc, char *argv[]) {
                         detection_txt_file << "\n";
                     }
 
+                    // [MODIFICATION] Logic for saving feature vectors restored
                     if (!f.embedding.empty()) {
                         cv::Mat emb;
                         cv::normalize(f.embedding, emb, 1.0, 0.0, cv::NORM_L2);
@@ -152,7 +156,6 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // ... (关闭文件和后续分析代码保持不变) ...
         if (detection_txt_file.is_open()) {
             detection_txt_file.close();
         }
@@ -160,6 +163,7 @@ int main(int argc, char *argv[]) {
             embedding_txt_file.close();
         }
 
+        // [MODIFICATION] Post-processing logic for embeddings restored
         if (embeddings.empty()) {
             if (!output_detection_txt.empty()) {
                 std::cout << "[INFO] 仅执行了人脸检测/特征提取，结果已保存。" << std::endl;
@@ -192,6 +196,7 @@ int main(int argc, char *argv[]) {
 
         std::cout << "[INFO] 去除异常值后剩余 " << clean_embeddings.size()
                   << " 张 (剔除 " << (embeddings.size() - clean_embeddings.size()) << ")" << std::endl;
+
         if (!removed_paths.empty()) {
             std::cout << "[INFO] 被剔除的图片有：" << std::endl;
             for (const auto &name: removed_paths) {
@@ -199,10 +204,14 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        if (clean_embeddings.empty()) { throw std::runtime_error("去除异常值后无剩余特征。"); }
+        if (clean_embeddings.empty()) {
+            throw std::runtime_error("去除异常值后无剩余特征。");
+        }
 
         cv::Mat mean_vec = cv::Mat::zeros(1, clean_embeddings[0].cols, clean_embeddings[0].type());
-        for (const auto &emb: clean_embeddings) { mean_vec += emb; }
+        for (const auto &emb: clean_embeddings) {
+            mean_vec += emb;
+        }
         mean_vec /= static_cast<double>(clean_embeddings.size());
         cv::normalize(mean_vec, mean_vec, 1.0, 0.0, cv::NORM_L2);
 
@@ -222,7 +231,7 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-// ... (辅助函数 cosine_similarity, remove_outliers 保持不变) ...
+// [MODIFICATION] Helper functions implementation restored
 double cosine_similarity(const cv::Mat &vec1, const cv::Mat &vec2) {
     double dot = vec1.dot(vec2);
     double norm1 = cv::norm(vec1);
@@ -239,12 +248,16 @@ std::pair<std::vector<cv::Mat>, std::vector<bool>> remove_outliers(
     }
 
     cv::Mat mean_vec = cv::Mat::zeros(1, embeddings[0].cols, embeddings[0].type());
-    for (const auto &emb: embeddings) { mean_vec += emb; }
+    for (const auto &emb: embeddings) {
+        mean_vec += emb;
+    }
     mean_vec /= static_cast<double>(embeddings.size());
 
     std::vector<double> dists;
     dists.reserve(embeddings.size());
-    for (const auto &emb: embeddings) { dists.push_back(cv::norm(emb - mean_vec)); }
+    for (const auto &emb: embeddings) {
+        dists.push_back(cv::norm(emb - mean_vec));
+    }
 
     double dist_sum = std::accumulate(dists.begin(), dists.end(), 0.0);
     double dist_mean = dist_sum / dists.size();

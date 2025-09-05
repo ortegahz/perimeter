@@ -238,7 +238,7 @@ int main() {
 
             // 2. 连续执行推理 n 次，并记录时间
             cudaEventRecord(start_event, stream); // 记录开始时间点
-            for (int infer_iter = 0; infer_iter < 1000; ++infer_iter) {
+            for (int infer_iter = 0; infer_iter < 1; ++infer_iter) {
                 context->enqueueV2(buffers.data(), stream, nullptr);
             }
             cudaEventRecord(stop_event, stream); // 记录结束时间点
