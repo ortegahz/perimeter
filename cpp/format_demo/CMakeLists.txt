@@ -77,6 +77,11 @@ add_executable(face_extractor
         cores/face/FaceAnalyzer.cpp
 )
 
+add_executable(face_extractor_dla
+        cores/face/main_face_detect.cpp
+        cores/face/FaceAnalyzer.cpp
+)
+
 add_executable(face_recognizer
         cores/face/main_face_recognition.cpp
         cores/face/FaceAnalyzer.cpp
@@ -119,6 +124,14 @@ target_link_libraries(face_extractor PRIVATE
         ${CUDA_EXTRA_LIBS}
 )
 
+target_link_libraries(face_extractor_dla PRIVATE
+        ${OpenCV_LIBS}
+        nlohmann_json
+        ${TRT_LIBS}
+        ${CUDA_LIBRARIES}
+        ${CUDA_EXTRA_LIBS}
+)
+
 target_link_libraries(face_recognizer PRIVATE
         ${OpenCV_LIBS}
         nlohmann_json
@@ -153,7 +166,7 @@ target_link_libraries(reid_demo_dla PRIVATE
 
 # ----------------- 文件系统库 -----------------
 # 为所有目标统一处理 C++17 filesystem 链接问题
-foreach (TARGET demo_cpp face_extractor face_recognizer face_recognizer_dla reid_demo reid_demo_dla)
+foreach (TARGET demo_cpp face_extractor face_extractor_dla face_recognizer face_recognizer_dla reid_demo reid_demo_dla)
     if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
         target_link_libraries(${TARGET} PRIVATE stdc++fs)
     endif ()
