@@ -6,21 +6,59 @@
 #include <vector>
 #include <algorithm>
 #include <chrono>
+#include <fstream>
+#include <iomanip>
 
 namespace fs = std::filesystem;
+
+/**
+ * @brief 将特征向量保存到文本文件，格式与原始版本兼容。
+ * @param feats 特征向量的 vector。
+ * @param img_names 对应的原始图片路径的 vector。
+ * @param output_path 输出的 txt 文件路径。
+ */
+void save_feats_to_txt(const std::vector<cv::Mat> &feats, const std::vector<std::string> &img_names,
+                       const std::string &output_path) {
+    std::cout << "\n正在保存特征到 \"" << output_path << "\"..." << std::endl;
+    std::ofstream outfile(output_path);
+    if (!outfile.is_open()) {
+        std::cerr << "错误: 无法打开文件进行写入: " << output_path << std::endl;
+        return;
+    }
+
+    outfile << std::fixed << std::setprecision(8);
+
+    for (size_t i = 0; i < feats.size(); ++i) {
+        // 提取不带扩展名的文件名
+        std::string basename = fs::path(img_names[i]).stem().string();
+        outfile << basename;
+
+        const cv::Mat &feat_vec = feats[i];
+        for (int j = 0; j < feat_vec.cols; ++j) {
+            outfile << " " << feat_vec.at<float>(0, j);
+        }
+        outfile << "\n";
+    }
+
+    outfile.close();
+    std::cout << "特征保存成功。" << std::endl;
+}
 
 int main() {
     // ########################### 用户配置 ###########################
     std::string resized_input_dir = "/mnt/nfs/out_reid_resized";
     std::string onnx_model_path = "/mnt/nfs/reid_model.onnx";
-    std::string engine_cache_path = "/mnt/nfs/reid_model_dla.engine"; // DLA引擎缓存文件路径
-    int dla_core_id = 0; // 使用 DLA 核心 0 (Jetson AGX/Orin 系列可选 0 或 1)
+    std::string engine_cache_path = "/mnt/nfs/reid_model_dla.engine";
+    std::string output_txt_path_cpp = "/mnt/nfs/features_cpp_onnx_arm.txt"; // <-- 新增输出路径
+    int dla_core_id = 0;
 
     const int MODEL_INPUT_WIDTH = 128;
     const int MODEL_INPUT_HEIGHT = 256;
     // ##################################################################
 
+    // ------------------- 任务1: 加载图像路径 -------------------
     std::cout << "================ 任务1: 加载图像路径 ================" << std::endl;
+
     std::vector<fs::path> bmp_paths;
     for (const auto &entry: fs::directory_iterator(resized_input_dir)) {
         if (entry.path().extension() == ".bmp") {
@@ -35,10 +73,22 @@ int main() {
 
     // 按图片文件名中的数字排序
     std::sort(bmp_paths.begin(), bmp_paths.end(), [](const fs::path &a, const fs::path &b) {
-        return std::stoi(a.stem().string()) < std::stoi(b.stem().string());
+        try {
+            return std::stoi(a.stem().string()) < std::stoi(b.stem().string());
+        } catch (const std::invalid_argument &ia) {
+            // 如果文件名不是纯数字，则按字典序排序
+            return a.stem().string() < b.stem().string();
+        }
     });
-    std::cout << "找到 " << bmp_paths.size() << " 张待处理的图片。" << std::endl;
 
+    // 将 fs::path 转换为 string 向量，供后续使用
+    std::vector<std::string> bmp_path_strings;
+    for (const auto &p: bmp_paths) {
+        bmp_path_strings.push_back(p.string());
+    }
+    std::cout << "找到并排序了 " << bmp_paths.size() << " 张待处理的图片。" << std::endl;
+
+    // ------------------- 任务2: DLA 推理并保存结果 -------------------
     std::cout << "\n================ 任务2: DLA 推理 (C++) ================" << std::endl;
     try {
         std::cout << "初始化 ReID DLA 模型..." << std::endl;
@@ -46,36 +96,43 @@ int main() {
         std::cout << "DLA 模型加载完成。" << std::endl;
 
         std::cout << "开始从 " << bmp_paths.size() << " 张图片中提取特征..." << std::endl;
+        std::vector<cv::Mat> all_feats;
+        all_feats.reserve(bmp_paths.size()); // 预分配内存
         auto start_time = std::chrono::high_resolution_clock::now();
 
         for (size_t i = 0; i < bmp_paths.size(); ++i) {
-            cv::Mat img = cv::imread(bmp_paths[i].string(), cv::IMREAD_COLOR);
+            cv::Mat img = cv::imread(bmp_path_strings[i], cv::IMREAD_COLOR);
             if (img.empty()) {
-                std::cerr << "警告: 无法读取图片 " << bmp_paths[i] << std::endl;
+                std::cerr << "警告: 无法读取图片 " << bmp_path_strings[i] << std::endl;
                 continue;
             }
-            cv::Mat feat = reid.extract_feat(img);
+            all_feats.push_back(reid.extract_feat(img));
 
-            if ((i + 1) % 100 == 0 || (i + 1) == bmp_paths.size()) {
-                std::cout << "  [" << (i + 1) << "/" << bmp_paths.size() << "] 已提取。 "
-                          << "示例特征L2范数: " << cv::norm(feat) << std::endl;
+            if ((i + 1) % 200 == 0 || (i + 1) == bmp_paths.size()) {
+                std::cout << "  [" << (i + 1) << "/" << bmp_paths.size() << "] 已提取" << std::endl;
             }
         }
 
         auto end_time = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> elapsed = end_time - start_time;
-        std::cout << "特征提取完成，耗时 " << std::fixed << std::setprecision(2) << elapsed.count() << " 秒。"
+        std::cout << "特征提取完成，总耗时 " << std::fixed << std::setprecision(1) << elapsed.count() << " 秒。"
                   << std::endl;
         std::cout << "平均每张图片耗时 " << std::fixed << std::setprecision(2)
                   << (elapsed.count() * 1000 / bmp_paths.size()) << " 毫秒。" << std::endl;
 
+        // 调用函数保存特征
+        save_feats_to_txt(all_feats, bmp_path_strings, output_txt_path_cpp);
+
     } catch (const std::exception &e) {
-        std::cerr << "发生严重错误: " << e.what() << std::endl;
+        std::cerr << "\n发生严重错误: " << e.what() << std::endl;
         return -1;
     }
 
+    // ------------------- 总结 -------------------
     std::cout << "\n==============================================" << std::endl;
-    std::cout << "DLA 推理任务全部完成!" << std::endl;
+    std::cout << "任务全部完成!" << std::endl;
+    std::cout << "  - 输入图片目录: " << fs::absolute(resized_input_dir).string() << std::endl;
+    std::cout << "  - C++ DLA 特征输出: " << fs::absolute(output_txt_path_cpp).string() << std::endl;
     std::cout << "==============================================" << std::endl;
 
     return 0;
