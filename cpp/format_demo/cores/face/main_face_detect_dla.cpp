@@ -91,7 +91,18 @@ int main(int argc, char *argv[]) {
                     std::cerr << "[WARNING] 读取失败: " << entry_path << std::endl;
                     continue;
                 }
+                
+                int _n = 1000;
+                auto start = std::chrono::high_resolution_clock::now();
+                for (int i = 0; i < _n; i++) {
+                    auto faces = face_app.get(img);
+                }
+                auto end = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double, std::milli> elapsed = end - start;
+                std::cout << "总耗时: " << elapsed.count() << " ms" << std::endl;
+                std::cout << "平均耗时: " << elapsed.count() / _n << " ms" << std::endl;
 
+                // 如果测试后仍需处理，可以复用最后一次的结果，但更好的方式是单独获取
                 auto faces = face_app.get(img);
                 if (faces.empty()) {
                     std::cout << "[WARNING] 未检测到人脸: " << entry_path << std::endl;
