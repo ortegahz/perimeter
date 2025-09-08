@@ -324,7 +324,7 @@ std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
         std::string score_name, bbox_name, kps_name;
     };
     std::vector<StrideOutputs> stride_info = {
-            {8,  "448", "451", "477"}, // Note: kps name order might be different from your example, using the map is safer
+            {8,  "448", "451", "454"}, // Note: kps name order might be different from your example, using the map is safer
             {16, "471", "474", "477"},
             {32, "494", "497", "500"}
     };
