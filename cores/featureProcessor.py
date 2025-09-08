@@ -532,18 +532,44 @@ class FeatureProcessor:
         except Exception as e:
             logger.error(f"[ALARM] 处理 {gid} 失败: {e}")
 
-    # MODIFIED HERE: Entire method is refactored to use full_frame
+    # MODIFIED HERE: Entire method is refactored for internal face detection
     def process_packet(self, pkt: Dict):
         # 1. 解包输入
         stream_id = pkt["cam_id"]
         fid = pkt["fid"]
         full_frame = pkt["full_frame"]
         dets = pkt["dets"]
-        face_info = pkt.get("face_info", [])
 
         H, W = full_frame.shape[:2]
 
-        # 2. 行为分析
+        # 2. 内部人脸检测 (仅在实时模式下)
+        face_info = []
+        if self.mode == 'realtime' and self.face_app and hasattr(self.face_app, 'det_model'):
+            # 为提高性能，在缩放后的帧上检测
+            small_frame = cv2.resize(full_frame, None, fx=SHOW_SCALE, fy=SHOW_SCALE)
+            faces_bboxes, faces_kpss = self.face_app.det_model.detect(
+                small_frame, max_num=0, metric="default"
+            )
+
+            if faces_bboxes is not None and faces_bboxes.shape[0] > 0:
+                for i in range(faces_bboxes.shape[0]):
+                    bi = faces_bboxes[i, :4].astype(int)
+                    # 坐标缩放回原始尺寸
+                    x1, y1, x2, y2 = [int(b / SHOW_SCALE) for b in bi]
+                    sc = float(faces_bboxes[i, 4])
+                    kps = (
+                        faces_kpss[i].astype(int).tolist()
+                        if faces_kpss is not None and i < len(faces_kpss)
+                        else None
+                    )
+                    if kps:
+                        kps = [
+                            [int(k[0] / SHOW_SCALE), int(k[1] / SHOW_SCALE)]
+                            for k in kps
+                        ]
+                    face_info.append({"bbox": [x1, y1, x2, y2], "score": sc, "kps": kps})
+
+        # 3. 行为分析
         if self.intrusion_detectors.get(stream_id):
             for tid_int in self.intrusion_detectors[stream_id].check(dets, stream_id):
                 self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, '_AA')
@@ -551,13 +577,13 @@ class FeatureProcessor:
             for tid_int in self.line_crossing_detectors[stream_id].check(dets, stream_id):
                 self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, '_AL')
 
-        # 3. 时间戳和超时设置
+        # 4. 时间戳和超时设置
         if self.use_fid_time:
             now_stamp, max_tid_idle, gid_max_idle = fid, MAX_TID_IDLE_FRAMES, GID_MAX_IDLE_FRAMES
         else:
             now_stamp, max_tid_idle, gid_max_idle = time.time(), MAX_TID_IDLE_SEC, GID_MAX_IDLE_SEC
 
-        # 4. 特征提取 (根据模式)
+        # 5. 特征提取 (根据模式)
         if self.mode == 'load':
             precomputed_features = self.features_cache.get(str(fid), {})
             for det in dets:
@@ -605,7 +631,7 @@ class FeatureProcessor:
                     agg.add_body(f, scr, fid, p)
                     extracted_features_for_this_frame.setdefault(tid, {})['body_feat'] = f
 
-            # 提取人脸特征
+            # 提取人脸特征 (使用内部检测到的 face_info)
             if face_info and self.rec_model is not None:
                 used_face_indices = set()
                 # 遍历每个行人检测框
@@ -649,7 +675,6 @@ class FeatureProcessor:
                             f_emb = normv(face.embedding)
                             tid = f"{stream_id}_{det['id']}"
                             agg = self.agg_pool.setdefault(tid, TrackAgg())
-                            # 注意: add_face 仍然使用 person_patch，这通常用于后续可视化
                             agg.add_face(f_emb, fid, person_patch)
                             self.last_seen[tid] = now_stamp
                             extracted_features_for_this_frame.setdefault(tid, {})['face_feat'] = f_emb
