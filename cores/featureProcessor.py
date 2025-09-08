@@ -532,74 +532,98 @@ class FeatureProcessor:
         except Exception as e:
             logger.error(f"[ALARM] 处理 {gid} 失败: {e}")
 
-    def process_packet(self, pkt):
-        if isinstance(pkt, dict):
-            packet, face_info, full_frame = pkt["packet"], pkt.get("face_info", []), pkt.get("full_frame")
-        else:
-            packet, face_info, full_frame = pkt, [], None
-        stream_id, fid, patches, dets = packet
+    # MODIFIED HERE: Entire method is refactored to use full_frame
+    def process_packet(self, pkt: Dict):
+        # 1. 解包输入
+        stream_id = pkt["cam_id"]
+        fid = pkt["fid"]
+        full_frame = pkt["full_frame"]
+        dets = pkt["dets"]
+        face_info = pkt.get("face_info", [])
+
+        H, W = full_frame.shape[:2]
+
+        # 2. 行为分析
         if self.intrusion_detectors.get(stream_id):
             for tid_int in self.intrusion_detectors[stream_id].check(dets, stream_id):
                 self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, '_AA')
         if self.line_crossing_detectors.get(stream_id):
             for tid_int in self.line_crossing_detectors[stream_id].check(dets, stream_id):
                 self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, '_AL')
+
+        # 3. 时间戳和超时设置
         if self.use_fid_time:
             now_stamp, max_tid_idle, gid_max_idle = fid, MAX_TID_IDLE_FRAMES, GID_MAX_IDLE_FRAMES
         else:
             now_stamp, max_tid_idle, gid_max_idle = time.time(), MAX_TID_IDLE_SEC, GID_MAX_IDLE_SEC
+
+        # 4. 特征提取 (根据模式)
         if self.mode == 'load':
-            precomputed_features = self.features_cache.get(str(fid))
-            if precomputed_features:
-                for tid_str, feats_dict in precomputed_features.items():
-                    body_feat = np.array(feats_dict['body_feat'], dtype=np.float32) if feats_dict.get(
-                        'body_feat') else None
-                    face_feat = np.array(feats_dict['face_feat'], dtype=np.float32) if feats_dict.get(
-                        'face_feat') else None
-                    num_tid = int(tid_str.split('_')[-1])
-                    found_patch, found_score = next(
-                        ((p, d.get('score', 0.0)) for d, p in zip(dets, patches) if d['id'] == num_tid), (None, 0.0))
-                    if found_patch is None: continue
-                    agg = self.agg_pool.setdefault(tid_str, TrackAgg())
-                    if body_feat is not None: agg.add_body(body_feat, found_score, fid, found_patch)
-                    if face_feat is not None: agg.add_face(face_feat, fid, found_patch)
-                    self.last_seen[tid_str] = now_stamp
+            precomputed_features = self.features_cache.get(str(fid), {})
+            for det in dets:
+                tid_str = f"{stream_id}_{det['id']}"
+                feats_dict = precomputed_features.get(tid_str)
+                if not feats_dict: continue
+
+                body_feat = np.array(feats_dict['body_feat'], dtype=np.float32) if feats_dict.get('body_feat') else None
+                face_feat = np.array(feats_dict['face_feat'], dtype=np.float32) if feats_dict.get('face_feat') else None
+
+                x, y, w, h = det['tlwh']
+                patch = full_frame[max(int(y), 0):min(int(y + h), H), max(int(x), 0):min(int(x + w), W)].copy()
+                score = det.get('score', 0.0)
+
+                agg = self.agg_pool.setdefault(tid_str, TrackAgg())
+                if body_feat is not None: agg.add_body(body_feat, score, fid, patch)
+                if face_feat is not None: agg.add_face(face_feat, fid, patch)
+                self.last_seen[tid_str] = now_stamp
+
         elif self.mode == 'realtime':
             extracted_features_for_this_frame = {}
-            tensors, metas, keep_patches = [], [], []
-            for det, patch in zip(dets, patches):
-                if det.get('class_id') != 0 or not is_long_patch(patch): continue
+            # 准备 re-id 的批处理
+            tensors, metas, person_patches = [], [], []
+            for det in dets:
+                if det.get('class_id') != 0: continue
+
+                x, y, w, h = det['tlwh']
+                patch = full_frame[max(int(y), 0):min(int(y + h), H), max(int(x), 0):min(int(x + w), W)].copy()
+
+                if not is_long_patch(patch): continue
+
                 tensors.append(prep_patch(patch))
                 metas.append((f"{stream_id}_{det['id']}", det.get("score", 0.0)))
-                keep_patches.append(patch)
+                person_patches.append(patch)
+
+            # 提取行人特征
             if tensors:
                 batch = torch.stack(tensors).to(self.device).float()
                 with torch.no_grad():
                     feats = torch.nn.functional.normalize(self.reid.model(batch), dim=1)
                 feats = feats.cpu().numpy()
-                for (tid, scr), f, p in zip(metas, feats, keep_patches):
-                    agg, self.last_seen[tid] = self.agg_pool.setdefault(tid, TrackAgg()), now_stamp
+                for (tid, scr), f, p in zip(metas, feats, person_patches):
+                    agg = self.agg_pool.setdefault(tid, TrackAgg())
+                    self.last_seen[tid] = now_stamp
                     agg.add_body(f, scr, fid, p)
                     extracted_features_for_this_frame.setdefault(tid, {})['body_feat'] = f
 
-            # MODIFIED HERE: 恢复了唯一性检查
-            if face_info and full_frame is not None and self.rec_model is not None:
-                H, W = full_frame.shape[:2]
+            # 提取人脸特征
+            if face_info and self.rec_model is not None:
                 used_face_indices = set()
-                for det, patch in zip(dets, patches):
+                # 遍历每个行人检测框
+                for det in dets:
                     if det.get('class_id') != 0: continue
 
-                    # 1. 查找所有与当前人体框 IoA > 0.8 的 *未使用的* 人脸
+                    x, y, w, h = det['tlwh']
+                    person_patch = full_frame[max(int(y), 0):min(int(y + h), H),
+                                   max(int(x), 0):min(int(x + w), W)].copy()
+                    if person_patch.size == 0: continue
+
                     matching_face_indices = []
                     for j, face_det in enumerate(face_info):
-                        if j in used_face_indices:
-                            continue
+                        if j in used_face_indices: continue
                         if self._calculate_ioa(det['tlwh'], face_det['bbox']) > 0.8:
                             matching_face_indices.append(j)
 
-                    # 2. 只有当找到的人脸数量 *正好为1* 时，才认为匹配有效
-                    if len(matching_face_indices) != 1:
-                        continue
+                    if len(matching_face_indices) != 1: continue
 
                     unique_face_idx = matching_face_indices[0]
                     used_face_indices.add(unique_face_idx)
@@ -610,8 +634,7 @@ class FeatureProcessor:
                     try:
                         bbox = np.array(face_det['bbox'], dtype=np.float32)
                         kps = np.array(face_det['kps'], dtype=np.float32) if face_det.get('kps') else None
-                        det_score = face_det.get('score', 0.99)
-                        face = Face(bbox=bbox, kps=kps, det_score=det_score)
+                        face = Face(bbox=bbox, kps=kps, det_score=face_det.get('score', 0.99))
 
                         x1, y1, x2, y2 = map(int, bbox)
                         if (x2 - x1) < 32 or (y2 - y1) < 32: continue
@@ -626,7 +649,8 @@ class FeatureProcessor:
                             f_emb = normv(face.embedding)
                             tid = f"{stream_id}_{det['id']}"
                             agg = self.agg_pool.setdefault(tid, TrackAgg())
-                            agg.add_face(f_emb, fid, patch)
+                            # 注意: add_face 仍然使用 person_patch，这通常用于后续可视化
+                            agg.add_face(f_emb, fid, person_patch)
                             self.last_seen[tid] = now_stamp
                             extracted_features_for_this_frame.setdefault(tid, {})['face_feat'] = f_emb
                     except Exception as e:
@@ -636,7 +660,8 @@ class FeatureProcessor:
             if self.cache_path and extracted_features_for_this_frame:
                 self.features_to_save.setdefault(str(fid), {}).update(extracted_features_for_this_frame)
 
-        # ... [ GID 绑定和清理逻辑保持不变 ] ...
+        # ... [ GID 绑定和清理逻辑保持不变, 此处省略以保持简洁 ] ...
+        # (这部分逻辑完全复用，不需要修改)
         realtime_map: Dict[str, Dict[int, Tuple[str, float, int]]] = {}
         for tid, agg in list(self.agg_pool.items()):
             ts, tn = tid.split("_")

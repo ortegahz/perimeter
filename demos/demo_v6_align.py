@@ -63,7 +63,6 @@ OVERWRITE = False
 
 # -------------------------------------------------
 
-# ---------------- 工具函数 ----------------
 # MODIFIED HERE: save_packet 增加 face_info 参数
 def save_packet(packet, face_info, root_dir=RAW_DIR, overwrite=OVERWRITE):
     cam_id, fid, patches, dets = packet
@@ -230,22 +229,19 @@ def main():
                 continue
 
             # ------------- 准备处理输入 -------------
-            processing_input = {}
+            dets = []
+            face_info = []
+
             if LOAD_RAW:
-                # MODIFIED HERE: load_packet 返回5个值，包含 face_info
-                cam_id, _, patches, dets, face_info = load_packet(CAM_ID, fid, RAW_DIR)
-                packet = (cam_id, fid, patches, dets)
-                # MODIFIED HERE: 构造与 realtime 模式下完全一致的输入字典
-                processing_input = {
-                    "packet": packet,
-                    "face_info": face_info,
-                    "full_frame": frame  # 传入 frame 用于后续的可视化
-                }
+                # 从缓存加载检测、人脸信息和 patches (patches 在此仅用于兼容性，不传入 processor)
+                _, _, _, dets, face_info = load_packet(CAM_ID, fid, RAW_DIR)
             else:  # 实时模式
+                # 1. 行人跟踪
                 dets = tracker.update(frame, debug=False)
                 # 先按 score 降序排，保证进入 Kalman 顺序一致
                 dets.sort(key=lambda d: -d.get("score", 0))
 
+                # 2. 裁剪行人 patch (为保存到缓存做准备)
                 H, W = frame.shape[:2]
                 patches = [
                     frame[
@@ -255,17 +251,15 @@ def main():
                     for x, y, w, h in (d["tlwh"] for d in dets)
                 ]
 
-                # 再按 id 排序，写盘 / 写 txt / 画图都统一
+                # 3. 排序 dets 和 patches 以确保确定性
                 dets, patches = sort_dets_and_patches(dets, patches)
-                packet = (CAM_ID, fid, patches, dets)
 
-                # 人脸检测 (全图一次)
+                # 4. 人脸检测 (全图一次)
                 small = cv2.resize(frame, None, fx=SHOW_SCALE, fy=SHOW_SCALE)
                 faces_bboxes, faces_kpss = face_searcher.app.det_model.detect(
                     small, max_num=0, metric="default"
                 )
 
-                face_info = []
                 if faces_bboxes is not None and faces_bboxes.shape[0] > 0:
                     for i in range(faces_bboxes.shape[0]):
                         bi = faces_bboxes[i, :4].astype(int)
@@ -283,28 +277,24 @@ def main():
                             ]
                         face_info.append({"bbox": [x1, y1, x2, y2], "score": sc, "kps": kps})
 
-                # MODIFIED HERE: 将 face_info 传入 save_packet
+                # 5. 如果需要，使用原始缓存接口保存信息
                 if SAVE_RAW:
+                    packet = (CAM_ID, fid, patches, dets)
                     save_packet(packet, face_info, RAW_DIR, overwrite=OVERWRITE)
 
-                # MODIFIED HERE: 将所有信息打包成字典
-                processing_input = {
-                    "packet": packet,
-                    "face_info": face_info,
-                    "full_frame": frame
-                }
+            # 构造传递给 FeatureProcessor 的输入字典
+            # 无论 LOAD_RAW 还是实时模式，都传入 full_frame, dets, face_info
+            # 不再传入 patches
+            processing_input = {
+                "cam_id": CAM_ID,
+                "fid": fid,
+                "full_frame": frame,
+                "dets": dets,  # dets 已经过排序
+                "face_info": face_info,
+            }
 
             # ------------- 特征处理 -------------
             realtime_map = processor.process_packet(processing_input)
-
-            # 从 packet 或 processing_input 中获取 dets 和 cam_id 用于后续逻辑
-            if isinstance(processing_input, dict):
-                _, _, _, dets = processing_input["packet"]
-                face_info = processing_input.get("face_info", [])
-            else:
-                # 这个分支理论上在新逻辑下不会进入，但为了兼容性保留
-                _, _, _, dets = processing_input
-                face_info = []
 
             cam_map = realtime_map.get(CAM_ID, {})
 
@@ -320,7 +310,6 @@ def main():
             for d in dets:  # dets 已按 id 排序
                 tid = d["id"]
                 x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
-                # MODIFIED HERE: 修复一个潜在的KeyError，使用 .get()
                 gid, score, n_tid = cam_map.get(tid, (f"{CAM_ID}_{tid}_-?", -1.0, 0))
                 color_id = int(str(gid).split('_')[-1].replace('G', '').lstrip('0')) if str(gid).startswith(
                     'G') else tid
