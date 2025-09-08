@@ -7,4 +7,4 @@ perimeter security algorithm
 
 /usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/det_10g_simplified.onnx --saveEngine=/mnt/nfs/det_10g_simplified.dla.engine --useDLACore=0 --allowGPUFallback --verbose
 
-/usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/reid_model.onnx --saveEngine=/mnt/nfs/reid_model_dla.engine --useDLACore=1 --allowGPUFallback --verbose
+/usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/reid_model.onnx --saveEngine=/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model_dla.engine --useDLACore=1 --allowGPUFallback --verbose

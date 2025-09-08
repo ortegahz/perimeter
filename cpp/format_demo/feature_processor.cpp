@@ -14,9 +14,9 @@
 //#define ENABLE_DISK_IO
 // ======================= 【修改结束】 =======================
 
-const std::string REID_MODEL_PATH = "/mnt/nfs/reid_model.onnx";
-const std::string FACE_DET_MODEL_PATH = "/mnt/nfs/det_10g_simplified.onnx";
-const std::string FACE_REC_MODEL_PATH = "/mnt/nfs/w600k_r50_simplified.onnx";
+const std::string REID_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model.onnx";
+const std::string FACE_DET_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/det_10g_simplified.onnx";
+const std::string FACE_REC_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/w600k_r50_simplified.onnx";
 const int REID_INPUT_WIDTH = 128;
 const int REID_INPUT_HEIGHT = 256;
 
@@ -364,7 +364,7 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
             // Assuming DLA core 0 for now. This could be made configurable.
             // The engine cache path is also hardcoded for simplicity.
             reid_model_ = std::make_unique<PersonReidDLA>(REID_MODEL_PATH, REID_INPUT_WIDTH, REID_INPUT_HEIGHT, 0,
-                                                          "/mnt/nfs/reid_model_dla.engine");
+                                                          "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model_dla.engine");
 
             face_analyzer_ = std::make_unique<FaceAnalyzer>(FACE_DET_MODEL_PATH, FACE_REC_MODEL_PATH);
             // DLA or GPU decision is now inside FaceAnalyzer's prepare method

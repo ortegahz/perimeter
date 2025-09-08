@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "load"; // 默认为 "load" 模式
+    std::string MODE = "realtime"; // 默认为 "load" 模式
     if (argc > 1) {
         MODE = argv[1];
     }
