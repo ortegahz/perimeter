@@ -35,7 +35,6 @@ struct Face {
 
 class FaceAnalyzer {
 public:
-    // [MODIFICATION] Constructor restored to accept both model paths
     FaceAnalyzer(const std::string &det_model_path, const std::string &rec_model_path);
 
     ~FaceAnalyzer();
@@ -44,10 +43,10 @@ public:
 
     std::vector<Face> get(const cv::Mat &img);
 
-private:
+    // MODIFIED HERE: Moved 'detect' from private to public
     std::vector<Face> detect(const cv::Mat &img);
 
-    // [MODIFICATION] Recognition-related methods restored
+    // Recognition-related methods are now public as per full functionality
     void get_embedding(const cv::Mat &full_img, Face &face);
 
     cv::Mat get_embedding_from_aligned(const cv::Mat &aligned_img);
@@ -61,9 +60,9 @@ private:
     TrtUniquePtr<nvinfer1::IExecutionContext> m_det_context;
     std::vector<void *> m_buffers_det;
     std::vector<size_t> m_buffer_sizes_det;
+    // Restored full list of output names
     std::vector<std::string> m_det_output_names = {"448", "471", "494", "451", "474", "497", "454", "477", "500"};
 
-    // [MODIFICATION] Recognition model members restored
     TrtUniquePtr<nvinfer1::ICudaEngine> m_rec_engine;
     TrtUniquePtr<nvinfer1::IExecutionContext> m_rec_context;
     std::vector<void *> m_buffers_rec;
@@ -74,7 +73,6 @@ private:
 
     // 配置和路径
     std::string m_det_model_path;
-    // [MODIFICATION] Recognition model path restored
     std::string m_rec_model_path;
     float det_thresh_ = 0.5f;
     cv::Size det_size_ = {640, 640};

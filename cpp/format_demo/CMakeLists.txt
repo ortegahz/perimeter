@@ -68,8 +68,8 @@ target_include_directories(eigen INTERFACE
 add_executable(demo_cpp
         demo_cpp.cpp
         feature_processor.cpp
-        cores/personReid/PersonReid.cpp
-        cores/face/FaceAnalyzer.cpp
+        cores/personReid/PersonReid_dla.cpp
+        cores/face/FaceAnalyzer_dla.cpp
 )
 
 add_executable(face_extractor

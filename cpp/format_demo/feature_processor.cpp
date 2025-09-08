@@ -351,7 +351,6 @@ std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, 
     return {best_gid, best_score};
 }
 
-/* =============== FeatureProcessor =============== */
 FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &device,
                                    const std::string &feature_cache_path,
                                    const nlohmann::json &boundary_config)
@@ -359,11 +358,17 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode." << std::endl;
     if (mode_ == "realtime") {
         std::cout << "Loading ReID and Face models for feature extraction..." << std::endl;
-        bool use_gpu = (device == "cuda");
+        bool use_gpu = (device == "cuda"); // Note: DLA is Jetson specific, this flag is less relevant here.
         try {
-            reid_model_ = std::make_unique<PersonReid>(REID_MODEL_PATH, REID_INPUT_WIDTH, REID_INPUT_HEIGHT, use_gpu);
+            // MODIFIED HERE: Correctly initialize PersonReidDLA
+            // Assuming DLA core 0 for now. This could be made configurable.
+            // The engine cache path is also hardcoded for simplicity.
+            reid_model_ = std::make_unique<PersonReidDLA>(REID_MODEL_PATH, REID_INPUT_WIDTH, REID_INPUT_HEIGHT, 0,
+                                                          "/mnt/nfs/reid_model_dla.engine");
+
             face_analyzer_ = std::make_unique<FaceAnalyzer>(FACE_DET_MODEL_PATH, FACE_REC_MODEL_PATH);
-            std::string provider = use_gpu ? "CUDAExecutionProvider" : "CPUExecutionProvider";
+            // DLA or GPU decision is now inside FaceAnalyzer's prepare method
+            std::string provider = use_gpu ? "GPU" : "DLA";
             face_analyzer_->prepare(provider, FACE_DET_MIN_SCORE, cv::Size(640, 640));
         } catch (const std::exception &e) {
             std::cerr << "[FATAL] Failed to load models in realtime mode: " << e.what() << std::endl;
@@ -405,7 +410,6 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
     }
 
     submit_io_task({IoTaskType::CREATE_DIRS});
-
     io_thread_ = std::thread(&FeatureProcessor::_io_worker, this);
 }
 
@@ -501,73 +505,103 @@ void FeatureProcessor::_io_worker() {
     }
 }
 
-void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info) {
-    const auto &[stream_id, fid, patches, dets] = pkt;
+// MODIFIED HERE: The implementation of this function is updated
+void FeatureProcessor::_extract_features_realtime(const std::string &cam_id, int fid, const cv::Mat &full_frame,
+                                                  const std::vector<Detection> &dets) {
+    const auto &stream_id = cam_id;
+    const int H = full_frame.rows;
+    const int W = full_frame.cols;
     nlohmann::json extracted_features_for_this_frame;
 
-    for (size_t i = 0; i < dets.size(); ++i) {
-        const auto &det = dets[i];
-        if (i >= patches.size()) continue;
-        const auto &patch = patches[i];
-        if (det.class_id != 0 || !is_long_patch(patch)) continue;
+    std::vector<Face> internal_face_info;
+    if (face_analyzer_) {
+        cv::Mat small_frame;
+        const float face_det_scale = 0.5f;
+        cv::resize(full_frame, small_frame, cv::Size(), face_det_scale, face_det_scale);
+        internal_face_info = face_analyzer_->detect(small_frame);
 
-        cv::Mat resized_patch;
-        cv::resize(patch, resized_patch, cv::Size(REID_INPUT_WIDTH, REID_INPUT_HEIGHT));
-        cv::Mat feat_mat = reid_model_->extract_feat(resized_patch);
+        for (auto &face: internal_face_info) {
+            face.bbox.x /= face_det_scale;
+            face.bbox.y /= face_det_scale;
+            face.bbox.width /= face_det_scale;
+            face.bbox.height /= face_det_scale;
+            for (auto &kp: face.kps) {
+                kp.x /= face_det_scale;
+                kp.y /= face_det_scale;
+            }
+        }
+    }
+
+    for (const auto &det: dets) {
+        if (det.class_id != 0) continue;
+
+        cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
+        if (roi.width <= 0 || roi.height <= 0) continue;
+        cv::Mat patch = full_frame(roi);
+
+        if (!is_long_patch(patch)) continue;
+
+        // MODIFICATION IS NOT NEEDED HERE: The call is polymorphic thanks to unique_ptr
+        // and consistent method signature
+        cv::Mat feat_mat = reid_model_->extract_feat(patch);
         if (feat_mat.empty()) continue;
 
         std::vector<float> feat_vec(feat_mat.begin<float>(), feat_mat.end<float>());
         std::string tid_str = stream_id + "_" + std::to_string(det.id);
 
-        agg_pool[tid_str].add_body(feat_vec, det.score, patch);
+        agg_pool[tid_str].add_body(feat_vec, det.score, patch.clone());
         last_seen[tid_str] = fid;
         if (!feature_cache_path_.empty()) extracted_features_for_this_frame[tid_str]["body_feat"] = feat_vec;
     }
 
-    if (!face_info.empty() && !patches.empty() && face_analyzer_) {
+    // 3. 提取人脸特征并与行人关联
+    if (!internal_face_info.empty() && face_analyzer_) {
         std::set<size_t> used_face_indices;
-        for (size_t i = 0; i < dets.size(); ++i) {
-            const auto &det = dets[i];
-            if (det.class_id != 0 || i >= patches.size()) continue;
-            const auto &person_patch = patches[i];
+        for (const auto &det: dets) {
+            if (det.class_id != 0) continue;
+
+            cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
+            if (roi.width <= 0 || roi.height <= 0) continue;
 
             std::vector<size_t> matching_face_indices;
-            for (size_t j = 0; j < face_info.size(); ++j) {
+            for (size_t j = 0; j < internal_face_info.size(); ++j) {
                 if (used_face_indices.count(j)) continue;
-                if (calculate_ioa(det.tlwh, face_info[j].bbox) > 0.8) matching_face_indices.push_back(j);
+                if (calculate_ioa(det.tlwh, internal_face_info[j].bbox) > 0.8) matching_face_indices.push_back(j);
             }
             if (matching_face_indices.size() != 1) continue;
 
             size_t unique_face_idx = matching_face_indices[0];
-            const Face &face_global_coords = face_info[unique_face_idx];
+            Face face_global_coords = internal_face_info[unique_face_idx];
             if (face_global_coords.det_score < FACE_DET_MIN_SCORE) continue;
             used_face_indices.insert(unique_face_idx);
 
-            Face face_relative_coords = face_global_coords;
-            face_relative_coords.bbox.x -= det.tlwh.x;
-            face_relative_coords.bbox.y -= det.tlwh.y;
-            for (auto &kp: face_relative_coords.kps) {
-                kp.x -= det.tlwh.x;
-                kp.y -= det.tlwh.y;
-            }
-
-            cv::Rect face_bbox_in_patch_safe =
-                    cv::Rect(face_relative_coords.bbox) & cv::Rect(0, 0, person_patch.cols, person_patch.rows);
-            if (face_bbox_in_patch_safe.width < 32 || face_bbox_in_patch_safe.height < 32) continue;
+            cv::Rect face_roi(face_global_coords.bbox);
+            face_roi &= cv::Rect(0, 0, W, H);
+            if (face_roi.width < 32 || face_roi.height < 32) continue;
+            cv::Mat face_crop_for_blur = full_frame(face_roi);
+            cv::Mat gray, lap;
+            cv::cvtColor(face_crop_for_blur, gray, cv::COLOR_BGR2GRAY);
+            cv::Laplacian(gray, lap, CV_64F);
+            cv::Scalar mean, stddev;
+            cv::meanStdDev(lap, mean, stddev);
+            if (stddev.val[0] * stddev.val[0] < 100.0) continue;
 
             try {
-                face_analyzer_->get_embedding(person_patch, face_relative_coords);
-                if (face_relative_coords.embedding.empty()) continue;
+                face_analyzer_->get_embedding(full_frame, face_global_coords);
+                if (face_global_coords.embedding.empty()) continue;
 
                 cv::Mat normalized_emb;
-                cv::normalize(face_relative_coords.embedding, normalized_emb, 1.0, 0.0, cv::NORM_L2);
+                cv::normalize(face_global_coords.embedding, normalized_emb, 1.0, 0.0, cv::NORM_L2);
                 std::vector<float> f_emb(normalized_emb.begin<float>(), normalized_emb.end<float>());
 
                 std::string tid_str = stream_id + "_" + std::to_string(det.id);
-                agg_pool[tid_str].add_face(f_emb, person_patch);
+                cv::Mat person_patch = full_frame(roi);
+                agg_pool[tid_str].add_face(f_emb, person_patch.clone());
                 last_seen[tid_str] = fid;
                 if (!feature_cache_path_.empty()) extracted_features_for_this_frame[tid_str]["face_feat"] = f_emb;
-            } catch (const std::exception &e) { continue; }
+            } catch (const std::exception &e) {
+                continue;
+            }
         }
     }
     if (!feature_cache_path_.empty() && !extracted_features_for_this_frame.is_null()) {
@@ -575,31 +609,38 @@ void FeatureProcessor::_extract_features_realtime(const Packet &pkt, const std::
     }
 }
 
-void FeatureProcessor::_load_features_from_cache(const Packet &pkt) {
-    const auto &[stream_id, fid, patches, dets] = pkt;
+// MODIFIED HERE: 整个函数被重构
+void FeatureProcessor::_load_features_from_cache(const std::string &cam_id, int fid, const cv::Mat &full_frame,
+                                                 const std::vector<Detection> &dets) {
+    const auto &stream_id = cam_id;
+    const int H = full_frame.rows;
+    const int W = full_frame.cols;
     std::string fid_str = std::to_string(fid);
     if (!features_cache_.contains(fid_str)) return;
 
-    for (size_t i = 0; i < dets.size(); ++i) {
-        const auto &det = dets[i];
-        if (i >= patches.size()) continue;
+    const auto &frame_features = features_cache_.at(fid_str);
 
+    for (const auto &det: dets) {
         std::string tid_str_json = stream_id + "_" + std::to_string(det.id);
 
-        if (!features_cache_.at(fid_str).contains(tid_str_json)) continue;
+        if (!frame_features.contains(tid_str_json)) continue;
 
-        const nlohmann::json &fd = features_cache_.at(fid_str).at(tid_str_json);
-        const auto &patch = patches[i];
+        const nlohmann::json &fd = frame_features.at(tid_str_json);
+
+        // 内部裁剪 patch
+        cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
+        if (roi.width <= 0 || roi.height <= 0) continue;
+        cv::Mat patch = full_frame(roi);
 
         auto &agg = agg_pool[tid_str_json];
 
         if (fd.contains("body_feat") && !fd["body_feat"].is_null()) {
             auto bf = fd["body_feat"].get<std::vector<float>>();
-            if (!bf.empty()) agg.add_body(bf, det.score, patch);
+            if (!bf.empty()) agg.add_body(bf, det.score, patch.clone());
         }
         if (fd.contains("face_feat") && !fd["face_feat"].is_null()) {
             auto ff = fd["face_feat"].get<std::vector<float>>();
-            if (!ff.empty()) agg.add_face(ff, patch);
+            if (!ff.empty()) agg.add_face(ff, patch.clone());
         }
         last_seen[tid_str_json] = fid;
     }
@@ -657,9 +698,11 @@ void FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg
     submit_io_task(task);
 }
 
-auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face> &face_info)
+// MODIFIED HERE: 修改了函数签名和内部调用
+auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const cv::Mat &full_frame,
+                                      const std::vector<Detection> &dets)
 -> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
-    const auto &[stream_id, fid, patches, dets] = pkt;
+    const auto &stream_id = cam_id;
 
     if (intrusion_detectors.count(stream_id)) {
         for (int tid: intrusion_detectors.at(stream_id)->check(dets, stream_id))
@@ -670,8 +713,8 @@ auto FeatureProcessor::process_packet(const Packet &pkt, const std::vector<Face>
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AL"};
     }
 
-    if (mode_ == "realtime") _extract_features_realtime(pkt, face_info);
-    else if (mode_ == "load") _load_features_from_cache(pkt);
+    if (mode_ == "realtime") _extract_features_realtime(cam_id, fid, full_frame, dets);
+    else if (mode_ == "load") _load_features_from_cache(cam_id, fid, full_frame, dets);
 
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> realtime_map;
     for (auto const &[tid_str, agg]: agg_pool) {

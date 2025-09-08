@@ -11,16 +11,15 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
-// 新增多线程相关头文件
 #include <thread>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
 #include <queue>
 
-// 包含模型头文件
-#include "cores/personReid/PersonReid.hpp"
-#include "cores/face/FaceAnalyzer.hpp"
+// MODIFIED HERE: Include the correct header
+#include "cores/personReid/PersonReid_dla.hpp"
+#include "cores/face/FaceAnalyzer_dla.hpp"
 
 /* ---------- 常量定义 ---------- */
 constexpr int MIN_BODY4GID = 8;
@@ -255,14 +254,17 @@ public:
     ~FeatureProcessor();
 
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>>
-    process_packet(const Packet &pkt, const std::vector<Face> &face_info);
+    process_packet(const std::string &cam_id, int fid, const cv::Mat &full_frame, const std::vector<Detection> &dets);
 
     void submit_io_task(IoTask task);
 
 private:
-    void _extract_features_realtime(const Packet &pkt, const std::vector<Face> &face_info);
 
-    void _load_features_from_cache(const Packet &pkt);
+    void _extract_features_realtime(const std::string &cam_id, int fid, const cv::Mat &full_frame,
+                                    const std::vector<Detection> &dets);
+
+    void _load_features_from_cache(const std::string &cam_id, int fid, const cv::Mat &full_frame,
+                                   const std::vector<Detection> &dets);
 
     std::vector<float> _fuse_feat(const std::vector<float> &face_f, const std::vector<float> &body_f);
 
@@ -285,7 +287,8 @@ private:
     nlohmann::json features_cache_;
     nlohmann::json features_to_save_;
 
-    std::unique_ptr<PersonReid> reid_model_;
+    // MODIFIED HERE: Changed from PersonReid to PersonReidDLA
+    std::unique_ptr<PersonReidDLA> reid_model_;
     std::unique_ptr<FaceAnalyzer> face_analyzer_;
 
     std::map<std::string, TrackAgg> agg_pool;

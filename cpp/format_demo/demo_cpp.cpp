@@ -39,7 +39,7 @@ LoadedData load_packet_from_cache(const std::string &cam_id, int fid, const std:
     nlohmann::json meta;
     ifs >> meta;
 
-    // 加载 Patches
+    // 加载 Patches (为兼容旧的Packet结构，但Processor不再直接使用)
     std::map<int, cv::Mat> patch_map_by_idx;
     if (meta.contains("patches")) {
         std::vector<std::string> patch_names = meta["patches"].get<std::vector<std::string>>();
@@ -85,7 +85,7 @@ LoadedData load_packet_from_cache(const std::string &cam_id, int fid, const std:
         }
     }
 
-    // 新增：加载 face_info
+    // 新增：加载 face_info (仅用于可视化)
     if (meta.contains("face_info") && meta["face_info"].is_array()) {
         for (const auto &face_json: meta["face_info"]) {
             Face face;
@@ -140,15 +140,10 @@ int main(int argc, char **argv) {
     nlohmann::json boundary_config; // 留空
 
     try {
-        FeatureProcessor processor(MODE, "cuda", FEATURE_CACHE_JSON, boundary_config);
+        FeatureProcessor processor(MODE, "dla", FEATURE_CACHE_JSON, boundary_config);
 
-        // 新增：在realtime模式下，主循环外创建FaceAnalyzer实例
-        std::unique_ptr<FaceAnalyzer> face_analyzer = nullptr;
-        if (MODE == "realtime") {
-            face_analyzer = std::make_unique<FaceAnalyzer>(FACE_DET_MODEL_PATH, FACE_REC_MODEL_PATH);
-            std::string provider = "CUDAExecutionProvider";
-            face_analyzer->prepare(provider, FACE_DET_MIN_SCORE, cv::Size(640, 640));
-        }
+        // 注意：在realtime模式下，FeatureProcessor会创建自己的FaceAnalyzer实例。
+        // 此处的face_analyzer仅用于演示，实际处理在processor内部完成。
 
         cv::VideoCapture cap(VIDEO_PATH);
         if (!cap.isOpened()) {
@@ -190,15 +185,13 @@ int main(int argc, char **argv) {
                       << " (" << processed_frames_count << "/" << total_to_process << ")";
 
             try {
-                // 修改：统一从缓存加载基础检测信息
+                // 修改：统一从缓存加载基础检测信息 (dets) 和可视化信息 (face_info)
                 LoadedData loaded_data = load_packet_from_cache(CAM_ID, fid, RAW_DIR);
-                Packet &packet = loaded_data.packet;
-                std::vector<Face> &face_info = loaded_data.face_info;
 
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();
-                // 修改：调用新的 process_packet 接口，不再传递 full_frame
-                auto mp = processor.process_packet(packet, face_info);
+                // MODIFIED HERE: 调用新的 process_packet 接口
+                auto mp = processor.process_packet(CAM_ID, fid, frame, loaded_data.packet.dets);
                 auto t2 = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double, std::milli> proc_time = t2 - t1;
                 std::cout << "  [proc_packet took " << proc_time.count() << " ms]" << std::endl;
@@ -213,8 +206,8 @@ int main(int argc, char **argv) {
                 const auto &cam_map = mp.count(CAM_ID) ? mp.at(CAM_ID)
                                                        : std::map<int, std::tuple<std::string, float, int>>{};
 
-                // ======================= 【修改的部分在此】 =======================
-                for (const auto &det: packet.dets) {
+                // ======================= 【可视化部分保持不变】 =======================
+                for (const auto &det: loaded_data.packet.dets) {
                     // --- 默认值 ---
                     float score = -1.0f;
                     int n_tid = 0;
@@ -323,10 +316,9 @@ int main(int argc, char **argv) {
                                 0.4,
                                 color, 1);
                 }
-                // ======================= 【修改结束】 =======================
 
-                // 新增：可视化人脸框
-                for (const auto &face: face_info) {
+                // 新增：可视化从缓存加载的人脸框 (face_info)
+                for (const auto &face: loaded_data.face_info) {
                     int x1 = static_cast<int>(face.bbox.x * SHOW_SCALE);
                     int y1 = static_cast<int>(face.bbox.y * SHOW_SCALE);
                     int x2 = static_cast<int>((face.bbox.x + face.bbox.width) * SHOW_SCALE);
