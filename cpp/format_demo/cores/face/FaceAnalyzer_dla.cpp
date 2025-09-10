@@ -7,6 +7,7 @@
 #include <fstream>
 #include <filesystem>
 #include <functional>
+#include <cmath> // Required for ceil, exp
 #include <NvInfer.h>
 #include <NvOnnxParser.h>
 #include <opencv2/dnn.hpp>
@@ -21,7 +22,8 @@ class TrtLogger : public nvinfer1::ILogger {
     }
 };
 
-static inline int findInputBinding(const nvinfer1::ICudaEngine &engine) {
+static inline int findInputBinding(const nvinfer1::ICudaEngine &engine, const char *name = nullptr) {
+    if (name) return engine.getBindingIndex(name);
     for (int i = 0; i < engine.getNbBindings(); ++i)
         if (engine.bindingIsInput(i)) return i;
     return -1;
@@ -32,6 +34,150 @@ static inline int findOutputBinding(const nvinfer1::ICudaEngine &engine) {
         if (!engine.bindingIsInput(i)) return i;
     return -1;
 }
+
+// =========== [MODIFICATION START]: Add full post-processing logic from reference code ===========
+
+// --- Configuration matching python cfg_mnet ---
+struct ModelConfig {
+    std::string name = "mobilenet0.25";
+    std::vector<std::vector<int>> min_sizes = {{16,  32},
+                                               {64,  128},
+                                               {256, 512}};
+    std::vector<int> steps = {8, 16, 32};
+    std::vector<float> variance = {0.1f, 0.2f};
+    bool clip = false;
+};
+
+// Generates prior boxes, exactly matching layers/functions/prior_box.py
+std::vector<BBox> generate_priors(int im_height, int im_width) {
+    ModelConfig cfg;
+    std::vector<std::pair<int, int>> feature_maps;
+    for (const auto &step: cfg.steps) {
+        feature_maps.push_back({(int) ceil((float) im_height / step), (int) ceil((float) im_width / step)});
+    }
+
+    std::vector<BBox> anchors;
+    for (size_t k = 0; k < feature_maps.size(); ++k) {
+        auto f = feature_maps[k];
+        auto min_sizes_k = cfg.min_sizes[k];
+        for (int i = 0; i < f.first; ++i) {
+            for (int j = 0; j < f.second; ++j) {
+                for (const auto &min_size: min_sizes_k) {
+                    float s_kx = (float) min_size / im_width;
+                    float s_ky = (float) min_size / im_height;
+                    float cx = (j + 0.5f) * cfg.steps[k] / im_width;
+                    float cy = (i + 0.5f) * cfg.steps[k] / im_height;
+                    anchors.push_back({cx, cy, s_kx, s_ky}); // Storing as cx, cy, w, h
+                }
+            }
+        }
+    }
+    return anchors;
+}
+
+// Decodes boxes, exactly matching utils/box_utils.py's decode
+std::vector<BBox> decode_boxes(const std::vector<float> &loc, const std::vector<BBox> &priors) {
+    ModelConfig cfg;
+    std::vector<BBox> boxes;
+    boxes.reserve(priors.size());
+
+    for (size_t i = 0; i < priors.size(); ++i) {
+        float p_cx = priors[i].x1;
+        float p_cy = priors[i].y1;
+        float p_w = priors[i].x2;
+        float p_h = priors[i].y2;
+
+        float loc_x = loc[i * 4 + 0];
+        float loc_y = loc[i * 4 + 1];
+        float loc_w = loc[i * 4 + 2];
+        float loc_h = loc[i * 4 + 3];
+
+        float cx = p_cx + loc_x * cfg.variance[0] * p_w;
+        float cy = p_cy + loc_y * cfg.variance[0] * p_h;
+        float w = p_w * exp(loc_w * cfg.variance[1]);
+        float h = p_h * exp(loc_h * cfg.variance[1]);
+
+        boxes.push_back({
+                                cx - w / 2,
+                                cy - h / 2,
+                                cx + w / 2,
+                                cy + h / 2
+                        });
+    }
+    return boxes;
+}
+
+// Decodes landmarks, exactly matching utils/box_utils.py's decode_landm
+std::vector<Landmark> decode_landmarks(const std::vector<float> &pre, const std::vector<BBox> &priors) {
+    ModelConfig cfg;
+    std::vector<Landmark> landmarks;
+    landmarks.reserve(priors.size());
+
+    for (size_t i = 0; i < priors.size(); ++i) {
+        float p_cx = priors[i].x1;
+        float p_cy = priors[i].y1;
+        float p_w = priors[i].x2;
+        float p_h = priors[i].y2;
+
+        Landmark l;
+        for (int j = 0; j < 5; ++j) {
+            l.x_coords[j] = p_cx + pre[i * 10 + j * 2] * cfg.variance[0] * p_w;
+            l.y_coords[j] = p_cy + pre[i * 10 + j * 2 + 1] * cfg.variance[0] * p_h;
+        }
+        landmarks.push_back(l);
+    }
+    return landmarks;
+}
+
+// NMS, exactly matching utils/nms/py_cpu_nms.py
+std::vector<int> cpu_nms(std::vector<Detection> &dets, float thresh) {
+    std::vector<int> keep;
+    if (dets.empty()) {
+        return keep;
+    }
+
+    std::vector<size_t> order(dets.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](size_t i, size_t j) {
+        return dets[i].score > dets[j].score;
+    });
+
+    std::vector<float> areas(dets.size());
+    for (size_t i = 0; i < dets.size(); ++i) {
+        auto &d = dets[i].box;
+        areas[i] = (d.x2 - d.x1 + 1) * (d.y2 - d.y1 + 1);
+    }
+
+    while (!order.empty()) {
+        size_t i = order[0];
+        keep.push_back(i);
+
+        std::vector<size_t> new_order;
+        for (size_t j = 1; j < order.size(); ++j) {
+            size_t current_idx = order[j];
+            auto &box_i = dets[i].box;
+            auto &box_j = dets[current_idx].box;
+
+            float xx1 = std::max(box_i.x1, box_j.x1);
+            float yy1 = std::max(box_i.y1, box_j.y1);
+            float xx2 = std::min(box_i.x2, box_j.x2);
+            float yy2 = std::min(box_i.y2, box_j.y2);
+
+            float w = std::max(0.0f, xx2 - xx1 + 1);
+            float h = std::max(0.0f, yy2 - yy1 + 1);
+            float inter = w * h;
+            float ovr = inter / (areas[i] + areas[current_idx] - inter);
+
+            if (ovr <= thresh) {
+                new_order.push_back(current_idx);
+            }
+        }
+        order = new_order;
+    }
+
+    return keep;
+}
+// =========== [MODIFICATION END] ===========
 
 FaceAnalyzer::FaceAnalyzer(const std::string &det_model_path,
                            const std::string &rec_model_path)
@@ -159,7 +305,13 @@ void FaceAnalyzer::prepare(const std::string &provider,
         for (int i = 0; i < nb; ++i) {
             nvinfer1::Dims dims = ctx->getBindingDimensions(i);
             if (std::any_of(dims.d, dims.d + dims.nbDims, [](int v) { return v < 0; })) {
-                throw std::runtime_error("Binding has unresolved dimension.");
+                // Try to resolve dynamic dimensions if model has them
+                if (engine->hasImplicitBatchDimension()) {
+                    // This simple logic might not cover all cases but it is a start
+                    dims.d[0] = 1;
+                } else {
+                    throw std::runtime_error("Binding has unresolved dimension.");
+                }
             }
             size_t vol = 1;
             for (int d = 0; d < dims.nbDims; ++d) vol *= static_cast<size_t>(dims.d[d]);
@@ -205,9 +357,11 @@ std::vector<Face> FaceAnalyzer::get(const cv::Mat &img) {
     auto t2 = std::chrono::high_resolution_clock::now();
     double total_ms = std::chrono::duration<double, std::milli>(t2 - t0).count();
 
-    std::cout << "[FaceAnalyzer::get] total " << total_ms << " ms (det "
-              << det_ms << " ms, rec_all " << rec_ms_total << " ms) for "
-              << faces.size() << " faces.\n";
+    if (faces.size() > 0) { // Avoid printing if no faces
+        std::cout << "[FaceAnalyzer::get] total " << total_ms << " ms (det "
+                  << det_ms << " ms, rec_all " << rec_ms_total << " ms) for "
+                  << faces.size() << " faces.\n";
+    }
 
     return faces;
 }
@@ -267,137 +421,132 @@ cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::Mat &aligned_img) {
     return result.clone();
 }
 
+// =========== [MODIFICATION START]: Complete rewrite of the detect function ===========
 std::vector<Face> FaceAnalyzer::detect(const cv::Mat &img) {
     if (!m_is_prepared) throw std::runtime_error("FaceAnalyzer not prepared.");
     if (img.empty()) return {};
 
-    float im_ratio = static_cast<float>(img.rows) / img.cols;
-    float mdl_ratio = static_cast<float>(det_size_.height) / det_size_.width;
-    int new_w, new_h;
-    if (im_ratio > mdl_ratio) {
-        new_h = det_size_.height;
-        new_w = static_cast<int>(new_h / im_ratio);
-    } else {
-        new_w = det_size_.width;
-        new_h = static_cast<int>(new_w * im_ratio);
-    }
-    float scale = static_cast<float>(new_h) / img.rows;
-    if (scale == 0) scale = 1.0f;
-    cv::Mat resized, det_img = cv::Mat::zeros(det_size_, CV_8UC3);
-    cv::resize(img, resized, cv::Size(new_w, new_h));
-    resized.copyTo(det_img(cv::Rect(0, 0, new_w, new_h)));
-    std::vector<float> blob(1 * 3 * det_size_.height * det_size_.width);
-    int H = det_size_.height, W = det_size_.width, ch_size = H * W;
-    for (int h = 0; h < H; ++h) {
-        for (int w = 0; w < W; ++w) {
-            cv::Vec3b p = det_img.at<cv::Vec3b>(h, w);
-            blob[0 * ch_size + h * W + w] = (p[2] - 127.5f) / 128.0f;
-            blob[1 * ch_size + h * W + w] = (p[1] - 127.5f) / 128.0f;
-            blob[2 * ch_size + h * W + w] = (p[0] - 127.5f) / 128.0f;
-        }
-    }
+    // --- 1. Pre-processing ---
+    // The pre-processing from original demo, letter-boxing to det_size_
+    const int orig_h = img.rows;
+    const int orig_w = img.cols;
 
-    int input_idx = findInputBinding(*m_det_engine);
-    if (input_idx < 0) throw std::runtime_error("Detect engine input binding not found.");
-    cudaMemcpyAsync(m_buffers_det[input_idx], blob.data(), m_buffer_sizes_det[input_idx], cudaMemcpyHostToDevice,
-                    m_stream);
-    m_det_context->enqueueV2(m_buffers_det.data(), m_stream, nullptr);
+    float scale_ratio = static_cast<float>(det_size_.height) / std::max(orig_h, orig_w);
+    int new_w = static_cast<int>(orig_w * scale_ratio);
+    int new_h = static_cast<int>(orig_h * scale_ratio);
 
-    std::map<std::string, cv::Mat> output_mats;
-    for (const auto &name: m_det_output_names) {
-        int idx = m_det_engine->getBindingIndex(name.c_str());
-        if (idx < 0) { continue; }
-        if (m_buffers_det[idx] == nullptr || m_buffer_sizes_det[idx] == 0) { continue; }
-        cv::Mat out_mat(1, m_buffer_sizes_det[idx] / sizeof(float), CV_32F);
-        cudaMemcpyAsync(out_mat.ptr<float>(), m_buffers_det[idx], m_buffer_sizes_det[idx], cudaMemcpyDeviceToHost,
-                        m_stream);
-        output_mats[name] = out_mat;
-    }
-    cudaStreamSynchronize(m_stream);
+    cv::Mat resized_img;
+    cv::resize(img, resized_img, cv::Size(new_w, new_h), 0, 0, cv::INTER_LINEAR);
 
-    std::vector<cv::Rect2d> bboxes;
-    std::vector<float> scores;
-    std::vector<std::vector<cv::Point2f>> all_kps;
+    cv::Mat padded_img = cv::Mat::zeros(det_size_, img.type());
+    resized_img.copyTo(padded_img(cv::Rect(0, 0, new_w, new_h)));
 
-    struct StrideOutputs {
-        int stride;
-        std::string score_name, bbox_name, kps_name;
-    };
-    std::vector<StrideOutputs> stride_info = {
-            {8,  "448", "451", "454"}, // Note: kps name order might be different from your example, using the map is safer
-            {16, "471", "474", "477"},
-            {32, "494", "497", "500"}
-    };
-    // Let's use your reference's logic which seems more direct
-    // And assuming the output order is fixed for strides
-    std::vector<int> strides = {8, 16, 32};
-    for (size_t i = 0; i < strides.size(); ++i) {
-        int stride = strides[i];
-        std::string score_name = stride_info[i].score_name;
-        std::string bbox_name = stride_info[i].bbox_name;
-        std::string kps_name = stride_info[i].kps_name;
+    cv::Mat processed_img;
+    padded_img.convertTo(processed_img, CV_32FC3);
+    cv::subtract(processed_img, cv::Scalar(104, 117, 123), processed_img);
 
-        if (output_mats.find(score_name) == output_mats.end() ||
-            output_mats.find(bbox_name) == output_mats.end()) {
-            continue;
-        }
-        const float *score_data = output_mats.at(score_name).ptr<float>();
-        const float *bbox_data = output_mats.at(bbox_name).ptr<float>();
-        const float *kps_data = nullptr;
-        bool has_kps = !kps_name.empty() && output_mats.count(kps_name);
-        if (has_kps) { kps_data = output_mats.at(kps_name).ptr<float>(); }
-
-        const int h_out = det_size_.height / stride;
-        const int w_out = det_size_.width / stride;
-
-        for (int y = 0; y < h_out; ++y) {
-            for (int x = 0; x < w_out; ++x) {
-                for (int a = 0; a < 2; ++a) { // 2 anchors
-                    int idx = (y * w_out + x) * 2 + a;
-                    float sc = score_data[idx];
-                    if (sc < det_thresh_) continue;
-
-                    scores.push_back(sc);
-
-                    const float *bbox_ptr = &bbox_data[idx * 4];
-
-                    // ======================= 【修改的部分在此】 =======================
-                    // 使用格网左上角作为基准点
-                    float cx = (float) x * stride;
-                    float cy = (float) y * stride;
-                    // ======================= 【修改结束】 =======================
-
-                    float x1 = (cx - bbox_ptr[0] * stride) / scale;
-                    float y1 = (cy - bbox_ptr[1] * stride) / scale;
-                    float x2 = (cx + bbox_ptr[2] * stride) / scale;
-                    float y2 = (cy + bbox_ptr[3] * stride) / scale;
-                    bboxes.emplace_back(x1, y1, x2 - x1, y2 - y1);
-
-                    std::vector<cv::Point2f> kps;
-                    if (has_kps && kps_data) {
-                        const float *kp_ptr = &kps_data[idx * 10];
-                        for (int k = 0; k < 5; ++k) {
-                            kps.emplace_back((cx + kp_ptr[k * 2] * stride) / scale,
-                                             (cy + kp_ptr[k * 2 + 1] * stride) / scale);
-                        }
-                    }
-                    all_kps.push_back(kps);
-                }
+    std::vector<float> input_data(det_size_.height * det_size_.width * 3);
+    for (int c = 0; c < 3; ++c) {
+        for (int h = 0; h < det_size_.height; ++h) {
+            for (int w = 0; w < det_size_.width; ++w) {
+                input_data[c * det_size_.width * det_size_.height + h * det_size_.width +
+                           w] = processed_img.at<cv::Vec3f>(h, w)[c];
             }
         }
     }
 
-    if (bboxes.empty()) return {};
+    // --- 2. Inference ---
+    int input_idx = findInputBinding(*m_det_engine, "input");
+    if (input_idx < 0) throw std::runtime_error("Detection model must have an input binding named 'input'");
 
-    std::vector<int> keep;
-    cv::dnn::NMSBoxes(bboxes, scores, det_thresh_, 0.4, keep);
+    int loc_idx = m_det_engine->getBindingIndex("boxes");
+    int conf_idx = m_det_engine->getBindingIndex("scores");
+    int landms_idx = m_det_engine->getBindingIndex("landmarks");
+    if (loc_idx < 0 || conf_idx < 0 || landms_idx < 0) {
+        throw std::runtime_error("Detection model missing one of 'boxes', 'scores', 'landmarks' output bindings.");
+    }
+
+    cudaMemcpyAsync(m_buffers_det[input_idx], input_data.data(), m_buffer_sizes_det[input_idx], cudaMemcpyHostToDevice,
+                    m_stream);
+    m_det_context->enqueueV2(m_buffers_det.data(), m_stream, nullptr);
+
+    auto loc_dims = m_det_context->getBindingDimensions(loc_idx);
+    int num_priors = loc_dims.d[1];
+
+    std::vector<float> loc_output(num_priors * 4);
+    std::vector<float> conf_output(num_priors * 2);
+    std::vector<float> landms_output(num_priors * 10);
+
+    cudaMemcpyAsync(loc_output.data(), m_buffers_det[loc_idx], loc_output.size() * sizeof(float),
+                    cudaMemcpyDeviceToHost, m_stream);
+    cudaMemcpyAsync(conf_output.data(), m_buffers_det[conf_idx], conf_output.size() * sizeof(float),
+                    cudaMemcpyDeviceToHost, m_stream);
+    cudaMemcpyAsync(landms_output.data(), m_buffers_det[landms_idx], landms_output.size() * sizeof(float),
+                    cudaMemcpyDeviceToHost, m_stream);
+    cudaStreamSynchronize(m_stream);
+
+    // --- 3. Post-processing ---
+    const int top_k = 5000;
+    const float nms_threshold = 0.4f;
+    const int keep_top_k = 750;
+
+    auto priors = generate_priors(det_size_.height, det_size_.width);
+    auto boxes_normalized = decode_boxes(loc_output, priors);
+    auto landms_normalized = decode_landmarks(landms_output, priors);
+
+    std::vector<Detection> dets_raw;
+    for (int i = 0; i < num_priors; ++i) {
+        float score = conf_output[i * 2 + 1];
+        if (score > det_thresh_) {
+            Detection det;
+            det.score = score;
+            // From normalized [0,1] to padded image coordinates
+            det.box.x1 = boxes_normalized[i].x1 * det_size_.width;
+            det.box.y1 = boxes_normalized[i].y1 * det_size_.height;
+            det.box.x2 = boxes_normalized[i].x2 * det_size_.width;
+            det.box.y2 = boxes_normalized[i].y2 * det_size_.height;
+
+            for (int j = 0; j < 5; ++j) {
+                det.landmark.x_coords[j] = landms_normalized[i].x_coords[j] * det_size_.width;
+                det.landmark.y_coords[j] = landms_normalized[i].y_coords[j] * det_size_.height;
+            }
+            dets_raw.push_back(det);
+        }
+    }
+
+    if (dets_raw.empty()) return {};
+
+    std::sort(dets_raw.begin(), dets_raw.end(), [](const Detection &a, const Detection &b) {
+        return a.score > b.score;
+    });
+    if (dets_raw.size() > top_k) {
+        dets_raw.resize(top_k);
+    }
+
+    std::vector<int> keep = cpu_nms(dets_raw, nms_threshold);
+
     std::vector<Face> faces;
-    for (int id: keep) {
+    for (int idx: keep) {
+        if (faces.size() >= keep_top_k) break;
+
+        const auto &b = dets_raw[idx];
         Face f;
-        f.bbox = bboxes[id];
-        f.det_score = scores[id];
-        f.kps = all_kps[id];
+        f.det_score = b.score;
+
+        // Rescale from padded image coordinates to original image coordinate
+        f.bbox.x = b.box.x1 / scale_ratio;
+        f.bbox.y = b.box.y1 / scale_ratio;
+        f.bbox.width = (b.box.x2 - b.box.x1) / scale_ratio;
+        f.bbox.height = (b.box.y2 - b.box.y1) / scale_ratio;
+
+        for (int j = 0; j < 5; ++j) {
+            float kps_x = b.landmark.x_coords[j] / scale_ratio;
+            float kps_y = b.landmark.y_coords[j] / scale_ratio;
+            f.kps.emplace_back(kps_x, kps_y);
+        }
         faces.push_back(f);
     }
+
     return faces;
 }
+// =========== [MODIFICATION END] ===========

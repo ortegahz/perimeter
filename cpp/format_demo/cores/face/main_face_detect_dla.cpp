@@ -29,7 +29,7 @@ int main(int argc, char *argv[]) {
     std::string output_aligned_dir = "/mnt/nfs/aligned_faces_cpp/";
     std::string output_detection_txt = "/mnt/nfs/detections_cpp_arm.txt";
     std::string output_embedding_txt = "/mnt/nfs/embeddings_cpp_arm.txt";
-    std::string det_model = "/mnt/nfs/det_10g_simplified.onnx";
+    std::string det_model = "/mnt/nfs/mobilenet0.25_Final.onnx";
     std::string rec_model = "/mnt/nfs/w600k_r50_simplified.onnx";
 
     std::cout << "[INFO] folder: " << folder << std::endl;
@@ -92,7 +92,7 @@ int main(int argc, char *argv[]) {
                     continue;
                 }
                 
-                int _n = 1000;
+                int _n = 1;
                 auto start = std::chrono::high_resolution_clock::now();
                 for (int i = 0; i < _n; i++) {
                     auto faces = face_app.get(img);

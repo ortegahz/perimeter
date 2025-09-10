@@ -23,6 +23,23 @@ struct TrtDeleter {
 template<typename T>
 using TrtUniquePtr = std::unique_ptr<T, TrtDeleter<T>>;
 
+// =========== [MODIFICATION START]: Add helper structs from reference code ===========
+struct BBox {
+    float x1, y1, x2, y2;
+};
+
+struct Landmark {
+    float x_coords[5];
+    float y_coords[5];
+};
+
+struct Detection {
+    BBox box;
+    float score;
+    Landmark landmark;
+};
+// =========== [MODIFICATION END] ===========
+
 struct Face {
     cv::Rect2d bbox;
     float det_score = 0.0f;
@@ -60,8 +77,10 @@ private:
     TrtUniquePtr<nvinfer1::IExecutionContext> m_det_context;
     std::vector<void *> m_buffers_det;
     std::vector<size_t> m_buffer_sizes_det;
-    // Restored full list of output names
-    std::vector<std::string> m_det_output_names = {"448", "471", "494", "451", "474", "497", "454", "477", "500"};
+    // =========== [MODIFICATION START]: Update output names to match reference model ===========
+    // New model has 3 outputs: locations (boxes), confidences (scores), and landmarks
+    std::vector<std::string> m_det_output_names = {"boxes", "scores", "landmarks"};
+    // =========== [MODIFICATION END] ===========
 
     TrtUniquePtr<nvinfer1::ICudaEngine> m_rec_engine;
     TrtUniquePtr<nvinfer1::IExecutionContext> m_rec_context;

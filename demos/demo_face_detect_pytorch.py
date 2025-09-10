@@ -25,7 +25,7 @@ parser = argparse.ArgumentParser(description='Retinaface')
 
 # 修改命令行参数
 parser.add_argument('--image_folder', type=str, default="/home/manu/tmp/perimeter_v1/G00002/faces/")
-parser.add_argument('--output_txt', default='/home/manu/tmp/detections.txt', type=str,
+parser.add_argument('--output_txt', default='/home/manu/nfs/detections_py.txt', type=str,
                     help='Path for the single output TXT file with all detection results')  # 新增参数
 parser.add_argument('-m', '--trained_model',
                     default='/media/manu/ST8000DM004-2U91/insightface/models/retinaface_pytorch_mn025_relu/mobilenet0.25_Final.pth',
@@ -113,10 +113,10 @@ if __name__ == '__main__':
     # 打开一个总的TXT文件用于写入所有检测结果
     with open(args.output_txt, 'w') as txtfile:
         # 写入TXT文件的表头 (可选, 以#开头作为注释)
-        header = ['#filename', 'bbox_x', 'bbox_y', 'bbox_width', 'bbox_height', 'score',
+        header = ['filename', 'bbox_x', 'bbox_y', 'bbox_width', 'bbox_height', 'score',
                   'kps0_x', 'kps0_y', 'kps1_x', 'kps1_y', 'kps2_x', 'kps2_y',
                   'kps3_x', 'kps3_y', 'kps4_x', 'kps4_y']
-        txtfile.write(" ".join(header) + '\n')
+        txtfile.write(",".join(header) + '\n')
 
         image_files = [f for f in os.listdir(args.image_folder) if
                        f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
@@ -135,7 +135,28 @@ if __name__ == '__main__':
                 print(f"Warning: Could not read image {image_path}, skipping.")
                 continue
 
-            img = np.float32(img_raw)
+            # ----------------- MODIFICATION START: Image padding and resizing -----------------
+            # Original image dimensions
+            orig_h, orig_w, _ = img_raw.shape
+
+            # Target size
+            target_size = 640
+
+            # Calculate scaling factor and new size
+            scale_ratio = target_size / max(orig_h, orig_w)
+            new_w = int(orig_w * scale_ratio)
+            new_h = int(orig_h * scale_ratio)
+
+            # Resize image
+            resized_img = cv2.resize(img_raw, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+            # Create a black canvas and paste the resized image
+            padded_img = np.zeros((target_size, target_size, 3), dtype=np.uint8)
+            padded_img[0:new_h, 0:new_w] = resized_img
+
+            # The network will now process the padded image
+            img = np.float32(padded_img)
+            # ----------------- MODIFICATION END ------------------------------------------
 
             im_height, im_width, _ = img.shape
             scale = torch.Tensor([img.shape[1], img.shape[0], img.shape[1], img.shape[0]])
@@ -194,24 +215,31 @@ if __name__ == '__main__':
                 if b[4] < args.vis_thres:
                     continue
 
-                # 1. 准备数据
+                # ----------------- MODIFICATION START: Rescale coordinates -----------------
+                # Rescale coordinates from padded 640x640 space to original image space
+                b_rescaled = b.copy()
+                b_rescaled[0:4] /= scale_ratio  # Rescale bbox
+                b_rescaled[5:] /= scale_ratio  # Rescale landmarks
+                # ----------------- MODIFICATION END --------------------------------------
+
+                # 1. 准备数据 (使用 b_rescaled)
                 file_name_col = filename
-                bbox_x = b[0]
-                bbox_y = b[1]
-                bbox_width = b[2] - b[0]
-                bbox_height = b[3] - b[1]
-                score_col = b[4]
-                kps_cols = b[5:].tolist()
+                bbox_x = b_rescaled[0]
+                bbox_y = b_rescaled[1]
+                bbox_width = b_rescaled[2] - b_rescaled[0]
+                bbox_height = b_rescaled[3] - b_rescaled[1]
+                score_col = b_rescaled[4]
+                kps_cols = b_rescaled[5:].tolist()
 
                 # 2. 写入总的TXT文件
                 row_data = [file_name_col, bbox_x, bbox_y, bbox_width, bbox_height, score_col] + kps_cols
-                line_to_write = " ".join(map(str, row_data)) + "\n"
+                line_to_write = ",".join(map(str, row_data)) + "\n"
                 txtfile.write(line_to_write)
 
-                # 3. 在图片上绘制检测结果
+                # 3. 在图片上绘制检测结果 (使用 b_rescaled)
                 if args.save_image:
-                    text = "{:.4f}".format(b[4])
-                    b_int = list(map(int, b))
+                    text = "{:.4f}".format(b_rescaled[4])
+                    b_int = list(map(int, b_rescaled))
                     cv2.rectangle(img_raw, (b_int[0], b_int[1]), (b_int[2], b_int[3]), (0, 0, 255), 2)
                     cx = b_int[0]
                     cy = b_int[1] + 12
