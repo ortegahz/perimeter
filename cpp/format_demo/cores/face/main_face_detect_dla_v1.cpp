@@ -38,7 +38,6 @@ public:
 };
 
 // Add a universal deleter for all TensorRT interface objects.
-// This replaces the incorrect and complex decltype logic.
 struct InferDeleter {
     template<typename T>
     void operator()(T *obj) const {
@@ -216,17 +215,51 @@ int main(int argc, char **argv) {
     const float nms_threshold = 0.4f;
     const int keep_top_k = 750;
     const float vis_thres = 0.6f;
-    const std::string image_path = "/mnt/nfs/padded_test.bmp";
+    const std::string original_image_path = "/mnt/nfs/curve/test.jpg";
     const std::string save_img_path = "/mnt/nfs/test_cpp.jpg";
 
     // Create directory for saving if it doesn't exist
-    std::string save_dir = save_img_path.substr(0, save_img_path.find_last_of("/"));
+    std::string save_dir = save_img_path.substr(0, save_img_path.find_last_of('/'));
     system(("mkdir -p " + save_dir).c_str());
 
     // --- Initialize ---
     Logger gLogger;
     std::unique_ptr<nvinfer1::IRuntime, InferDeleter> runtime;
     std::unique_ptr<nvinfer1::ICudaEngine, InferDeleter> engine;
+
+    // --- Pre-processing ---
+    cv::Mat img_raw = cv::imread(original_image_path, cv::IMREAD_COLOR);
+    if (img_raw.empty()) {
+        std::cerr << "Failed to read image: " << original_image_path << std::endl;
+        return -1;
+    }
+
+    // ----------------- MODIFICATION START: Image padding and resizing -----------------
+    // Original image dimensions
+    const int orig_h = img_raw.rows;
+    const int orig_w = img_raw.cols;
+
+    // Target size
+    const int target_size = 640;
+
+    // Calculate scaling factor and new size
+    float scale_ratio = static_cast<float>(target_size) / std::max(orig_h, orig_w);
+    int new_w = static_cast<int>(orig_w * scale_ratio);
+    int new_h = static_cast<int>(orig_h * scale_ratio);
+
+    // Resize image
+    cv::Mat resized_img;
+    cv::resize(img_raw, resized_img, cv::Size(new_w, new_h), 0, 0, cv::INTER_LINEAR);
+
+    // Create a black canvas and paste the resized image
+    cv::Mat padded_img = cv::Mat::zeros(target_size, target_size, img_raw.type());
+    resized_img.copyTo(padded_img(cv::Rect(0, 0, new_w, new_h)));
+
+    // Save the padded image as a BMP file
+//    std::string padded_bmp_path = save_dir + "/padded_test.bmp";
+//    cv::imwrite(padded_bmp_path, padded_img);
+//    std::cout << "Padded image saved to " << padded_bmp_path << std::endl;
+    // ----------------- MODIFICATION END ------------------------------------------
 
     std::ifstream engine_file(engine_path, std::ios::binary);
     if (engine_file.good()) {
@@ -266,11 +299,9 @@ int main(int argc, char **argv) {
         config->setFlag(nvinfer1::BuilderFlag::kFP16); // DLA usually prefers FP16 or INT8
         config->setFlag(nvinfer1::BuilderFlag::kGPU_FALLBACK); // Allow layers unsupported on DLA to run on GPU
 
-        // Get input tensor and set dynamic shapes if needed
-        auto input = network->getInput(0);
-        auto input_dims = input->getDimensions();
-        // Here we assume a fixed size matching python logic which doesn't resize
-        // If your ONNX was exported with dynamic shapes, you can set optimization profiles here.
+        // Since input is always 640x640, we don't need dynamic shapes.
+        // The ONNX model should be exported with a 640x640 dummy input.
+        std::cout << "Building static engine for 640x640 input." << std::endl;
 
         // Build and serialize engine
         std::unique_ptr<nvinfer1::IHostMemory, InferDeleter> serialized_engine(
@@ -295,18 +326,12 @@ int main(int argc, char **argv) {
 
     auto context = std::unique_ptr<nvinfer1::IExecutionContext, InferDeleter>(engine->createExecutionContext());
 
-    // --- Pre-processing ---
-    cv::Mat img_raw = cv::imread(image_path, cv::IMREAD_COLOR);
-    if (img_raw.empty()) {
-        std::cerr << "Failed to read image: " << image_path << std::endl;
-        return -1;
-    }
-
+    // --- Continue processing with the padded image ---
     cv::Mat img;
-    img_raw.convertTo(img, CV_32FC3);
+    padded_img.convertTo(img, CV_32FC3);
 
-    const int im_height = img.rows;
-    const int im_width = img.cols;
+    const int im_height = img.rows; // This will be 640
+    const int im_width = img.cols;  // This will be 640
 
     // Subtract mean: (104, 117, 123) - BGR order from OpenCV
     cv::subtract(img, cv::Scalar(104, 117, 123), img);
@@ -325,7 +350,7 @@ int main(int argc, char **argv) {
     void *buffers[4]; // 1 input, 3 outputs
     const int input_idx = engine->getBindingIndex("input");
 
-    // Set input tensor dimensions
+    // With a static engine, setBindingDimensions is not needed, but good practice.
     context->setBindingDimensions(input_idx, nvinfer1::Dims4{1, 3, im_height, im_width});
 
     if (!context->allInputDimensionsSpecified()) {
@@ -340,9 +365,6 @@ int main(int argc, char **argv) {
     const int landms_idx = engine->getBindingIndex("landmarks");
 
     auto loc_dims = context->getBindingDimensions(loc_idx);
-    auto conf_dims = context->getBindingDimensions(conf_idx);
-    auto landms_dims = context->getBindingDimensions(landms_idx);
-
     int num_priors = loc_dims.d[1];
     std::cout << "Number of priors detected: " << num_priors << std::endl;
 
@@ -350,9 +372,9 @@ int main(int argc, char **argv) {
     std::vector<float> conf_output(num_priors * 2);
     std::vector<float> landms_output(num_priors * 10);
 
-    CUDA_CHECK(cudaMalloc(&buffers[loc_idx], num_priors * 4 * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&buffers[conf_idx], num_priors * 2 * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&buffers[landms_idx], num_priors * 10 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&buffers[loc_idx], loc_output.size() * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&buffers[conf_idx], conf_output.size() * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&buffers[landms_idx], landms_output.size() * sizeof(float)));
 
     cudaStream_t stream;
     CUDA_CHECK(cudaStreamCreate(&stream));
@@ -377,15 +399,6 @@ int main(int argc, char **argv) {
 
     // --- Post-processing (exactly matching python script) ---
     auto priors_center_form = generate_priors(im_height, im_width);
-
-    // The python code calculates softmax on the confidence scores.
-    // Our ONNX model already has softmax. But in case it doesn't:
-    // for (int i = 0; i < num_priors; ++i) {
-    //     float e0 = exp(conf_output[i * 2 + 0]);
-    //     float e1 = exp(conf_output[i * 2 + 1]);
-    //     conf_output[i * 2 + 0] = e0 / (e0 + e1);
-    //     conf_output[i * 2 + 1] = e1 / (e0 + e1);
-    // }
 
     auto boxes_normalized = decode_boxes(loc_output, priors_center_form);
     auto landms_normalized = decode_landmarks(landms_output, priors_center_form);
@@ -431,41 +444,56 @@ int main(int argc, char **argv) {
     }
 
     // --- Save results ---
-    std::string save_txt_path = save_img_path.substr(0, save_img_path.find_last_of(".")) + ".txt";
+    std::string save_txt_path = save_img_path.substr(0, save_img_path.find_last_of('.')) + ".txt";
     std::ofstream f_txt(save_txt_path);
 
     for (const auto &b: final_dets) {
         if (b.score < vis_thres) continue;
 
-        // Write to txt file
-        f_txt << static_cast<int>(b.box.x1) << " " << static_cast<int>(b.box.y1) << " "
-              << static_cast<int>(b.box.x2) << " " << static_cast<int>(b.box.y2) << " "
-              << std::fixed << std::setprecision(5) << b.score;
+        // ----------------- MODIFICATION START: Rescale coordinates -----------------
+        Detection b_rescaled = b;
+        b_rescaled.box.x1 /= scale_ratio;
+        b_rescaled.box.y1 /= scale_ratio;
+        b_rescaled.box.x2 /= scale_ratio;
+        b_rescaled.box.y2 /= scale_ratio;
         for (int j = 0; j < 5; ++j) {
-            f_txt << " " << static_cast<int>(b.landmark.x_coords[j]) << " " << static_cast<int>(b.landmark.y_coords[j]);
+            b_rescaled.landmark.x_coords[j] /= scale_ratio;
+            b_rescaled.landmark.y_coords[j] /= scale_ratio;
+        }
+        // ----------------- MODIFICATION END --------------------------------------
+
+        // Write to txt file using rescaled coordinates
+        f_txt << static_cast<int>(b_rescaled.box.x1) << " " << static_cast<int>(b_rescaled.box.y1) << " "
+              << static_cast<int>(b_rescaled.box.x2) << " " << static_cast<int>(b_rescaled.box.y2) << " "
+              << std::fixed << std::setprecision(5) << b_rescaled.score;
+        for (int j = 0; j < 5; ++j) {
+            f_txt << " " << static_cast<int>(b_rescaled.landmark.x_coords[j]) << " "
+                  << static_cast<int>(b_rescaled.landmark.y_coords[j]);
         }
         f_txt << "\n";
 
-        // Draw on image
-        cv::rectangle(img_raw, cv::Point((int) b.box.x1, (int) b.box.y1), cv::Point((int) b.box.x2, (int) b.box.y2),
+        // Draw on original image (img_raw) using rescaled coordinates
+        cv::rectangle(img_raw, cv::Point((int) b_rescaled.box.x1, (int) b_rescaled.box.y1),
+                      cv::Point((int) b_rescaled.box.x2, (int) b_rescaled.box.y2),
                       cv::Scalar(0, 0, 255), 2);
 
         std::stringstream score_stream;
-        score_stream << std::fixed << std::setprecision(4) << b.score;
+        score_stream << std::fixed << std::setprecision(4) << b_rescaled.score;
         std::string text = score_stream.str();
-        cv::putText(img_raw, text, cv::Point((int) b.box.x1, (int) b.box.y1 + 12), cv::FONT_HERSHEY_DUPLEX, 0.5,
+        cv::putText(img_raw, text, cv::Point((int) b_rescaled.box.x1, (int) b_rescaled.box.y1 + 12),
+                    cv::FONT_HERSHEY_DUPLEX, 0.5,
                     cv::Scalar(255, 255, 255));
 
         // Landmarks
-        cv::circle(img_raw, cv::Point((int) b.landmark.x_coords[0], (int) b.landmark.y_coords[0]), 1,
+        cv::circle(img_raw, cv::Point((int) b_rescaled.landmark.x_coords[0], (int) b_rescaled.landmark.y_coords[0]), 1,
                    cv::Scalar(0, 0, 255), 4);
-        cv::circle(img_raw, cv::Point((int) b.landmark.x_coords[1], (int) b.landmark.y_coords[1]), 1,
+        cv::circle(img_raw, cv::Point((int) b_rescaled.landmark.x_coords[1], (int) b_rescaled.landmark.y_coords[1]), 1,
                    cv::Scalar(0, 255, 255), 4);
-        cv::circle(img_raw, cv::Point((int) b.landmark.x_coords[2], (int) b.landmark.y_coords[2]), 1,
+        cv::circle(img_raw, cv::Point((int) b_rescaled.landmark.x_coords[2], (int) b_rescaled.landmark.y_coords[2]), 1,
                    cv::Scalar(255, 0, 255), 4);
-        cv::circle(img_raw, cv::Point((int) b.landmark.x_coords[3], (int) b.landmark.y_coords[3]), 1,
+        cv::circle(img_raw, cv::Point((int) b_rescaled.landmark.x_coords[3], (int) b_rescaled.landmark.y_coords[3]), 1,
                    cv::Scalar(0, 255, 0), 4);
-        cv::circle(img_raw, cv::Point((int) b.landmark.x_coords[4], (int) b.landmark.y_coords[4]), 1,
+        cv::circle(img_raw, cv::Point((int) b_rescaled.landmark.x_coords[4], (int) b_rescaled.landmark.y_coords[4]), 1,
                    cv::Scalar(255, 0, 0), 4);
     }
 
