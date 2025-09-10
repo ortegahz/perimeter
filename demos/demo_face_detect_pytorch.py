@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import argparse
+import csv  # 新增导入
 import os
 import sys
 import time
@@ -22,7 +23,12 @@ from utils.nms.py_cpu_nms import py_cpu_nms
 
 parser = argparse.ArgumentParser(description='Retinaface')
 
-parser.add_argument('-m', '--trained_model', default='./weights/mobilenet0.25_Final.pth',
+# 新增命令行参数，用于指定图片文件夹和输出CSV文件
+parser.add_argument('--image_folder', type=str, default="/home/manu/tmp/perimeter_v1/G00002/faces/")
+parser.add_argument('--output_csv', default='detections.csv', type=str,
+                    help='Path for the output CSV file with detection results')
+parser.add_argument('-m', '--trained_model',
+                    default='/media/manu/ST8000DM004-2U91/insightface/models/retinaface_pytorch_mn025_relu/mobilenet0.25_Final.pth',
                     type=str, help='Trained state_dict file path to open')
 parser.add_argument('--network', default='mobile0.25', help='Backbone network mobile0.25 or resnet50')
 parser.add_argument('--cpu', action="store_true", default=False, help='Use cpu inference')
@@ -30,7 +36,13 @@ parser.add_argument('--confidence_threshold', default=0.02, type=float, help='co
 parser.add_argument('--top_k', default=5000, type=int, help='top_k')
 parser.add_argument('--nms_threshold', default=0.4, type=float, help='nms_threshold')
 parser.add_argument('--keep_top_k', default=750, type=int, help='keep_top_k')
-parser.add_argument('-s', '--save_image', action="store_true", default=True, help='show detection results')
+# 修改 --save_image 的帮助文本，并新增 --save_folder 和 --save_txt 参数
+parser.add_argument('-s', '--save_image', action="store_true", default=True,
+                    help='Save detection results with boxes and landmarks')
+parser.add_argument('--save_folder', default='/home/manu/tmp/results/', type=str,
+                    help='Directory to save annotated images and txt results')
+parser.add_argument('--save_txt', action="store_true", default=True,
+                    help='Save results in txt format, one file per image')
 parser.add_argument('--vis_thres', default=0.6, type=float, help='visualization_threshold')
 args = parser.parse_args()
 
@@ -88,88 +100,151 @@ if __name__ == '__main__':
     device = torch.device("cpu" if args.cpu else "cuda")
     net = net.to(device)
 
-    resize = 1
+    # ======================= MODIFICATION START ===========================
+    # 原有的处理单张图片的部分被替换为处理整个文件夹的逻辑
 
-    # testing begin
-    for i in range(100):
-        image_path = "/media/manu/ST2000DM005-2U911/workspace/Pytorch_Retinaface/curve/test.jpg"
-        img_raw = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    if not args.image_folder or not os.path.isdir(args.image_folder):
+        print(f"Error: Please specify a valid folder using --image_folder")
+        sys.exit(1)
 
-        img = np.float32(img_raw)
+    # 如果需要保存图片或txt，则创建结果文件夹
+    if args.save_image or args.save_txt:
+        os.makedirs(args.save_folder, exist_ok=True)
 
-        im_height, im_width, _ = img.shape
-        scale = torch.Tensor([img.shape[1], img.shape[0], img.shape[1], img.shape[0]])
-        img -= (104, 117, 123)
-        img = img.transpose(2, 0, 1)
-        img = torch.from_numpy(img).unsqueeze(0)
-        img = img.to(device)
-        scale = scale.to(device)
+    with open(args.output_csv, 'w', newline='') as csvfile:
+        csv_writer = csv.writer(csvfile)
+        # 写入CSV文件的表头
+        header = ['filename', 'bbox_x', 'bbox_y', 'bbox_width', 'bbox_height', 'score',
+                  'kps0_x', 'kps0_y', 'kps1_x', 'kps1_y', 'kps2_x', 'kps2_y',
+                  'kps3_x', 'kps3_y', 'kps4_x', 'kps4_y']
+        csv_writer.writerow(header)
 
-        tic = time.time()
-        loc, conf, landms = net(img)  # forward pass
-        print('net forward time: {:.4f}'.format(time.time() - tic))
+        image_files = [f for f in os.listdir(args.image_folder) if
+                       f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
+        # 对图片列表进行排序
+        image_files.sort()
+        print(f"Found {len(image_files)} images in '{args.image_folder}'")
 
-        priorbox = PriorBox(cfg, image_size=(im_height, im_width))
-        priors = priorbox.forward()
-        priors = priors.to(device)
-        prior_data = priors.data
-        boxes = decode(loc.data.squeeze(0), prior_data, cfg['variance'])
-        boxes = boxes * scale / resize
-        boxes = boxes.cpu().numpy()
-        scores = conf.squeeze(0).data.cpu().numpy()[:, 1]
-        landms = decode_landm(landms.data.squeeze(0), prior_data, cfg['variance'])
-        scale1 = torch.Tensor([img.shape[3], img.shape[2], img.shape[3], img.shape[2],
-                               img.shape[3], img.shape[2], img.shape[3], img.shape[2],
-                               img.shape[3], img.shape[2]])
-        scale1 = scale1.to(device)
-        landms = landms * scale1 / resize
-        landms = landms.cpu().numpy()
+        resize = 1
 
-        # ignore low scores
-        inds = np.where(scores > args.confidence_threshold)[0]
-        boxes = boxes[inds]
-        landms = landms[inds]
-        scores = scores[inds]
+        # 开始遍历文件夹中的图片
+        for filename in image_files:
+            image_path = os.path.join(args.image_folder, filename)
+            img_raw = cv2.imread(image_path, cv2.IMREAD_COLOR)
 
-        # keep top-K before NMS
-        order = scores.argsort()[::-1][:args.top_k]
-        boxes = boxes[order]
-        landms = landms[order]
-        scores = scores[order]
+            if img_raw is None:
+                print(f"Warning: Could not read image {image_path}, skipping.")
+                continue
 
-        # do NMS
-        dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
-        keep = py_cpu_nms(dets, args.nms_threshold)
-        # keep = nms(dets, args.nms_threshold,force_cpu=args.cpu)
-        dets = dets[keep, :]
-        landms = landms[keep]
+            img = np.float32(img_raw)
 
-        # keep top-K faster NMS
-        dets = dets[:args.keep_top_k, :]
-        landms = landms[:args.keep_top_k, :]
+            im_height, im_width, _ = img.shape
+            scale = torch.Tensor([img.shape[1], img.shape[0], img.shape[1], img.shape[0]])
+            img -= (104, 117, 123)
+            img = img.transpose(2, 0, 1)
+            img = torch.from_numpy(img).unsqueeze(0)
+            img = img.to(device)
+            scale = scale.to(device)
 
-        dets = np.concatenate((dets, landms), axis=1)
+            tic = time.time()
+            loc, conf, landms = net(img)  # forward pass
+            print('Processing {}: net forward time: {:.4f}'.format(filename, time.time() - tic))
 
-        # show image
-        if args.save_image:
+            priorbox = PriorBox(cfg, image_size=(im_height, im_width))
+            priors = priorbox.forward()
+            priors = priors.to(device)
+            prior_data = priors.data
+            boxes = decode(loc.data.squeeze(0), prior_data, cfg['variance'])
+            boxes = boxes * scale / resize
+            boxes = boxes.cpu().numpy()
+            scores = conf.squeeze(0).data.cpu().numpy()[:, 1]
+            landms = decode_landm(landms.data.squeeze(0), prior_data, cfg['variance'])
+            scale1 = torch.Tensor([img.shape[3], img.shape[2], img.shape[3], img.shape[2],
+                                   img.shape[3], img.shape[2], img.shape[3], img.shape[2],
+                                   img.shape[3], img.shape[2]])
+            scale1 = scale1.to(device)
+            landms = landms * scale1 / resize
+            landms = landms.cpu().numpy()
+
+            # ignore low scores
+            inds = np.where(scores > args.confidence_threshold)[0]
+            boxes = boxes[inds]
+            landms = landms[inds]
+            scores = scores[inds]
+
+            # keep top-K before NMS
+            order = scores.argsort()[::-1][:args.top_k]
+            boxes = boxes[order]
+            landms = landms[order]
+            scores = scores[order]
+
+            # do NMS
+            dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
+            keep = py_cpu_nms(dets, args.nms_threshold)
+            dets = dets[keep, :]
+            landms = landms[keep]
+
+            # keep top-K faster NMS
+            dets = dets[:args.keep_top_k, :]
+            landms = landms[:args.keep_top_k, :]
+
+            dets = np.concatenate((dets, landms), axis=1)
+
+            # 如果需要，打开对应的txt文件准备写入
+            txt_f = None
+            if args.save_txt:
+                txt_filename = os.path.splitext(filename)[0] + ".txt"
+                txt_save_path = os.path.join(args.save_folder, txt_filename)
+                txt_f = open(txt_save_path, "w")
+
+            # 将检测信息保存到CSV文件，同时保存txt和绘制标注图
             for b in dets:
                 if b[4] < args.vis_thres:
                     continue
-                text = "{:.4f}".format(b[4])
-                b = list(map(int, b))
-                cv2.rectangle(img_raw, (b[0], b[1]), (b[2], b[3]), (0, 0, 255), 2)
-                cx = b[0]
-                cy = b[1] + 12
-                cv2.putText(img_raw, text, (cx, cy),
-                            cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255))
 
-                # landms
-                cv2.circle(img_raw, (b[5], b[6]), 1, (0, 0, 255), 4)
-                cv2.circle(img_raw, (b[7], b[8]), 1, (0, 255, 255), 4)
-                cv2.circle(img_raw, (b[9], b[10]), 1, (255, 0, 255), 4)
-                cv2.circle(img_raw, (b[11], b[12]), 1, (0, 255, 0), 4)
-                cv2.circle(img_raw, (b[13], b[14]), 1, (255, 0, 0), 4)
-            # save image
+                # 1. 准备数据
+                file_name_col = filename
+                bbox_x = b[0]
+                bbox_y = b[1]
+                bbox_width = b[2] - b[0]
+                bbox_height = b[3] - b[1]
+                score_col = b[4]
+                kps_cols = b[5:].tolist()
 
-            name = "/home/manu/tmp/test.jpg"
-            cv2.imwrite(name, img_raw)
+                # 2. 写入CSV文件
+                row_data = [file_name_col, bbox_x, bbox_y, bbox_width, bbox_height, score_col] + kps_cols
+                csv_writer.writerow(row_data)
+
+                # 3. 写入TXT文件
+                if args.save_txt and txt_f:
+                    # txt文件格式：bbox_x, bbox_y, bbox_width, bbox_height, score, kps...
+                    txt_row_data = [bbox_x, bbox_y, bbox_width, bbox_height, score_col] + kps_cols
+                    txt_f.write(" ".join(map(str, txt_row_data)) + "\n")
+
+                # 4. 在图片上绘制检测结果
+                if args.save_image:
+                    text = "{:.4f}".format(b[4])
+                    b_int = list(map(int, b))
+                    cv2.rectangle(img_raw, (b_int[0], b_int[1]), (b_int[2], b_int[3]), (0, 0, 255), 2)
+                    cx = b_int[0]
+                    cy = b_int[1] + 12
+                    cv2.putText(img_raw, text, (cx, cy), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255))
+                    # landms
+                    cv2.circle(img_raw, (b_int[5], b_int[6]), 1, (0, 0, 255), 4)
+                    cv2.circle(img_raw, (b_int[7], b_int[8]), 1, (0, 255, 255), 4)
+                    cv2.circle(img_raw, (b_int[9], b_int[10]), 1, (255, 0, 255), 4)
+                    cv2.circle(img_raw, (b_int[11], b_int[12]), 1, (0, 255, 0), 4)
+                    cv2.circle(img_raw, (b_int[13], b_int[14]), 1, (255, 0, 0), 4)
+
+            # --- 循环结束后，关闭txt文件并保存标注图片 ---
+            if args.save_txt and txt_f:
+                txt_f.close()
+
+            if args.save_image:
+                save_path = os.path.join(args.save_folder, filename)
+                cv2.imwrite(save_path, img_raw)
+
+    print(f"\nProcessing complete. Detections saved to '{args.output_csv}'.")
+    if args.save_image or args.save_txt:
+        print(f"Annotated images and/or TXT files are saved in '{args.save_folder}'.")
+    # ======================= MODIFICATION END =============================
