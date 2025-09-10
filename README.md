@@ -45,3 +45,4 @@ perimeter security algorithm
 
 /usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/Resnet50_epoch_0.onnx --saveEngine=/mnt/nfs/Resnet50_epoch_0.dla.engine --useDLACore=0 --allowGPUFallback
 /usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/mobilenet0.25_epoch_0.onnx --saveEngine=/mnt/nfs/mobilenet0.25_epoch_0.dla.engine --useDLACore=0 --allowGPUFallback
+/usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/retinaface_pytorch_mn025_relu/mobilenet0.25_Final.onnx --saveEngine=/mnt/nfs/mobilenet0.25_Final.dla.engine --useDLACore=0 --allowGPUFallback
