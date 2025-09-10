@@ -1,7 +1,7 @@
 from __future__ import print_function
 
 import argparse
-import csv  # 新增导入
+# import csv  # 不再需要
 import os
 import sys
 import time
@@ -23,10 +23,10 @@ from utils.nms.py_cpu_nms import py_cpu_nms
 
 parser = argparse.ArgumentParser(description='Retinaface')
 
-# 新增命令行参数，用于指定图片文件夹和输出CSV文件
+# 修改命令行参数
 parser.add_argument('--image_folder', type=str, default="/home/manu/tmp/perimeter_v1/G00002/faces/")
-parser.add_argument('--output_csv', default='detections.csv', type=str,
-                    help='Path for the output CSV file with detection results')
+parser.add_argument('--output_txt', default='/home/manu/tmp/detections.txt', type=str,
+                    help='Path for the single output TXT file with all detection results')  # 新增参数
 parser.add_argument('-m', '--trained_model',
                     default='/media/manu/ST8000DM004-2U91/insightface/models/retinaface_pytorch_mn025_relu/mobilenet0.25_Final.pth',
                     type=str, help='Trained state_dict file path to open')
@@ -36,13 +36,12 @@ parser.add_argument('--confidence_threshold', default=0.02, type=float, help='co
 parser.add_argument('--top_k', default=5000, type=int, help='top_k')
 parser.add_argument('--nms_threshold', default=0.4, type=float, help='nms_threshold')
 parser.add_argument('--keep_top_k', default=750, type=int, help='keep_top_k')
-# 修改 --save_image 的帮助文本，并新增 --save_folder 和 --save_txt 参数
 parser.add_argument('-s', '--save_image', action="store_true", default=True,
                     help='Save detection results with boxes and landmarks')
 parser.add_argument('--save_folder', default='/home/manu/tmp/results/', type=str,
-                    help='Directory to save annotated images and txt results')
-parser.add_argument('--save_txt', action="store_true", default=True,
-                    help='Save results in txt format, one file per image')
+                    help='Directory to save annotated images')  # 帮助文本中移除 txt
+# parser.add_argument('--save_txt', action="store_true", default=True, # 移除此参数
+#                     help='Save results in txt format, one file per image')
 parser.add_argument('--vis_thres', default=0.6, type=float, help='visualization_threshold')
 args = parser.parse_args()
 
@@ -107,17 +106,17 @@ if __name__ == '__main__':
         print(f"Error: Please specify a valid folder using --image_folder")
         sys.exit(1)
 
-    # 如果需要保存图片或txt，则创建结果文件夹
-    if args.save_image or args.save_txt:
+    # 如果需要保存图片，则创建结果文件夹
+    if args.save_image:
         os.makedirs(args.save_folder, exist_ok=True)
 
-    with open(args.output_csv, 'w', newline='') as csvfile:
-        csv_writer = csv.writer(csvfile)
-        # 写入CSV文件的表头
-        header = ['filename', 'bbox_x', 'bbox_y', 'bbox_width', 'bbox_height', 'score',
+    # 打开一个总的TXT文件用于写入所有检测结果
+    with open(args.output_txt, 'w') as txtfile:
+        # 写入TXT文件的表头 (可选, 以#开头作为注释)
+        header = ['#filename', 'bbox_x', 'bbox_y', 'bbox_width', 'bbox_height', 'score',
                   'kps0_x', 'kps0_y', 'kps1_x', 'kps1_y', 'kps2_x', 'kps2_y',
                   'kps3_x', 'kps3_y', 'kps4_x', 'kps4_y']
-        csv_writer.writerow(header)
+        txtfile.write(" ".join(header) + '\n')
 
         image_files = [f for f in os.listdir(args.image_folder) if
                        f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
@@ -190,14 +189,7 @@ if __name__ == '__main__':
 
             dets = np.concatenate((dets, landms), axis=1)
 
-            # 如果需要，打开对应的txt文件准备写入
-            txt_f = None
-            if args.save_txt:
-                txt_filename = os.path.splitext(filename)[0] + ".txt"
-                txt_save_path = os.path.join(args.save_folder, txt_filename)
-                txt_f = open(txt_save_path, "w")
-
-            # 将检测信息保存到CSV文件，同时保存txt和绘制标注图
+            # 将检测信息保存到总的TXT文件，并绘制标注图
             for b in dets:
                 if b[4] < args.vis_thres:
                     continue
@@ -211,17 +203,12 @@ if __name__ == '__main__':
                 score_col = b[4]
                 kps_cols = b[5:].tolist()
 
-                # 2. 写入CSV文件
+                # 2. 写入总的TXT文件
                 row_data = [file_name_col, bbox_x, bbox_y, bbox_width, bbox_height, score_col] + kps_cols
-                csv_writer.writerow(row_data)
+                line_to_write = " ".join(map(str, row_data)) + "\n"
+                txtfile.write(line_to_write)
 
-                # 3. 写入TXT文件
-                if args.save_txt and txt_f:
-                    # txt文件格式：bbox_x, bbox_y, bbox_width, bbox_height, score, kps...
-                    txt_row_data = [bbox_x, bbox_y, bbox_width, bbox_height, score_col] + kps_cols
-                    txt_f.write(" ".join(map(str, txt_row_data)) + "\n")
-
-                # 4. 在图片上绘制检测结果
+                # 3. 在图片上绘制检测结果
                 if args.save_image:
                     text = "{:.4f}".format(b[4])
                     b_int = list(map(int, b))
@@ -236,15 +223,12 @@ if __name__ == '__main__':
                     cv2.circle(img_raw, (b_int[11], b_int[12]), 1, (0, 255, 0), 4)
                     cv2.circle(img_raw, (b_int[13], b_int[14]), 1, (255, 0, 0), 4)
 
-            # --- 循环结束后，关闭txt文件并保存标注图片 ---
-            if args.save_txt and txt_f:
-                txt_f.close()
-
+            # --- 循环结束后，保存标注图片 ---
             if args.save_image:
                 save_path = os.path.join(args.save_folder, filename)
                 cv2.imwrite(save_path, img_raw)
 
-    print(f"\nProcessing complete. Detections saved to '{args.output_csv}'.")
-    if args.save_image or args.save_txt:
-        print(f"Annotated images and/or TXT files are saved in '{args.save_folder}'.")
+    print(f"\nProcessing complete. All detections saved to '{args.output_txt}'.")
+    if args.save_image:
+        print(f"Annotated images are saved in '{args.save_folder}'.")
     # ======================= MODIFICATION END =============================
