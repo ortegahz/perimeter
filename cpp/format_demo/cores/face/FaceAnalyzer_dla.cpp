@@ -14,6 +14,7 @@
 #include <opencv2/core/cuda.hpp>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/cudaarithm.hpp>
+#include <opencv2/cudaimgproc.hpp>
 
 namespace fs = std::filesystem;
 
@@ -40,8 +41,8 @@ static inline int findOutputBinding(const nvinfer1::ICudaEngine &engine) {
 
 struct ModelConfig {
     std::string name = "mobilenet0.25";
-    std::vector<std::vector<int>> min_sizes = {{16, 32},
-                                               {64, 128},
+    std::vector<std::vector<int>> min_sizes = {{16,  32},
+                                               {64,  128},
                                                {256, 512}};
     std::vector<int> steps = {8, 16, 32};
     std::vector<float> variance = {0.1f, 0.2f};
@@ -442,34 +443,43 @@ cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::cuda::GpuMat &aligned
     if (!m_is_prepared)
         throw std::runtime_error("FaceAnalyzer not prepared.");
     if (aligned_img.size() != cv::Size(112, 112))
-        throw std::runtime_error("Input for get_embedding_from_aligned must be 112x112.");
+        throw std::runtime_error("Input must be 112x112.");
 
-    cv::cuda::GpuMat float_img;
-    aligned_img.convertTo(float_img, CV_32FC3);
-    cv::Scalar meanBGR(127.5, 127.5, 127.5);
-    cv::cuda::subtract(float_img, meanBGR, float_img);
-    cv::cuda::multiply(float_img, cv::Scalar(1.0 / 128.0), float_img);
+    // --------- 1. BGR -> RGB ---------
+    cv::Mat cpu_img;
+    aligned_img.download(cpu_img);
+    cv::cvtColor(cpu_img, cpu_img, cv::COLOR_BGR2RGB);
 
-    std::vector<float> preprocessed(1 * 3 * 112 * 112);
-    std::vector<cv::cuda::GpuMat> chs;
-    cv::cuda::split(float_img, chs);
+    // --------- 2. 转 float 并归一化 ---------
+    cpu_img.convertTo(cpu_img, CV_32FC3);
+    cpu_img = (cpu_img - 127.5) / 128.0;
+
+    // --------- 3. HWC -> CHW ---------
+    std::vector<cv::Mat> chs(3);
+    cv::split(cpu_img, chs);  // R=chs[0], G=chs[1], B=chs[2]
+
+    std::vector<float> preprocessed(3 * 112 * 112);
     for (int c = 0; c < 3; ++c) {
-        cv::Mat ch_host;
-        chs[c].download(ch_host);
-        std::memcpy(preprocessed.data() + c * 112 * 112, ch_host.ptr<float>(), 112 * 112 * sizeof(float));
+        memcpy(preprocessed.data() + c * 112 * 112,
+               chs[c].ptr<float>(),
+               112 * 112 * sizeof(float));
     }
 
+    // --------- 4. 推理 ---------
     int input_idx = findInputBinding(*m_rec_engine);
     int output_idx = findOutputBinding(*m_rec_engine);
-    if (input_idx < 0 || output_idx < 0)
-        throw std::runtime_error("Failed to find input/output binding in rec engine.");
 
-    cudaMemcpyAsync(m_buffers_rec[input_idx], preprocessed.data(), m_buffer_sizes_rec[input_idx],
-                    cudaMemcpyHostToDevice, m_stream);
+    cudaMemcpyAsync(m_buffers_rec[input_idx], preprocessed.data(),
+                    m_buffer_sizes_rec[input_idx], cudaMemcpyHostToDevice, m_stream);
     m_rec_context->enqueueV2(m_buffers_rec.data(), m_stream, nullptr);
+
     cv::Mat result(1, m_buffer_sizes_rec[output_idx] / sizeof(float), CV_32F);
-    cudaMemcpyAsync(result.ptr<float>(), m_buffers_rec[output_idx], m_buffer_sizes_rec[output_idx],
-                    cudaMemcpyDeviceToHost, m_stream);
+    cudaMemcpyAsync(result.ptr<float>(), m_buffers_rec[output_idx],
+                    m_buffer_sizes_rec[output_idx], cudaMemcpyDeviceToHost, m_stream);
     cudaStreamSynchronize(m_stream);
+
+    // --------- 5. L2 Normalize ---------
+    cv::normalize(result, result, 1.0, 0.0, cv::NORM_L2);
+
     return result.clone();
 }
