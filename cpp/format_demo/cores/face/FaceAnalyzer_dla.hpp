@@ -27,7 +27,7 @@ struct Landmark {
     float x_coords[5];
     float y_coords[5];
 };
-struct Detection {
+struct FaceDet {
     BBox box;
     float score;
     Landmark landmark;

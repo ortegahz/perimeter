@@ -101,7 +101,7 @@ std::vector<Landmark> decode_landmarks(const std::vector<float> &pre, const std:
     return landmarks;
 }
 
-std::vector<int> cpu_nms(std::vector<Detection> &dets, float thresh) {
+std::vector<int> cpu_nms(std::vector<FaceDet> &dets, float thresh) {
     std::vector<int> keep;
     if (dets.empty()) return keep;
     std::vector<size_t> order(dets.size());
@@ -213,7 +213,7 @@ void FaceAnalyzer::prepare(const std::string &provider,
     m_runtime.reset(nvinfer1::createInferRuntime(*m_logger));
     if (final_provider == "DLA") m_runtime->setDLACore(0);
 
-    std::cout << "[INFO] Initializing detection model..." << std::endl;
+    std::cout << "[INFO] Initializing FaceDet model..." << std::endl;
     m_det_engine = loadOrCreateEngine(*m_runtime, m_det_model_path, final_provider, *m_logger);
     m_det_context.reset(m_det_engine->createExecutionContext());
 
@@ -339,12 +339,12 @@ std::vector<Face> FaceAnalyzer::detect(const cv::cuda::GpuMat &img) {
 
     // inference
     int input_idx = findInputBinding(*m_det_engine, "input");
-    if (input_idx < 0) throw std::runtime_error("Detection model must have an input binding named 'input'");
+    if (input_idx < 0) throw std::runtime_error("FaceDet model must have an input binding named 'input'");
     int loc_idx = m_det_engine->getBindingIndex("boxes"),
             conf_idx = m_det_engine->getBindingIndex("scores"),
             landms_idx = m_det_engine->getBindingIndex("landmarks");
     if (loc_idx < 0 || conf_idx < 0 || landms_idx < 0)
-        throw std::runtime_error("Detection model missing output binding.");
+        throw std::runtime_error("FaceDet model missing output binding.");
 
     cudaMemcpyAsync(m_buffers_det[input_idx], input_data.data(), m_buffer_sizes_det[input_idx], cudaMemcpyHostToDevice,
                     m_stream);
@@ -371,11 +371,11 @@ std::vector<Face> FaceAnalyzer::detect(const cv::cuda::GpuMat &img) {
     auto boxes_normalized = decode_boxes(loc_output, priors);
     auto landms_normalized = decode_landmarks(landms_output, priors);
 
-    std::vector<Detection> dets_raw;
+    std::vector<FaceDet> dets_raw;
     for (int i = 0; i < num_priors; ++i) {
         float score = conf_output[i * 2 + 1];
         if (score > det_thresh_) {
-            Detection det;
+            FaceDet det;
             det.score = score;
             det.box.x1 = boxes_normalized[i].x1 * det_size_.width;
             det.box.y1 = boxes_normalized[i].y1 * det_size_.height;
@@ -390,7 +390,7 @@ std::vector<Face> FaceAnalyzer::detect(const cv::cuda::GpuMat &img) {
     }
     if (dets_raw.empty()) return {};
 
-    std::sort(dets_raw.begin(), dets_raw.end(), [](const Detection &a, const Detection &b) {
+    std::sort(dets_raw.begin(), dets_raw.end(), [](const FaceDet &a, const FaceDet &b) {
         return a.score > b.score;
     });
     if (dets_raw.size() > top_k) dets_raw.resize(top_k);
