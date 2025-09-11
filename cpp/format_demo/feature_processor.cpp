@@ -918,8 +918,8 @@ auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const 
 
     if (mode_ == "realtime") {
         // ---- 从CPU帧下载对应的cv::Mat用于后续处理和可视化 ----
-        cv::Mat frame_cpu;
-        full_frame.download(frame_cpu);
+//        cv::Mat frame_cpu;
+//        full_frame.download(frame_cpu);
         _extract_features_realtime(cam_id, fid, full_frame, dets);
     } else if (mode_ == "load") _load_features_from_cache(cam_id, fid, full_frame, dets);
 
