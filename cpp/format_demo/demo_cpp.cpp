@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "realtime"; // 默认为 "load" 模式
+    std::string MODE = "load"; // 默认为 "load" 模式
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -169,6 +169,7 @@ int main(int argc, char **argv) {
 
         int fid = 0;
         cv::Mat frame;
+        cv::cuda::GpuMat gpu_frame;
 
         double total_proc_time = 0.0;
         int proc_count = 0;
@@ -185,13 +186,14 @@ int main(int argc, char **argv) {
                       << " (" << processed_frames_count << "/" << total_to_process << ")";
 
             try {
+                gpu_frame.upload(frame);
                 // 修改：统一从缓存加载基础检测信息 (dets) 和可视化信息 (face_info)
                 LoadedData loaded_data = load_packet_from_cache(CAM_ID, fid, RAW_DIR);
 
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();
                 // MODIFIED HERE: 调用新的 process_packet 接口
-                auto mp = processor.process_packet(CAM_ID, fid, frame, loaded_data.packet.dets);
+                auto mp = processor.process_packet(CAM_ID, fid, gpu_frame, loaded_data.packet.dets);
                 auto t2 = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double, std::milli> proc_time = t2 - t1;
                 std::cout << "  [proc_packet took " << proc_time.count() << " ms]" << std::endl;

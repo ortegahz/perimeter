@@ -6,6 +6,8 @@
 #include <numeric>
 #include <iostream>
 #include <chrono>
+#include <opencv2/cudawarping.hpp>
+#include <opencv2/cudaimgproc.hpp>
 #include <iomanip> // For sprintf
 
 // ======================= 【MODIFIED】 =======================
@@ -505,9 +507,10 @@ void FeatureProcessor::_io_worker() {
     }
 }
 
-// MODIFIED HERE: The implementation of this function is updated
-void FeatureProcessor::_extract_features_realtime(const std::string &cam_id, int fid, const cv::Mat &full_frame,
-                                                  const std::vector<Detection> &dets) {
+// MODIFIED HERE: The implementation of this function is updated to use GpuMat
+void
+FeatureProcessor::_extract_features_realtime(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
+                                             const std::vector<Detection> &dets) {
     const auto &stream_id = cam_id;
     const int H = full_frame.rows;
     const int W = full_frame.cols;
@@ -515,10 +518,10 @@ void FeatureProcessor::_extract_features_realtime(const std::string &cam_id, int
 
     std::vector<Face> internal_face_info;
     if (face_analyzer_) {
-        cv::Mat small_frame;
+        cv::cuda::GpuMat gpu_small_frame;
         const float face_det_scale = 0.5f;
-        cv::resize(full_frame, small_frame, cv::Size(), face_det_scale, face_det_scale);
-        internal_face_info = face_analyzer_->detect(small_frame);
+        cv::cuda::resize(full_frame, gpu_small_frame, cv::Size(), face_det_scale, face_det_scale, cv::INTER_LINEAR);
+        internal_face_info = face_analyzer_->detect(gpu_small_frame);
 
         for (auto &face: internal_face_info) {
             face.bbox.x /= face_det_scale;
@@ -537,16 +540,19 @@ void FeatureProcessor::_extract_features_realtime(const std::string &cam_id, int
 
         cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
         if (roi.width <= 0 || roi.height <= 0) continue;
-        cv::Mat patch = full_frame(roi);
+
+        cv::cuda::GpuMat gpu_patch = full_frame(roi);
+        cv::Mat patch;
+        gpu_patch.download(patch);
 
         if (!is_long_patch(patch)) continue;
 
-        // MODIFICATION IS NOT NEEDED HERE: The call is polymorphic thanks to unique_ptr
-        // and consistent method signature
-        cv::Mat feat_mat = reid_model_->extract_feat(patch);
-        if (feat_mat.empty()) continue;
+        cv::cuda::GpuMat feat_mat_gpu = reid_model_->extract_feat(gpu_patch);
+        if (feat_mat_gpu.empty()) continue;
 
-        std::vector<float> feat_vec(feat_mat.begin<float>(), feat_mat.end<float>());
+        cv::Mat feat_mat_cpu;
+        feat_mat_gpu.download(feat_mat_cpu);
+        std::vector<float> feat_vec(feat_mat_cpu.begin<float>(), feat_mat_cpu.end<float>());
         std::string tid_str = stream_id + "_" + std::to_string(det.id);
 
         agg_pool[tid_str].add_body(feat_vec, det.score, patch.clone());
@@ -578,7 +584,11 @@ void FeatureProcessor::_extract_features_realtime(const std::string &cam_id, int
             cv::Rect face_roi(face_global_coords.bbox);
             face_roi &= cv::Rect(0, 0, W, H);
             if (face_roi.width < 32 || face_roi.height < 32) continue;
-            cv::Mat face_crop_for_blur = full_frame(face_roi);
+
+            cv::cuda::GpuMat gpu_face_crop = full_frame(face_roi);
+            cv::Mat face_crop_for_blur;
+            gpu_face_crop.download(face_crop_for_blur);
+
             cv::Mat gray, lap;
             cv::cvtColor(face_crop_for_blur, gray, cv::COLOR_BGR2GRAY);
             cv::Laplacian(gray, lap, CV_64F);
@@ -595,7 +605,11 @@ void FeatureProcessor::_extract_features_realtime(const std::string &cam_id, int
                 std::vector<float> f_emb(normalized_emb.begin<float>(), normalized_emb.end<float>());
 
                 std::string tid_str = stream_id + "_" + std::to_string(det.id);
-                cv::Mat person_patch = full_frame(roi);
+
+                cv::cuda::GpuMat gpu_person_patch = full_frame(roi);
+                cv::Mat person_patch;
+                gpu_person_patch.download(person_patch);
+
                 agg_pool[tid_str].add_face(f_emb, person_patch.clone());
                 last_seen[tid_str] = fid;
                 if (!feature_cache_path_.empty()) extracted_features_for_this_frame[tid_str]["face_feat"] = f_emb;
@@ -609,8 +623,8 @@ void FeatureProcessor::_extract_features_realtime(const std::string &cam_id, int
     }
 }
 
-// MODIFIED HERE: 整个函数被重构
-void FeatureProcessor::_load_features_from_cache(const std::string &cam_id, int fid, const cv::Mat &full_frame,
+// MODIFIED HERE: 整个函数被重构以使用 GpuMat
+void FeatureProcessor::_load_features_from_cache(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
                                                  const std::vector<Detection> &dets) {
     const auto &stream_id = cam_id;
     const int H = full_frame.rows;
@@ -630,7 +644,9 @@ void FeatureProcessor::_load_features_from_cache(const std::string &cam_id, int 
         // 内部裁剪 patch
         cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
         if (roi.width <= 0 || roi.height <= 0) continue;
-        cv::Mat patch = full_frame(roi);
+        cv::cuda::GpuMat gpu_patch = full_frame(roi);
+        cv::Mat patch;
+        gpu_patch.download(patch);
 
         auto &agg = agg_pool[tid_str_json];
 
@@ -698,8 +714,8 @@ void FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg
     submit_io_task(task);
 }
 
-// MODIFIED HERE: 修改了函数签名和内部调用
-auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const cv::Mat &full_frame,
+// MODIFIED HERE: 修改了函数签名和内部调用以使用 GpuMat
+auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
                                       const std::vector<Detection> &dets)
 -> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
     const auto &stream_id = cam_id;
@@ -713,8 +729,12 @@ auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const 
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AL"};
     }
 
-    if (mode_ == "realtime") _extract_features_realtime(cam_id, fid, full_frame, dets);
-    else if (mode_ == "load") _load_features_from_cache(cam_id, fid, full_frame, dets);
+    if (mode_ == "realtime") {
+        // ---- 从CPU帧下载对应的cv::Mat用于后续处理和可视化 ----
+        cv::Mat frame_cpu;
+        full_frame.download(frame_cpu);
+        _extract_features_realtime(cam_id, fid, full_frame, dets);
+    } else if (mode_ == "load") _load_features_from_cache(cam_id, fid, full_frame, dets);
 
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> realtime_map;
     for (auto const &[tid_str, agg]: agg_pool) {

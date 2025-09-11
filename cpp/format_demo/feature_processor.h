@@ -254,16 +254,17 @@ public:
     ~FeatureProcessor();
 
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>>
-    process_packet(const std::string &cam_id, int fid, const cv::Mat &full_frame, const std::vector<Detection> &dets);
+    process_packet(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
+                   const std::vector<Detection> &dets);
 
     void submit_io_task(IoTask task);
 
 private:
 
-    void _extract_features_realtime(const std::string &cam_id, int fid, const cv::Mat &full_frame,
+    void _extract_features_realtime(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
                                     const std::vector<Detection> &dets);
 
-    void _load_features_from_cache(const std::string &cam_id, int fid, const cv::Mat &full_frame,
+    void _load_features_from_cache(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
                                    const std::vector<Detection> &dets);
 
     std::vector<float> _fuse_feat(const std::vector<float> &face_f, const std::vector<float> &body_f);
