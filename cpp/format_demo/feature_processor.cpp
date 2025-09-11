@@ -15,7 +15,7 @@
 // ======================= 【修改结束】 =======================
 
 const std::string REID_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model.onnx";
-const std::string FACE_DET_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/det_10g_simplified.onnx";
+const std::string FACE_DET_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/mobilenet0.25_Final.onnx";
 const std::string FACE_REC_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/w600k_r50_simplified.onnx";
 const int REID_INPUT_WIDTH = 128;
 const int REID_INPUT_HEIGHT = 256;
