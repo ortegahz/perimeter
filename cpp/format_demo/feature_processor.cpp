@@ -716,9 +716,11 @@ void FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg
 
 // MODIFIED HERE: 修改了函数签名和内部调用以使用 GpuMat
 auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
-                                      const std::vector<Detection> &dets)
+                                      const std::vector<Detection> &dets, const ProcessConfig& config)
 -> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
     const auto &stream_id = cam_id;
+    // 获取当前摄像机的匹配阈值，如果未特定设置，则使用默认值
+    float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id) : MATCH_THR;
 
     if (intrusion_detectors.count(stream_id)) {
         for (int tid: intrusion_detectors.at(stream_id)->check(dets, stream_id))
@@ -772,14 +774,14 @@ auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const 
 
         if (tid2gid.count(tid_str)) {
             std::string bound_gid = tid2gid.at(tid_str);
-            if (!cand_gid.empty() && cand_gid != bound_gid && (fid - state.last_bind_fid) < BIND_LOCK_FRAMES) {
+            if (!cand_gid.empty() && cand_gid != bound_gid && score >= current_match_thr && (fid - state.last_bind_fid) < BIND_LOCK_FRAMES) {
                 int n_tid = gid_mgr.tid_hist.count(bound_gid) ? (int) gid_mgr.tid_hist.at(bound_gid).size() : 0;
                 realtime_map[s_id][tid_num] = {tid_str + "_-3", score, n_tid};
                 continue;
             }
         }
 
-        if (!cand_gid.empty() && score >= MATCH_THR) {
+        if (!cand_gid.empty() && score >= current_match_thr) {
             ng_state.ambig_count = 0;
             state.count = (state.cand_gid == cand_gid) ? state.count + 1 : 1;
             state.cand_gid = cand_gid;
@@ -789,7 +791,7 @@ auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const 
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = (int) gid_mgr.tid_hist[cand_gid].size();
-                if (n >= ALARM_CNT_TH) trigger_alarm(cand_gid, agg);
+                if (n >= config.alarm_cnt_th) trigger_alarm(cand_gid, agg);
                 realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
             } else {
                 std::string flag = (flag_code == -1) ? "_-4_ud_f" : (flag_code == -2) ? "_-4_ud_b" : "_-4_c";
@@ -802,7 +804,7 @@ auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const 
             state = {new_gid, CANDIDATE_FRAMES, fid};
             ng_state.last_new_fid = fid;
             int n = (int) gid_mgr.tid_hist[new_gid].size();
-            if (n >= ALARM_CNT_TH) trigger_alarm(new_gid, agg);
+            if (n >= config.alarm_cnt_th) trigger_alarm(new_gid, agg);
             realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
         } else if (!cand_gid.empty() && score >= THR_NEW_GID) {
             ng_state.ambig_count++;
@@ -813,7 +815,7 @@ auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const 
                 state = {new_gid, CANDIDATE_FRAMES, fid};
                 ng_state = {0, fid, 0};
                 int n = (int) gid_mgr.tid_hist[new_gid].size();
-                if (n >= ALARM_CNT_TH) trigger_alarm(new_gid, agg);
+                if (n >= config.alarm_cnt_th) trigger_alarm(new_gid, agg);
                 realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
             } else {
                 realtime_map[s_id][tid_num] = {tid_str + "_-7", score, 0};
@@ -829,7 +831,7 @@ auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const 
                     state = {new_gid, CANDIDATE_FRAMES, fid};
                     ng_state = {0, fid, 0};
                     int n = (int) gid_mgr.tid_hist[new_gid].size();
-                    if (n >= ALARM_CNT_TH) trigger_alarm(new_gid, agg);
+                    if (n >= config.alarm_cnt_th) trigger_alarm(new_gid, agg);
                     realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
                 } else {
                     realtime_map[s_id][tid_num] = {tid_str + "_-5", -1.0f, 0};

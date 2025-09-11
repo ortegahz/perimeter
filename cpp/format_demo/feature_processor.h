@@ -55,6 +55,14 @@ constexpr float FACE_DET_MIN_SCORE = 0.60f;
 const std::string SAVE_DIR = "/mnt/nfs/perimeter_cpp";
 const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
 
+/* ---------- 可调参数结构体 ---------- */
+struct ProcessConfig {
+    // Key: cam_id, Value: match_thr for that camera.
+    std::map<std::string, float> match_thr_by_cam;
+    // Global alarm count threshold.
+    int alarm_cnt_th = ALARM_CNT_TH;
+};
+
 /* ---------- 数据结构定义 ---------- */
 struct Detection {
     cv::Rect2f tlwh;
@@ -255,7 +263,7 @@ public:
 
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>>
     process_packet(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
-                   const std::vector<Detection> &dets);
+                   const std::vector<Detection> &dets, const ProcessConfig& config);
 
     void submit_io_task(IoTask task);
 

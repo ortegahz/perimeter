@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "load"; // 默认为 "load" 模式
+    std::string MODE = "realtime"; // 默认为 "load" 模式
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -190,10 +190,15 @@ int main(int argc, char **argv) {
                 // 修改：统一从缓存加载基础检测信息 (dets) 和可视化信息 (face_info)
                 LoadedData loaded_data = load_packet_from_cache(CAM_ID, fid, RAW_DIR);
 
+                // --- 新增：定义本次处理的配置参数 ---
+                ProcessConfig proc_config;
+                proc_config.alarm_cnt_th = 3;  // 示例：将全局告警计数阈值改为3
+                proc_config.match_thr_by_cam[CAM_ID] = 0.55f; // 示例：为当前相机"cam1"设置特定的匹配阈值
+
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();
                 // MODIFIED HERE: 调用新的 process_packet 接口
-                auto mp = processor.process_packet(CAM_ID, fid, gpu_frame, loaded_data.packet.dets);
+                auto mp = processor.process_packet(CAM_ID, fid, gpu_frame, loaded_data.packet.dets, proc_config);
                 auto t2 = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double, std::milli> proc_time = t2 - t1;
                 std::cout << "  [proc_packet took " << proc_time.count() << " ms]" << std::endl;
