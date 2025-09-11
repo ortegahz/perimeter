@@ -188,6 +188,7 @@ target_link_libraries(reid_demo_dla PRIVATE
 # ======================= 【修改结束】 =======================
 
 target_link_libraries(db_test_loader PRIVATE
+        ${OpenCV_LIBS}
         sqlite3
 )
 

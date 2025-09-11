@@ -7,12 +7,14 @@
 #include <iomanip>
 #include <algorithm>
 #include <sqlite3.h>
+#include <filesystem>
+#include <opencv2/opencv.hpp>
 
 // 从 feature_processor.h 复制必要的常量
 const std::string DB_PATH = "/mnt/nfs/perimeter_data.db.load.v1";
+const std::string DUMP_DIR = "/mnt/nfs/dumped_images";
 constexpr int EMB_FACE_DIM = 512;
 constexpr int EMB_BODY_DIM = 512;
-
 
 void write_state_to_file(const std::string &filepath,
                          int next_gid,
@@ -58,6 +60,12 @@ void write_state_to_file(const std::string &filepath,
 }
 
 int main() {
+    if (std::filesystem::exists(DUMP_DIR)) {
+        std::filesystem::remove_all(DUMP_DIR);
+    }
+    std::filesystem::create_directories(DUMP_DIR);
+    std::cout << "Image dump directory cleared and created at: " << DUMP_DIR << std::endl;
+
     sqlite3 *db;
     if (sqlite3_open_v2(DB_PATH.c_str(), &db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
         std::cerr << "Error: Can't open database: " << sqlite3_errmsg(db) << std::endl;
@@ -69,7 +77,7 @@ int main() {
     std::map<std::string, std::vector<std::vector<float>>> loaded_bodies;
     int max_gid_num = 0;
 
-    const char *sql = "SELECT gid, type, feature FROM prototypes ORDER BY gid, type, idx;";
+    const char *sql = "SELECT gid, type, idx, feature, image FROM prototypes ORDER BY gid, type, idx;";
     sqlite3_stmt *stmt;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
         std::cerr << "Error: Failed to prepare statement: " << sqlite3_errmsg(db) << std::endl;
@@ -80,17 +88,42 @@ int main() {
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         std::string gid = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
         std::string type = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
-        const float *feature_blob = static_cast<const float *>(sqlite3_column_blob(stmt, 2));
-        int bytes = sqlite3_column_bytes(stmt, 2);
+        int idx = sqlite3_column_int(stmt, 2);
+        const float *feature_blob = static_cast<const float *>(sqlite3_column_blob(stmt, 3));
+        int feature_bytes = sqlite3_column_bytes(stmt, 3);
+        const void *image_blob = sqlite3_column_blob(stmt, 4);
+        int image_bytes = sqlite3_column_bytes(stmt, 4);
 
         if (feature_blob) {
-            int num_floats = bytes / sizeof(float);
+            int num_floats = feature_bytes / sizeof(float);
             std::vector<float> feature(feature_blob, feature_blob + num_floats);
 
             if (type == "faces" && num_floats == EMB_FACE_DIM) {
                 loaded_faces[gid].push_back(feature);
             } else if (type == "bodies" && num_floats == EMB_BODY_DIM) {
                 loaded_bodies[gid].push_back(feature);
+            }
+        }
+
+        if (image_blob && image_bytes > 0) {
+            try {
+                std::vector<uchar> img_data(static_cast<const uchar *>(image_blob),
+                                            static_cast<const uchar *>(image_blob) + image_bytes);
+                cv::Mat image = cv::imdecode(img_data, cv::IMREAD_COLOR);
+
+                if (!image.empty()) {
+                    std::filesystem::path out_dir = std::filesystem::path(DUMP_DIR) / gid / type;
+                    std::filesystem::create_directories(out_dir);
+
+                    char filename[32];
+                    sprintf(filename, "%02d.jpg", idx);
+                    std::filesystem::path out_path = out_dir / filename;
+
+                    cv::imwrite(out_path.string(), image);
+                }
+            } catch (const std::exception &e) {
+                std::cerr << "Error processing image for GID " << gid << ", type " << type << ", idx " << idx << ": "
+                          << e.what() << std::endl;
             }
         }
 
