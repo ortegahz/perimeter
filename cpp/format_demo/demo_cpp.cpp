@@ -68,7 +68,7 @@ LoadedData load_packet_from_cache(const std::string &cam_id, int fid, const std:
     std::sort(original_indices.begin(), original_indices.end(), [&](int a, int b) {
         const auto &det_a = temp_dets[a];
         const auto &det_b = temp_dets[b];
-        if (det_a.id != det_b.id) return det_a.id < det_b.id;
+        if (det_a.id != det_b.id) return det_a.id < det_a.id;
         if (std::abs(det_a.score - det_b.score) > 1e-5) return det_a.score > det_b.score;
         const auto &tlwh_a = det_a.tlwh;
         const auto &tlwh_b = det_b.tlwh;
@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "realtime"; // 默认为 "load" 模式
+    std::string MODE = "load"; // 默认为 "load" 模式
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -377,6 +377,13 @@ int main(int argc, char **argv) {
         cap.release();
         writer.release();
         fout.close();
+
+        // ======================= 【MODIFIED】 =======================
+        // 新增：在程序结束前，保存内存状态以供验证。
+        // processor的析构函数将在此代码块结束时被调用，它会等待所有I/O完成并关闭数据库。
+        std::cout << "\n--- Final State Verification ---" << std::endl;
+        processor.save_final_state_to_file("/mnt/nfs/state_before_shutdown.txt");
+        // ======================= 【修改结束】 =======================
 
     } catch (const std::exception &e) {
         std::cerr << "\nAn unrecoverable error occurred: " << e.what() << std::endl;

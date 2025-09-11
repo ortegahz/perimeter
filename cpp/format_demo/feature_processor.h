@@ -267,9 +267,14 @@ public:
 
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>>
     process_packet(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
-                   const std::vector<Detection> &dets, const ProcessConfig& config);
+                   const std::vector<Detection> &dets, const ProcessConfig &config);
 
     void submit_io_task(IoTask task);
+
+    // ======================= 【MODIFIED】 =======================
+    // 新增：用于调试和验证的函数
+    void save_final_state_to_file(const std::string &filepath);
+    // ======================= 【修改结束】 =======================
 
 private:
 
@@ -287,7 +292,9 @@ private:
 
     // I/O线程相关
     void _io_worker();
+
     void _init_db();
+
     void _close_db();
 
     std::thread io_thread_;
@@ -297,7 +304,7 @@ private:
     std::atomic<bool> stop_io_thread_{false};
 
     // 数据库句柄
-    sqlite3* db_ = nullptr;
+    sqlite3 *db_ = nullptr;
 
     std::string mode_;
     std::string device_;

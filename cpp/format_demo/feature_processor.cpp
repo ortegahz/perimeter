@@ -271,7 +271,8 @@ static void _add_or_update_prototype(
         char filename[32];
         sprintf(filename, "%02d.jpg", idx_to_replace);
         IoTask task;
-        task.type = is_new_proto ? IoTaskType::SAVE_PROTOTYPE : IoTaskType::UPDATE_PROTOTYPE; // is_new_proto is now defined
+        task.type = is_new_proto ? IoTaskType::SAVE_PROTOTYPE
+                                 : IoTaskType::UPDATE_PROTOTYPE; // is_new_proto is now defined
         task.gid = gid;
         task.feature = feat_list[idx_to_replace]; // The feature is already updated/added at this index
         task.path_suffix = std::string(type) + "/" + filename;
@@ -420,16 +421,21 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
     io_thread_ = std::thread(&FeatureProcessor::_io_worker, this);
 }
 
+// ======================= 【MODIFIED】 =======================
 FeatureProcessor::~FeatureProcessor() {
-    // 优雅地关闭数据库和I/O线程
-    stop_io_thread_ = true;
-    queue_cond_.notify_one();
-    queue_cond_.notify_one();
-    if (io_thread_.joinable()) {
-        io_thread_.join();
+    // 确保析构时，I/O线程被正确停止，数据库被安全关闭
+    if (!stop_io_thread_.load()) {
+        stop_io_thread_ = true;
+        queue_cond_.notify_all(); // 唤醒可能正在等待的I/O线程
+        if (io_thread_.joinable()) {
+            io_thread_.join();
+        }
+        std::cout << "I/O thread finished." << std::endl;
+        _close_db();
+        std::cout << "Database connection closed." << std::endl;
     }
-    std::cout << "I/O thread finished." << std::endl;
 }
+// ======================= 【修改结束】 =======================
 
 void FeatureProcessor::submit_io_task(IoTask task) {
     {
@@ -449,7 +455,7 @@ void FeatureProcessor::_init_db() {
     }
 
     char *zErrMsg = nullptr;
-    const char* schema = R"(
+    const char *schema = R"(
         PRAGMA foreign_keys = ON;
 
         CREATE TABLE prototypes (
@@ -527,12 +533,12 @@ void FeatureProcessor::_io_worker() {
                         if (slash_pos != std::string::npos) {
                             proto_type = task.path_suffix.substr(0, slash_pos);
                             std::string idx_str = task.path_suffix.substr(slash_pos + 1);
-                            try { proto_idx = std::stoi(idx_str.substr(0, idx_str.find('.'))); } catch(...) {}
+                            try { proto_idx = std::stoi(idx_str.substr(0, idx_str.find('.'))); } catch (...) {}
                         }
 
                         if (proto_idx != -1) {
-                            const char* sql = "INSERT OR REPLACE INTO prototypes (gid, type, idx, feature, image) VALUES (?, ?, ?, ?, ?);";
-                            sqlite3_stmt* stmt;
+                            const char *sql = "INSERT OR REPLACE INTO prototypes (gid, type, idx, feature, image) VALUES (?, ?, ?, ?, ?);";
+                            sqlite3_stmt *stmt;
                             if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
                                 std::vector<uchar> img_buf;
                                 cv::imencode(".jpg", task.image, img_buf);
@@ -540,11 +546,13 @@ void FeatureProcessor::_io_worker() {
                                 sqlite3_bind_text(stmt, 1, task.gid.c_str(), -1, SQLITE_STATIC);
                                 sqlite3_bind_text(stmt, 2, proto_type.c_str(), -1, SQLITE_STATIC);
                                 sqlite3_bind_int(stmt, 3, proto_idx);
-                                sqlite3_bind_blob(stmt, 4, task.feature.data(), task.feature.size() * sizeof(float), SQLITE_STATIC);
+                                sqlite3_bind_blob(stmt, 4, task.feature.data(), task.feature.size() * sizeof(float),
+                                                  SQLITE_STATIC);
                                 sqlite3_bind_blob(stmt, 5, img_buf.data(), img_buf.size(), SQLITE_STATIC);
 
                                 if (sqlite3_step(stmt) != SQLITE_DONE) {
-                                    std::cerr << "\nDB Error (SAVE/UPDATE_PROTOTYPE): " << sqlite3_errmsg(db_) << std::endl;
+                                    std::cerr << "\nDB Error (SAVE/UPDATE_PROTOTYPE): " << sqlite3_errmsg(db_)
+                                              << std::endl;
                                 }
                                 sqlite3_finalize(stmt);
                             }
@@ -556,7 +564,7 @@ void FeatureProcessor::_io_worker() {
                     for (const auto &file_path_str: task.files_to_remove) {
                         std::filesystem::path file_path(file_path_str);
                         if (std::filesystem::exists(file_path)) {
-                             std::filesystem::remove(file_path);
+                            std::filesystem::remove(file_path);
                         }
 
                         if (db_) {
@@ -566,8 +574,8 @@ void FeatureProcessor::_io_worker() {
                                 std::string gid_str = file_path.parent_path().parent_path().filename().string();
                                 int proto_idx = std::stoi(idx_str);
 
-                                const char* sql = "DELETE FROM prototypes WHERE gid = ? AND type = ? AND idx = ?;";
-                                sqlite3_stmt* stmt;
+                                const char *sql = "DELETE FROM prototypes WHERE gid = ? AND type = ? AND idx = ?;";
+                                sqlite3_stmt *stmt;
                                 if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
                                     sqlite3_bind_text(stmt, 1, gid_str.c_str(), -1, SQLITE_STATIC);
                                     sqlite3_bind_text(stmt, 2, type_str.c_str(), -1, SQLITE_STATIC);
@@ -577,8 +585,9 @@ void FeatureProcessor::_io_worker() {
                                     }
                                     sqlite3_finalize(stmt);
                                 }
-                            } catch(const std::exception& e) {
-                                std::cerr << "\nDB Error parsing path to delete: " << file_path_str << " - " << e.what() << std::endl;
+                            } catch (const std::exception &e) {
+                                std::cerr << "\nDB Error parsing path to delete: " << file_path_str << " - " << e.what()
+                                          << std::endl;
                             }
                         }
                     }
@@ -611,8 +620,8 @@ void FeatureProcessor::_io_worker() {
 
                     // --- 数据库备份 ---
                     if (db_) {
-                        sqlite3_stmt* alarm_stmt;
-                        const char* sql_alarm = "INSERT INTO alarms (gid, timestamp) VALUES (?, ?);";
+                        sqlite3_stmt *alarm_stmt;
+                        const char *sql_alarm = "INSERT INTO alarms (gid, timestamp) VALUES (?, ?);";
                         long long alarm_db_id = -1;
 
                         if (sqlite3_prepare_v2(db_, sql_alarm, -1, &alarm_stmt, nullptr) == SQLITE_OK) {
@@ -621,24 +630,26 @@ void FeatureProcessor::_io_worker() {
                             if (sqlite3_step(alarm_stmt) == SQLITE_DONE) {
                                 alarm_db_id = sqlite3_last_insert_rowid(db_);
                             } else {
-                                std::cerr << "\nDB Error (BACKUP_ALARM - insert alarm): " << sqlite3_errmsg(db_) << std::endl;
+                                std::cerr << "\nDB Error (BACKUP_ALARM - insert alarm): " << sqlite3_errmsg(db_)
+                                          << std::endl;
                             }
                             sqlite3_finalize(alarm_stmt);
                         }
 
                         if (alarm_db_id != -1) {
-                            const char* sql_patch = "INSERT INTO alarm_patches (alarm_id, type, image_data) VALUES (?, ?, ?);";
-                            sqlite3_stmt* patch_stmt;
+                            const char *sql_patch = "INSERT INTO alarm_patches (alarm_id, type, image_data) VALUES (?, ?, ?);";
+                            sqlite3_stmt *patch_stmt;
                             if (sqlite3_prepare_v2(db_, sql_patch, -1, &patch_stmt, nullptr) == SQLITE_OK) {
-                                auto process_patches = [&](const std::vector<cv::Mat>& patches, const char* type) {
-                                    for (const auto& patch : patches) {
+                                auto process_patches = [&](const std::vector<cv::Mat> &patches, const char *type) {
+                                    for (const auto &patch: patches) {
                                         std::vector<uchar> img_buf;
                                         cv::imencode(".jpg", patch, img_buf);
                                         sqlite3_bind_int64(patch_stmt, 1, alarm_db_id);
                                         sqlite3_bind_text(patch_stmt, 2, type, -1, SQLITE_STATIC);
                                         sqlite3_bind_blob(patch_stmt, 3, img_buf.data(), img_buf.size(), SQLITE_STATIC);
                                         if (sqlite3_step(patch_stmt) != SQLITE_DONE) {
-                                            std::cerr << "\nDB Error (BACKUP_ALARM - insert patch): " << sqlite3_errmsg(db_) << std::endl;
+                                            std::cerr << "\nDB Error (BACKUP_ALARM - insert patch): "
+                                                      << sqlite3_errmsg(db_) << std::endl;
                                         }
                                         sqlite3_reset(patch_stmt);
                                     }
@@ -660,15 +671,15 @@ void FeatureProcessor::_io_worker() {
                         std::filesystem::remove_all(dir_to_del);
 
                         if (db_) {
-                             sqlite3_stmt* stmt;
-                             const char* sql = "DELETE FROM prototypes WHERE gid = ?;";
-                             if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-                                 sqlite3_bind_text(stmt, 1, task.gid.c_str(), -1, SQLITE_STATIC);
-                                 if (sqlite3_step(stmt) != SQLITE_DONE) {
-                                     std::cerr << "\nDB Error (CLEANUP_GID_DIR): " << sqlite3_errmsg(db_) << std::endl;
-                                 }
-                                 sqlite3_finalize(stmt);
-                             }
+                            sqlite3_stmt *stmt;
+                            const char *sql = "DELETE FROM prototypes WHERE gid = ?;";
+                            if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                                sqlite3_bind_text(stmt, 1, task.gid.c_str(), -1, SQLITE_STATIC);
+                                if (sqlite3_step(stmt) != SQLITE_DONE) {
+                                    std::cerr << "\nDB Error (CLEANUP_GID_DIR): " << sqlite3_errmsg(db_) << std::endl;
+                                }
+                                sqlite3_finalize(stmt);
+                            }
                         }
                     }
                     break;
@@ -889,11 +900,12 @@ void FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg
 
 // MODIFIED HERE: 修改了函数签名和内部调用以使用 GpuMat
 auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
-                                      const std::vector<Detection> &dets, const ProcessConfig& config)
+                                      const std::vector<Detection> &dets, const ProcessConfig &config)
 -> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
     const auto &stream_id = cam_id;
     // 获取当前摄像机的匹配阈值，如果未特定设置，则使用默认值
-    float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id) : MATCH_THR;
+    float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id)
+                                                                       : MATCH_THR;
 
     if (intrusion_detectors.count(stream_id)) {
         for (int tid: intrusion_detectors.at(stream_id)->check(dets, stream_id))
@@ -947,7 +959,8 @@ auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const 
 
         if (tid2gid.count(tid_str)) {
             std::string bound_gid = tid2gid.at(tid_str);
-            if (!cand_gid.empty() && cand_gid != bound_gid && score >= current_match_thr && (fid - state.last_bind_fid) < BIND_LOCK_FRAMES) {
+            if (!cand_gid.empty() && cand_gid != bound_gid && score >= current_match_thr &&
+                (fid - state.last_bind_fid) < BIND_LOCK_FRAMES) {
                 int n_tid = gid_mgr.tid_hist.count(bound_gid) ? (int) gid_mgr.tid_hist.at(bound_gid).size() : 0;
                 realtime_map[s_id][tid_num] = {tid_str + "_-3", score, n_tid};
                 continue;
@@ -1075,3 +1088,49 @@ auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const 
 
     return realtime_map;
 }
+
+// ======================= 【MODIFIED】 =======================
+// 新增：用于调试和验证的函数，将内存中的 GID 状态写入文件
+void FeatureProcessor::save_final_state_to_file(const std::string &filepath) {
+    std::ofstream out(filepath);
+    out << "Next GID: " << gid_mgr.gid_next << "\n\n";
+
+    std::set<std::string> all_gids;
+    for (const auto &pair: gid_mgr.bank_faces) all_gids.insert(pair.first);
+    for (const auto &pair: gid_mgr.bank_bodies) all_gids.insert(pair.first);
+
+    // std::set 保证了 GID 的遍历顺序是字母序，与 load_and_dump.cpp 中 ORDER BY gid 的行为一致
+    for (const auto &gid: all_gids) {
+        out << "--- GID: " << gid << " ---\n";
+
+        if (gid_mgr.bank_faces.count(gid)) {
+            const auto &face_feats = gid_mgr.bank_faces.at(gid);
+            out << "Faces: " << face_feats.size() << "\n";
+            // 假设 bank_faces 中特征的顺序与数据库中的 idx 顺序一致
+            for (size_t i = 0; i < face_feats.size(); ++i) {
+                out << "  Face[" << i << "]: ";
+                for (float val: face_feats[i]) {
+                    out << std::fixed << std::setprecision(8) << val << " ";
+                }
+                out << "\n";
+            }
+        }
+
+        if (gid_mgr.bank_bodies.count(gid)) {
+            const auto &body_feats = gid_mgr.bank_bodies.at(gid);
+            out << "Bodies: " << body_feats.size() << "\n";
+            // 假设 bank_bodies 中特征的顺序与数据库中的 idx 顺序一致
+            for (size_t i = 0; i < body_feats.size(); ++i) {
+                out << "  Body[" << i << "]: ";
+                for (float val: body_feats[i]) {
+                    out << std::fixed << std::setprecision(8) << val << " ";
+                }
+                out << "\n";
+            }
+        }
+        out << "\n";
+    }
+    out.close();
+    std::cout << "In-memory state successfully written to " << filepath << std::endl;
+}
+// ======================= 【修改结束】 =======================

@@ -9,9 +9,9 @@
 #include <sqlite3.h>
 
 // 从 feature_processor.h 复制必要的常量
-const std::string DB_PATH = "/mnt/nfs/perimeter_data.db.load";
+const std::string DB_PATH = "/mnt/nfs/perimeter_data.db.load.v1";
 constexpr int EMB_FACE_DIM = 512;
-constexpr int EMB_BODY_DIM = 2048;
+constexpr int EMB_BODY_DIM = 512;
 
 
 void write_state_to_file(const std::string &filepath,
