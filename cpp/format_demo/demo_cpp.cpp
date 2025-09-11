@@ -192,8 +192,8 @@ int main(int argc, char **argv) {
 
                 // --- 新增：定义本次处理的配置参数 ---
                 ProcessConfig proc_config;
-                proc_config.alarm_cnt_th = 3;  // 示例：将全局告警计数阈值改为3
-                proc_config.match_thr_by_cam[CAM_ID] = 0.55f; // 示例：为当前相机"cam1"设置特定的匹配阈值
+                proc_config.alarm_cnt_th = 2;  // 示例：将全局告警计数阈值改为3
+                proc_config.match_thr_by_cam[CAM_ID] = 0.5f; // 示例：为当前相机"cam1"设置特定的匹配阈值
 
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();

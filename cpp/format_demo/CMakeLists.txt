@@ -18,6 +18,11 @@ if (NOT OpenCV_FOUND)
     message(FATAL_ERROR "OpenCV not found in the specified PERIMETER_LIBS_DIR. Please check the path and your ARM build of OpenCV.")
 endif ()
 
+# ----------------- SQLite3 -----------------
+find_package(SQLite3 REQUIRED)
+message(STATUS "Found SQLite3 library: ${SQLITE3_LIBRARIES}")
+include_directories(${SQLITE3_INCLUDE_DIRS})
+
 # ----------------- CUDA -----------------
 find_package(CUDA REQUIRED)
 
@@ -118,6 +123,7 @@ target_link_libraries(demo_cpp PRIVATE
         ${TRT_LIBS}
         ${CUDA_LIBRARIES}
         ${CUDA_EXTRA_LIBS}
+        sqlite3
 )
 
 target_link_libraries(face_extractor PRIVATE
@@ -173,6 +179,7 @@ target_link_libraries(reid_demo_dla PRIVATE
         ${TRT_LIBS}
         ${CUDA_LIBRARIES}
         ${CUDA_EXTRA_LIBS}
+        sqlite3
 )
 # ======================= 【修改结束】 =======================
 

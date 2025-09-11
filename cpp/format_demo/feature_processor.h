@@ -17,6 +17,7 @@
 #include <atomic>
 #include <queue>
 
+#include <sqlite3.h>
 // MODIFIED HERE: Include the correct header
 #include "cores/personReid/PersonReid_dla.hpp"
 #include "cores/face/FaceAnalyzer_dla.hpp"
@@ -54,6 +55,7 @@ constexpr float FACE_DET_MIN_SCORE = 0.60f;
 
 const std::string SAVE_DIR = "/mnt/nfs/perimeter_cpp";
 const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
+const std::string DB_PATH = "/mnt/nfs/perimeter_data.db";
 
 /* ---------- 可调参数结构体 ---------- */
 struct ProcessConfig {
@@ -234,17 +236,19 @@ struct NewGidState {
 
 // 定义I/O任务
 enum class IoTaskType {
-    SAVE_PROTOTYPE,
+    CREATE_DIRS,    // 初始化环境
+    SAVE_PROTOTYPE,   // 保存一个新的原型
+    UPDATE_PROTOTYPE, // 更新一个已有的原型
     REMOVE_FILES,
     BACKUP_ALARM,
-    CLEANUP_GID_DIR,
-    CREATE_DIRS
+    CLEANUP_GID_DIR
 };
 
 struct IoTask {
     IoTaskType type;
     std::string gid;
     cv::Mat image;
+    std::vector<float> feature; // 用于SAVE/UPDATE_PROTOTYPE
     std::string path_suffix;
     std::vector<std::string> files_to_remove;
     std::string timestamp;
@@ -283,12 +287,17 @@ private:
 
     // I/O线程相关
     void _io_worker();
+    void _init_db();
+    void _close_db();
 
     std::thread io_thread_;
     std::queue<IoTask> io_queue_;
     std::mutex queue_mutex_;
     std::condition_variable queue_cond_;
     std::atomic<bool> stop_io_thread_{false};
+
+    // 数据库句柄
+    sqlite3* db_ = nullptr;
 
     std::string mode_;
     std::string device_;

@@ -8,6 +8,7 @@
 #include <chrono>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/cudaimgproc.hpp>
+#include <opencv2/cudaimgproc.hpp>
 #include <iomanip> // For sprintf
 
 // ======================= 【MODIFIED】 =======================
@@ -70,6 +71,7 @@ static float vec_dist(const std::vector<float> &a, const std::vector<float> &b) 
 }
 
 static std::pair<float, float> mean_stddev(const std::vector<float> &data) {
+    if (data.size() < 2) return {data.empty() ? 0.f : data[0], 0.f};
     if (data.empty()) return {0.f, 0.f};
     float sum = std::accumulate(data.begin(), data.end(), 0.0f);
     float mean = sum / data.size();
@@ -246,6 +248,7 @@ static void _add_or_update_prototype(
         if (max_sim < UPDATE_THR) return;
     }
 
+    bool is_new_proto = false;
     int idx_to_replace = -1;
     if ((int) feat_list.size() < MAX_PROTO_PER_TYPE) {
         idx_to_replace = feat_list.size();
@@ -268,8 +271,9 @@ static void _add_or_update_prototype(
         char filename[32];
         sprintf(filename, "%02d.jpg", idx_to_replace);
         IoTask task;
-        task.type = IoTaskType::SAVE_PROTOTYPE;
+        task.type = is_new_proto ? IoTaskType::SAVE_PROTOTYPE : IoTaskType::UPDATE_PROTOTYPE; // is_new_proto is now defined
         task.gid = gid;
+        task.feature = feat_list[idx_to_replace]; // The feature is already updated/added at this index
         task.path_suffix = std::string(type) + "/" + filename;
         task.image = new_patch.clone(); // Deep copy for thread safety
         fp->submit_io_task(task);
@@ -412,11 +416,14 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
     }
 
     submit_io_task({IoTaskType::CREATE_DIRS});
+    _init_db();
     io_thread_ = std::thread(&FeatureProcessor::_io_worker, this);
 }
 
 FeatureProcessor::~FeatureProcessor() {
+    // 优雅地关闭数据库和I/O线程
     stop_io_thread_ = true;
+    queue_cond_.notify_one();
     queue_cond_.notify_one();
     if (io_thread_.joinable()) {
         io_thread_.join();
@@ -430,6 +437,58 @@ void FeatureProcessor::submit_io_task(IoTask task) {
         io_queue_.push(std::move(task));
     }
     queue_cond_.notify_one();
+}
+
+void FeatureProcessor::_init_db() {
+    // 如果文件已存在，先删除，确保从干净状态开始
+    std::remove(DB_PATH.c_str());
+
+    if (sqlite3_open(DB_PATH.c_str(), &db_) != SQLITE_OK) {
+        std::string errmsg = db_ ? sqlite3_errmsg(db_) : "Unknown SQLite error";
+        throw std::runtime_error("Can't open database: " + errmsg);
+    }
+
+    char *zErrMsg = nullptr;
+    const char* schema = R"(
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE prototypes (
+            gid TEXT NOT NULL,
+            type TEXT NOT NULL,
+            idx INTEGER NOT NULL,
+            feature BLOB,
+            image BLOB,
+            PRIMARY KEY (gid, type, idx)
+        );
+
+        CREATE TABLE alarms (
+            alarm_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            gid TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        );
+
+        CREATE TABLE alarm_patches (
+            patch_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alarm_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            image_data BLOB NOT NULL,
+            FOREIGN KEY (alarm_id) REFERENCES alarms(alarm_id) ON DELETE CASCADE
+        );
+    )";
+
+    if (sqlite3_exec(db_, schema, nullptr, nullptr, &zErrMsg) != SQLITE_OK) {
+        std::string err_msg = "SQL error during schema creation: " + std::string(zErrMsg);
+        sqlite3_free(zErrMsg);
+        sqlite3_close(db_);
+        db_ = nullptr;
+        throw std::runtime_error(err_msg);
+    }
+    std::cout << "Database initialized successfully at " << DB_PATH << std::endl;
+}
+
+void FeatureProcessor::_close_db() {
+    if (db_) sqlite3_close(db_);
+    db_ = nullptr;
 }
 
 void FeatureProcessor::_io_worker() {
@@ -454,19 +513,79 @@ void FeatureProcessor::_io_worker() {
                     std::filesystem::create_directories(ALARM_DIR);
                     break;
                 }
-                case IoTaskType::SAVE_PROTOTYPE: {
+                case IoTaskType::SAVE_PROTOTYPE:
+                case IoTaskType::UPDATE_PROTOTYPE: {
                     auto full_path = std::filesystem::path(SAVE_DIR) / task.gid / task.path_suffix;
                     std::filesystem::create_directories(full_path.parent_path());
                     cv::imwrite(full_path.string(), task.image);
+
+                    // --- 数据库操作 ---
+                    if (db_) {
+                        std::string proto_type;
+                        int proto_idx = -1;
+                        size_t slash_pos = task.path_suffix.find('/');
+                        if (slash_pos != std::string::npos) {
+                            proto_type = task.path_suffix.substr(0, slash_pos);
+                            std::string idx_str = task.path_suffix.substr(slash_pos + 1);
+                            try { proto_idx = std::stoi(idx_str.substr(0, idx_str.find('.'))); } catch(...) {}
+                        }
+
+                        if (proto_idx != -1) {
+                            const char* sql = "INSERT OR REPLACE INTO prototypes (gid, type, idx, feature, image) VALUES (?, ?, ?, ?, ?);";
+                            sqlite3_stmt* stmt;
+                            if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                                std::vector<uchar> img_buf;
+                                cv::imencode(".jpg", task.image, img_buf);
+
+                                sqlite3_bind_text(stmt, 1, task.gid.c_str(), -1, SQLITE_STATIC);
+                                sqlite3_bind_text(stmt, 2, proto_type.c_str(), -1, SQLITE_STATIC);
+                                sqlite3_bind_int(stmt, 3, proto_idx);
+                                sqlite3_bind_blob(stmt, 4, task.feature.data(), task.feature.size() * sizeof(float), SQLITE_STATIC);
+                                sqlite3_bind_blob(stmt, 5, img_buf.data(), img_buf.size(), SQLITE_STATIC);
+
+                                if (sqlite3_step(stmt) != SQLITE_DONE) {
+                                    std::cerr << "\nDB Error (SAVE/UPDATE_PROTOTYPE): " << sqlite3_errmsg(db_) << std::endl;
+                                }
+                                sqlite3_finalize(stmt);
+                            }
+                        }
+                    }
                     break;
                 }
                 case IoTaskType::REMOVE_FILES: {
-                    for (const auto &file_path: task.files_to_remove) {
-                        if (std::filesystem::exists(file_path)) std::filesystem::remove(file_path);
+                    for (const auto &file_path_str: task.files_to_remove) {
+                        std::filesystem::path file_path(file_path_str);
+                        if (std::filesystem::exists(file_path)) {
+                             std::filesystem::remove(file_path);
+                        }
+
+                        if (db_) {
+                            try {
+                                std::string idx_str = file_path.stem().string();
+                                std::string type_str = file_path.parent_path().filename().string();
+                                std::string gid_str = file_path.parent_path().parent_path().filename().string();
+                                int proto_idx = std::stoi(idx_str);
+
+                                const char* sql = "DELETE FROM prototypes WHERE gid = ? AND type = ? AND idx = ?;";
+                                sqlite3_stmt* stmt;
+                                if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                                    sqlite3_bind_text(stmt, 1, gid_str.c_str(), -1, SQLITE_STATIC);
+                                    sqlite3_bind_text(stmt, 2, type_str.c_str(), -1, SQLITE_STATIC);
+                                    sqlite3_bind_int(stmt, 3, proto_idx);
+                                    if (sqlite3_step(stmt) != SQLITE_DONE) {
+                                        std::cerr << "\nDB Error (REMOVE_FILES): " << sqlite3_errmsg(db_) << std::endl;
+                                    }
+                                    sqlite3_finalize(stmt);
+                                }
+                            } catch(const std::exception& e) {
+                                std::cerr << "\nDB Error parsing path to delete: " << file_path_str << " - " << e.what() << std::endl;
+                            }
+                        }
                     }
                     break;
                 }
                 case IoTaskType::BACKUP_ALARM: {
+                    // --- 文件系统备份 ---
                     std::filesystem::path dst_dir =
                             std::filesystem::path(ALARM_DIR) / (task.gid + "_" + task.timestamp);
                     std::filesystem::path src_dir = std::filesystem::path(SAVE_DIR) / task.gid;
@@ -489,6 +608,48 @@ void FeatureProcessor::_io_worker() {
                         sprintf(fname, "%03zu.jpg", i);
                         cv::imwrite((seq_body_dir / fname).string(), task.body_patches_backup[i]);
                     }
+
+                    // --- 数据库备份 ---
+                    if (db_) {
+                        sqlite3_stmt* alarm_stmt;
+                        const char* sql_alarm = "INSERT INTO alarms (gid, timestamp) VALUES (?, ?);";
+                        long long alarm_db_id = -1;
+
+                        if (sqlite3_prepare_v2(db_, sql_alarm, -1, &alarm_stmt, nullptr) == SQLITE_OK) {
+                            sqlite3_bind_text(alarm_stmt, 1, task.gid.c_str(), -1, SQLITE_STATIC);
+                            sqlite3_bind_text(alarm_stmt, 2, task.timestamp.c_str(), -1, SQLITE_STATIC);
+                            if (sqlite3_step(alarm_stmt) == SQLITE_DONE) {
+                                alarm_db_id = sqlite3_last_insert_rowid(db_);
+                            } else {
+                                std::cerr << "\nDB Error (BACKUP_ALARM - insert alarm): " << sqlite3_errmsg(db_) << std::endl;
+                            }
+                            sqlite3_finalize(alarm_stmt);
+                        }
+
+                        if (alarm_db_id != -1) {
+                            const char* sql_patch = "INSERT INTO alarm_patches (alarm_id, type, image_data) VALUES (?, ?, ?);";
+                            sqlite3_stmt* patch_stmt;
+                            if (sqlite3_prepare_v2(db_, sql_patch, -1, &patch_stmt, nullptr) == SQLITE_OK) {
+                                auto process_patches = [&](const std::vector<cv::Mat>& patches, const char* type) {
+                                    for (const auto& patch : patches) {
+                                        std::vector<uchar> img_buf;
+                                        cv::imencode(".jpg", patch, img_buf);
+                                        sqlite3_bind_int64(patch_stmt, 1, alarm_db_id);
+                                        sqlite3_bind_text(patch_stmt, 2, type, -1, SQLITE_STATIC);
+                                        sqlite3_bind_blob(patch_stmt, 3, img_buf.data(), img_buf.size(), SQLITE_STATIC);
+                                        if (sqlite3_step(patch_stmt) != SQLITE_DONE) {
+                                            std::cerr << "\nDB Error (BACKUP_ALARM - insert patch): " << sqlite3_errmsg(db_) << std::endl;
+                                        }
+                                        sqlite3_reset(patch_stmt);
+                                    }
+                                };
+                                process_patches(task.face_patches_backup, "face");
+                                process_patches(task.body_patches_backup, "body");
+                                sqlite3_finalize(patch_stmt);
+                            }
+                        }
+                    }
+
                     std::cout << "\n[ALARM] GID " << task.gid << " triggered and backed up to " << dst_dir.string()
                               << std::endl;
                     break;
@@ -497,10 +658,22 @@ void FeatureProcessor::_io_worker() {
                     auto dir_to_del = std::filesystem::path(SAVE_DIR) / task.gid;
                     if (std::filesystem::exists(dir_to_del)) {
                         std::filesystem::remove_all(dir_to_del);
+
+                        if (db_) {
+                             sqlite3_stmt* stmt;
+                             const char* sql = "DELETE FROM prototypes WHERE gid = ?;";
+                             if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                                 sqlite3_bind_text(stmt, 1, task.gid.c_str(), -1, SQLITE_STATIC);
+                                 if (sqlite3_step(stmt) != SQLITE_DONE) {
+                                     std::cerr << "\nDB Error (CLEANUP_GID_DIR): " << sqlite3_errmsg(db_) << std::endl;
+                                 }
+                                 sqlite3_finalize(stmt);
+                             }
+                        }
                     }
                     break;
                 }
-            }
+            } // end of switch
         } catch (const std::exception &e) {
             std::cerr << "I/O worker error: " << e.what() << std::endl;
         }
