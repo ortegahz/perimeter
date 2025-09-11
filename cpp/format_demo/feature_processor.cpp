@@ -702,21 +702,8 @@ FeatureProcessor::_extract_features_realtime(const std::string &cam_id, int fid,
 
     std::vector<Face> internal_face_info;
     if (face_analyzer_) {
-        cv::cuda::GpuMat gpu_small_frame;
-        const float face_det_scale = 0.5f;
-        cv::cuda::resize(full_frame, gpu_small_frame, cv::Size(), face_det_scale, face_det_scale, cv::INTER_LINEAR);
-        internal_face_info = face_analyzer_->detect(gpu_small_frame);
-
-        for (auto &face: internal_face_info) {
-            face.bbox.x /= face_det_scale;
-            face.bbox.y /= face_det_scale;
-            face.bbox.width /= face_det_scale;
-            face.bbox.height /= face_det_scale;
-            for (auto &kp: face.kps) {
-                kp.x /= face_det_scale;
-                kp.y /= face_det_scale;
-            }
-        }
+        // 直接将原始GpuMat传入detect函数，内部会处理缩放
+        internal_face_info = face_analyzer_->detect(full_frame);
     }
 
     for (const auto &det: dets) {
