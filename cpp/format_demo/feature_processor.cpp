@@ -885,10 +885,18 @@ void FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg
     submit_io_task(task);
 }
 
-// MODIFIED HERE: 修改了函数签名和内部调用以使用 GpuMat
-auto FeatureProcessor::process_packet(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
-                                      const std::vector<Detection> &dets, const ProcessConfig &config)
+// ======================= 【MODIFIED】 =======================
+// 修改: 函数签名以接收 ProcessInput 结构体
+auto FeatureProcessor::process_packet(const ProcessInput& input)
 -> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
+    // 在函数入口处解包，保持函数体内部逻辑不变，减少出错风险
+    const std::string& cam_id = input.cam_id;
+    int fid = input.fid;
+    const cv::cuda::GpuMat& full_frame = input.full_frame;
+    const std::vector<Detection>& dets = input.dets;
+    const ProcessConfig& config = input.config;
+    // ======================= 【修改结束】 =======================
+
     const auto &stream_id = cam_id;
     // 获取当前摄像机的匹配阈值，如果未特定设置，则使用默认值
     float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id)

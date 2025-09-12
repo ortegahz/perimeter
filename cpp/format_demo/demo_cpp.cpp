@@ -112,7 +112,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "realtime"; // 默认为 "load" 模式
+    std::string MODE = "load"; // 默认为 "load" 模式
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -197,8 +197,17 @@ int main(int argc, char **argv) {
 
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();
-                // MODIFIED HERE: 调用新的 process_packet 接口
-                auto mp = processor.process_packet(CAM_ID, fid, gpu_frame, loaded_data.packet.dets, proc_config);
+                // ======================= 【MODIFIED】 =======================
+                // 创建新的输入结构体并调用修改后的 process_packet 接口
+                ProcessInput proc_input = {
+                    .cam_id = CAM_ID,
+                    .fid = fid,
+                    .full_frame = gpu_frame,
+                    .dets = loaded_data.packet.dets,
+                    .config = proc_config
+                };
+                auto mp = processor.process_packet(proc_input);
+                // ======================= 【修改结束】 =======================
                 auto t2 = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double, std::milli> proc_time = t2 - t1;
                 std::cout << "  [proc_packet took " << proc_time.count() << " ms]" << std::endl;

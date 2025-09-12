@@ -256,6 +256,17 @@ struct IoTask {
     std::vector<cv::Mat> body_patches_backup;
 };
 
+// ======================= 【MODIFIED】 =======================
+// 新增: 为 process_packet 定义统一的输入结构体
+struct ProcessInput {
+    const std::string& cam_id;
+    int fid;
+    const cv::cuda::GpuMat& full_frame;
+    const std::vector<Detection>& dets;
+    const ProcessConfig& config;
+};
+// ======================= 【修改结束】 =======================
+
 class FeatureProcessor {
 public:
     explicit FeatureProcessor(const std::string &mode,
@@ -265,9 +276,8 @@ public:
 
     ~FeatureProcessor();
 
-    std::map<std::string, std::map<int, std::tuple<std::string, float, int>>>
-    process_packet(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
-                   const std::vector<Detection> &dets, const ProcessConfig &config);
+    // 修改: 使用新的 ProcessInput 结构体作为唯一参数
+    std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> process_packet(const ProcessInput& input);
 
     void submit_io_task(IoTask task);
 
