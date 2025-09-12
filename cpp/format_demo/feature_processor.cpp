@@ -369,36 +369,40 @@ FeatureProcessor::FeatureProcessor(const std::string& reid_model_path,
           m_face_rec_model_path(face_rec_model_path),
           mode_(mode), device_(device), feature_cache_path_(feature_cache_path) {
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode." << std::endl;
+
     if (mode_ == "realtime") {
         std::cout << "Loading ReID and Face models for feature extraction..." << std::endl;
         bool use_gpu = (device == "cuda"); // Note: DLA is Jetson specific, this flag is less relevant here.
         try {
-            // MODIFIED HERE: Correctly initialize PersonReidDLA
-            // Assuming DLA core 0 for now. This could be made configurable.
-            // The engine cache path is also hardcoded for simplicity.
-            reid_model_ = std::make_unique<PersonReidDLA>(m_reid_model_path, REID_INPUT_WIDTH, REID_INPUT_HEIGHT, 0,
+            // Initialize the ReID model for the worker thread on DLA 1
+            reid_model_dla1_ = std::make_unique<PersonReidDLA>(m_reid_model_path, REID_INPUT_WIDTH, REID_INPUT_HEIGHT, 1,
                                                           "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model_dla.engine");
+            std::cout << "Initialized Re-ID worker model on DLA 1." << std::endl;
 
             face_analyzer_ = std::make_unique<FaceAnalyzer>(m_face_det_model_path, m_face_rec_model_path);
-            // DLA or GPU decision is now inside FaceAnalyzer's prepare method
             std::string provider = use_gpu ? "GPU" : "DLA";
-            face_analyzer_->prepare(provider, FACE_DET_MIN_SCORE, cv::Size(640, 640)); //
+            // Dedicate DLA core 0 to the FaceAnalyzer.
+            face_analyzer_->prepare(provider, FACE_DET_MIN_SCORE, cv::Size(640, 640));
         } catch (const std::exception &e) {
             std::cerr << "[FATAL] Failed to load models in realtime mode: " << e.what() << std::endl;
             throw;
         }
+
+        // The feature cache can optionally be written in realtime mode.
         if (!feature_cache_path_.empty()) {
             auto parent_path = std::filesystem::path(feature_cache_path_).parent_path();
             if (!parent_path.empty()) std::filesystem::create_directories(parent_path);
         }
-    } else if (mode_ == "load") {
-        // ... (load mode logic remains the same)
+    }
+    else if (mode_ == "load") {
+        // In 'load' mode, no models are needed. We just load features from the cache.
         if (feature_cache_path_.empty() || !std::filesystem::exists(feature_cache_path_)) {
             throw std::runtime_error("In 'load' mode, a valid feature_cache_path is required: " + feature_cache_path_);
         }
         std::ifstream jf(feature_cache_path_);
         jf >> features_cache_;
-    } else {
+    }
+    else {
         throw std::invalid_argument("Invalid mode: " + mode_ + ". Choose 'realtime' or 'load'.");
     }
 
@@ -426,12 +430,26 @@ FeatureProcessor::FeatureProcessor(const std::string& reid_model_path,
 
     submit_io_task({IoTaskType::CREATE_DIRS});
     _init_db();
+
+    // Start worker threads
     io_thread_ = std::thread(&FeatureProcessor::_io_worker, this);
+    // Only start the reid worker thread in realtime mode
+    if (mode_ == "realtime") {
+        reid_thread_ = std::thread(&FeatureProcessor::_reid_worker, this);
+    }
 }
 // ======================= 【修改结束】 =======================
 
 // ======================= 【MODIFIED】 =======================
 FeatureProcessor::~FeatureProcessor() {
+    // Stop Re-ID thread first
+    if (reid_thread_.joinable()) {
+        stop_reid_thread_ = true;
+        reid_queue_cond_.notify_all();
+        reid_thread_.join();
+        std::cout << "Re-ID worker thread finished." << std::endl;
+    }
+
     // 确保析构时，I/O线程被正确停止，数据库被安全关闭
     if (!stop_io_thread_.load()) {
         stop_io_thread_ = true;
@@ -700,108 +718,67 @@ void FeatureProcessor::_io_worker() {
     }
 }
 
-// MODIFIED HERE: The implementation of this function is updated to use GpuMat
-void
-FeatureProcessor::_extract_features_realtime(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
-                                             const std::vector<Detection> &dets) {
-    const auto &stream_id = cam_id;
-    const int H = full_frame.rows;
-    const int W = full_frame.cols;
-    nlohmann::json extracted_features_for_this_frame;
-
-    std::vector<Face> internal_face_info;
-    if (face_analyzer_) {
-        // 直接将原始GpuMat传入detect函数，内部会处理缩放
-        internal_face_info = face_analyzer_->detect(full_frame);
-    }
-
-    for (const auto &det: dets) {
-        if (det.class_id != 0) continue;
-
-        cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
-        if (roi.width <= 0 || roi.height <= 0) continue;
-
-        cv::cuda::GpuMat gpu_patch = full_frame(roi);
-        cv::Mat patch;
-        gpu_patch.download(patch);
-
-        if (!is_long_patch(patch)) continue;
-
-        cv::cuda::GpuMat feat_mat_gpu = reid_model_->extract_feat(gpu_patch);
-        if (feat_mat_gpu.empty()) continue;
-
-        cv::Mat feat_mat_cpu;
-        feat_mat_gpu.download(feat_mat_cpu);
-        std::vector<float> feat_vec(feat_mat_cpu.begin<float>(), feat_mat_cpu.end<float>());
-        std::string tid_str = stream_id + "_" + std::to_string(det.id);
-
-        agg_pool[tid_str].add_body(feat_vec, det.score, patch.clone());
-        last_seen[tid_str] = fid;
-        if (!feature_cache_path_.empty()) extracted_features_for_this_frame[tid_str]["body_feat"] = feat_vec;
-    }
-
-    // 3. 提取人脸特征并与行人关联
-    if (!internal_face_info.empty() && face_analyzer_) {
-        std::set<size_t> used_face_indices;
-        for (const auto &det: dets) {
-            if (det.class_id != 0) continue;
-
-            cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
-            if (roi.width <= 0 || roi.height <= 0) continue;
-
-            std::vector<size_t> matching_face_indices;
-            for (size_t j = 0; j < internal_face_info.size(); ++j) {
-                if (used_face_indices.count(j)) continue;
-                if (calculate_ioa(det.tlwh, internal_face_info[j].bbox) > 0.8) matching_face_indices.push_back(j);
+// ======================= 【MODIFIED】 =======================
+// New worker thread function to handle Re-ID feature extraction in parallel.
+void FeatureProcessor::_reid_worker() {
+    while (true) {
+        ReidTask task;
+        {
+            std::unique_lock<std::mutex> lock(reid_queue_mutex_);
+            reid_queue_cond_.wait(lock, [this] { return !reid_queue_.empty() || stop_reid_thread_; });
+            if (stop_reid_thread_ && reid_queue_.empty()) {
+                return;
             }
-            if (matching_face_indices.size() != 1) continue;
+            task = std::move(reid_queue_.front());
+            reid_queue_.pop();
+        }
 
-            size_t unique_face_idx = matching_face_indices[0];
-            Face face_global_coords = internal_face_info[unique_face_idx];
-            if (face_global_coords.det_score < FACE_DET_MIN_SCORE) continue;
-            used_face_indices.insert(unique_face_idx);
+        try {
+            const auto& full_frame = *task.full_frame;
+            const auto& dets = *task.dets;
+            const int H = full_frame.rows;
+            const int W = full_frame.cols;
 
-            cv::Rect face_roi(face_global_coords.bbox);
-            face_roi &= cv::Rect(0, 0, W, H);
-            if (face_roi.width < 32 || face_roi.height < 32) continue;
+            ReidResults results;
 
-            cv::cuda::GpuMat gpu_face_crop = full_frame(face_roi);
-            cv::Mat face_crop_for_blur;
-            gpu_face_crop.download(face_crop_for_blur);
+            for (const auto& det : dets) {
+                if (det.class_id != 0) continue;
 
-            cv::Mat gray, lap;
-            cv::cvtColor(face_crop_for_blur, gray, cv::COLOR_BGR2GRAY);
-            cv::Laplacian(gray, lap, CV_64F);
-            cv::Scalar mean, stddev;
-            cv::meanStdDev(lap, mean, stddev);
-            if (stddev.val[0] * stddev.val[0] < 100.0) continue;
+                cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
+                if (roi.width <= 0 || roi.height <= 0) continue;
 
+                cv::cuda::GpuMat gpu_patch = full_frame(roi);
+                cv::Mat patch;
+                gpu_patch.download(patch);
+
+                if (!is_long_patch(patch)) continue;
+
+                // Use the dedicated model for the worker thread (on DLA 1)
+                cv::cuda::GpuMat feat_mat_gpu = reid_model_dla1_->extract_feat(gpu_patch);
+                if (feat_mat_gpu.empty()) continue;
+
+                cv::Mat feat_mat_cpu;
+                feat_mat_gpu.download(feat_mat_cpu);
+
+                results.push_back({
+                    .tid_str = task.cam_id + "_" + std::to_string(det.id),
+                    .body_feat = std::vector<float>(feat_mat_cpu.begin<float>(), feat_mat_cpu.end<float>()),
+                    .patch = patch.clone(),
+                    .det_score = det.score
+                });
+            }
+
+            task.promise.set_value(std::move(results));
+
+        } catch (...) {
+            // In case of any exception, notify the promise to avoid deadlocks.
             try {
-                face_analyzer_->get_embedding(full_frame, face_global_coords);
-                if (face_global_coords.embedding.empty()) continue;
-
-                cv::Mat normalized_emb;
-                cv::normalize(face_global_coords.embedding, normalized_emb, 1.0, 0.0, cv::NORM_L2);
-                std::vector<float> f_emb(normalized_emb.begin<float>(), normalized_emb.end<float>());
-
-                std::string tid_str = stream_id + "_" + std::to_string(det.id);
-
-                cv::cuda::GpuMat gpu_person_patch = full_frame(roi);
-                cv::Mat person_patch;
-                gpu_person_patch.download(person_patch);
-
-                agg_pool[tid_str].add_face(f_emb, person_patch.clone());
-                last_seen[tid_str] = fid;
-                if (!feature_cache_path_.empty()) extracted_features_for_this_frame[tid_str]["face_feat"] = f_emb;
-            } catch (const std::exception &e) {
-                continue;
-            }
+                task.promise.set_exception(std::current_exception());
+            } catch(...) {} // Ignore errors from setting exception
         }
     }
-    if (!feature_cache_path_.empty() && !extracted_features_for_this_frame.is_null()) {
-        features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
-    }
 }
+// ======================= 【修改结束】=======================
 
 // MODIFIED HERE: 整个函数被重构以使用 GpuMat
 void FeatureProcessor::_load_features_from_cache(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
@@ -920,12 +897,97 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AL"};
     }
 
+    // ======================= 【MODIFIED】 =======================
+    // Reworked feature extraction pipeline for parallelism
     if (mode_ == "realtime") {
-        // ---- 从CPU帧下载对应的cv::Mat用于后续处理和可视化 ----
-//        cv::Mat frame_cpu;
-//        full_frame.download(frame_cpu);
-        _extract_features_realtime(cam_id, fid, full_frame, dets);
-    } else if (mode_ == "load") _load_features_from_cache(cam_id, fid, full_frame, dets);
+        nlohmann::json extracted_features_for_this_frame;
+
+        // 1. Dispatch Re-ID task to worker thread and get a future
+        std::promise<ReidResults> reid_promise;
+        auto reid_future = reid_promise.get_future();
+        {
+            std::lock_guard<std::mutex> lock(reid_queue_mutex_);
+            // Explicitly create a ReidTask rvalue to avoid ambiguity with brace-enclosed initializer lists.
+            reid_queue_.push(ReidTask{&full_frame, &dets, cam_id, std::move(reid_promise)});
+        }
+        reid_queue_cond_.notify_one();
+
+        // 2. Main thread performs its own tasks concurrently while the Re-ID worker is running.
+        // This includes face detection, face-person matching, and face feature extraction.
+        std::vector<Face> internal_face_info;
+        if (face_analyzer_) {
+            internal_face_info = face_analyzer_->detect(full_frame);
+            if (!internal_face_info.empty()) {
+                const int H = full_frame.rows;
+                const int W = full_frame.cols;
+                std::set<size_t> used_face_indices;
+
+                for (const auto &det : dets) {
+                    if (det.class_id != 0) continue;
+
+                    std::vector<size_t> matching_face_indices;
+                    for (size_t j = 0; j < internal_face_info.size(); ++j) {
+                        if (used_face_indices.count(j)) continue;
+                        if (calculate_ioa(det.tlwh, internal_face_info[j].bbox) > 0.8) {
+                            matching_face_indices.push_back(j);
+                        }
+                    }
+                    if (matching_face_indices.size() != 1) continue;
+
+                    size_t unique_face_idx = matching_face_indices[0];
+                    Face& face_global_coords = internal_face_info[unique_face_idx]; // Use reference to update
+                    if (face_global_coords.det_score < FACE_DET_MIN_SCORE) continue;
+
+                    cv::Rect face_roi(face_global_coords.bbox);
+                    face_roi &= cv::Rect(0, 0, W, H);
+                    if (face_roi.width < 32 || face_roi.height < 32) continue;
+
+                    try {
+                        face_analyzer_->get_embedding(full_frame, face_global_coords);
+                        if (face_global_coords.embedding.empty()) continue;
+                        used_face_indices.insert(unique_face_idx);
+
+                        cv::Mat normalized_emb;
+                        cv::normalize(face_global_coords.embedding, normalized_emb, 1.0, 0.0, cv::NORM_L2);
+                        std::vector<float> f_emb(normalized_emb.begin<float>(), normalized_emb.end<float>());
+
+                        // ======================= 【MODIFIED】 =======================
+                        // Crop the real face patch from the GPU frame instead of using a dummy one.
+                        cv::cuda::GpuMat gpu_face_patch = full_frame(face_roi);
+                        cv::Mat face_patch;
+                        gpu_face_patch.download(face_patch);
+                        std::string tid_str = stream_id + "_" + std::to_string(det.id);
+                        agg_pool[tid_str].add_face(f_emb, face_patch.clone());
+                        // ======================= 【修改结束】 =======================
+                        last_seen[tid_str] = fid;
+                        if (!feature_cache_path_.empty()) extracted_features_for_this_frame[tid_str]["face_feat"] = f_emb;
+                    } catch (const std::exception &) { continue; }
+                }
+            }
+        }
+
+        // 3. Late Synchronization: Now, wait for the Re-ID results from the worker thread.
+        auto reid_results = reid_future.get();
+
+        // 4. Process the completed Re-ID results from the worker.
+        for (const auto& result : reid_results) {
+            // This is the crucial part: adding body features to the aggregation pool.
+            agg_pool[result.tid_str].add_body(result.body_feat, result.det_score, result.patch);
+            last_seen[result.tid_str] = fid; // Ensure last_seen is updated for body tracks as well.
+            if (!feature_cache_path_.empty()) {
+                extracted_features_for_this_frame[result.tid_str]["body_feat"] = result.body_feat;
+            }
+        }
+
+        // 5. Save all collected features for this frame to the cache file if enabled
+        if (!feature_cache_path_.empty() && !extracted_features_for_this_frame.is_null()) {
+             features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
+        }
+
+    } else if (mode_ == "load") {
+        _load_features_from_cache(cam_id, fid, full_frame, dets);
+    }
+    // ======================= 【修改结束】=======================
 
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> realtime_map;
     for (auto const &[tid_str, agg]: agg_pool) {

@@ -11,7 +11,7 @@
 #include <opencv2/opencv.hpp>
 
 // 从 feature_processor.h 复制必要的常量
-const std::string DB_PATH = "/mnt/nfs/perimeter_data.db.load.v1";
+const std::string DB_PATH = "/mnt/nfs/perimeter_data.db.load";
 const std::string DUMP_DIR = "/mnt/nfs/dumped_images";
 constexpr int EMB_FACE_DIM = 512;
 constexpr int EMB_BODY_DIM = 512;

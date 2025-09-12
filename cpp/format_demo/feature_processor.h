@@ -15,6 +15,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <future>
 #include <queue>
 
 #include <sqlite3.h>
@@ -256,6 +257,27 @@ struct IoTask {
     std::vector<cv::Mat> body_patches_backup;
 };
 
+/**
+ * @brief Holds the result of a single person Re-ID extraction from the worker thread.
+ */
+struct ReidResult {
+    std::string tid_str;
+    std::vector<float> body_feat;
+    cv::Mat patch;
+    float det_score;
+};
+
+/**
+ * @brief Task structure for the Re-ID worker thread.
+ */
+using ReidResults = std::vector<ReidResult>;
+struct ReidTask {
+    const cv::cuda::GpuMat* full_frame;
+    const std::vector<Detection>* dets;
+    std::string cam_id;
+    std::promise<ReidResults> promise; // Requires <future>
+};
+
 // ======================= 【MODIFIED】 =======================
 // 新增: 为 process_packet 定义统一的输入结构体
 struct ProcessInput {
@@ -294,9 +316,6 @@ public:
 
 private:
 
-    void _extract_features_realtime(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
-                                    const std::vector<Detection> &dets);
-
     void _load_features_from_cache(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
                                    const std::vector<Detection> &dets);
 
@@ -305,6 +324,9 @@ private:
     std::vector<float> _gid_fused_rep(const std::string &gid);
 
     void trigger_alarm(const std::string &gid, const TrackAgg &agg);
+
+    // Re-ID worker thread
+    void _reid_worker();
 
     // I/O线程相关
     void _io_worker();
@@ -318,6 +340,13 @@ private:
     std::mutex queue_mutex_;
     std::condition_variable queue_cond_;
     std::atomic<bool> stop_io_thread_{false};
+
+    // Re-ID线程相关
+    std::thread reid_thread_;
+    std::queue<ReidTask> reid_queue_;
+    std::mutex reid_queue_mutex_;
+    std::condition_variable reid_queue_cond_;
+    std::atomic<bool> stop_reid_thread_{false};
 
     // 数据库句柄
     sqlite3 *db_ = nullptr;
@@ -335,6 +364,7 @@ private:
 
     // MODIFIED HERE: Changed from PersonReid to PersonReidDLA
     std::unique_ptr<PersonReidDLA> reid_model_;
+    std::unique_ptr<PersonReidDLA> reid_model_dla1_; // For the worker thread on DLA1
     std::unique_ptr<FaceAnalyzer> face_analyzer_;
 
     std::map<std::string, TrackAgg> agg_pool;
