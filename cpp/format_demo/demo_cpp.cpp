@@ -8,10 +8,12 @@
 #include <chrono>
 #include "feature_processor.h" // Includes all necessary headers like opencv and json
 
-// -------- 新增：模型路径常量，与 feature_processor.cpp 保持一致 --------
-const std::string FACE_DET_MODEL_PATH = "/mnt/nfs/det_10g_simplified.onnx";
-const std::string FACE_REC_MODEL_PATH = "/mnt/nfs/w600k_r50_simplified.onnx";
-// ----------------------------------------------------------------------
+// ======================= 【MODIFIED】 =======================
+// 调整：将所有模型路径常量集中在此处，用于传递给构造函数
+const std::string REID_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model.onnx";
+const std::string FACE_DET_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/mobilenet0.25_Final.onnx";
+const std::string FACE_REC_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/w600k_r50_simplified.onnx";
+// ======================= 【修改结束】 =======================
 
 // -------- 修改：load_packet_from_cache 返回一个包含 packet 和 face_info 的结构体 --------
 struct LoadedData {
@@ -112,7 +114,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "load"; // 默认为 "load" 模式
+    std::string MODE = "realtime"; // 默认为 "load" 模式
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -140,7 +142,17 @@ int main(int argc, char **argv) {
     nlohmann::json boundary_config; // 留空
 
     try {
-        FeatureProcessor processor(MODE, "dla", FEATURE_CACHE_JSON, boundary_config);
+        // ======================= 【MODIFIED】 =======================
+        // 修改: 使用新的构造函数实例化 FeatureProcessor
+        FeatureProcessor processor(
+            REID_MODEL_PATH,
+            FACE_DET_MODEL_PATH,
+            FACE_REC_MODEL_PATH,
+            MODE,                     // 明确传递，覆盖默认值
+            "dla",                    // 明确传递
+            FEATURE_CACHE_JSON,       // 明确传递，覆盖默认值
+            boundary_config);         // 明确传递，覆盖默认值
+        // ======================= 【修改结束】 =======================
 
         // 注意：在realtime模式下，FeatureProcessor会创建自己的FaceAnalyzer实例。
         // 此处的face_analyzer仅用于演示，实际处理在processor内部完成。

@@ -269,10 +269,16 @@ struct ProcessInput {
 
 class FeatureProcessor {
 public:
-    explicit FeatureProcessor(const std::string &mode,
-                              const std::string &device = "cuda",
-                              const std::string &feature_cache_path = "",
-                              const nlohmann::json &boundary_config = {});
+    // ======================= 【MODIFIED】 =======================
+    // 修改构造函数：模型路径为必要参数，其他参数为可选
+    explicit FeatureProcessor(const std::string& reid_model_path,
+                              const std::string& face_det_model_path,
+                              const std::string& face_rec_model_path,
+                              const std::string& mode = "realtime",
+                              const std::string& device = "dla",
+                              const std::string& feature_cache_path = "",
+                              const nlohmann::json& boundary_config = {});
+    // ======================= 【修改结束】 =======================
 
     ~FeatureProcessor();
 
@@ -321,6 +327,11 @@ private:
     std::string feature_cache_path_;
     nlohmann::json features_cache_;
     nlohmann::json features_to_save_;
+
+    // 新增: 存储模型路径的成员变量
+    std::string m_reid_model_path;
+    std::string m_face_det_model_path;
+    std::string m_face_rec_model_path;
 
     // MODIFIED HERE: Changed from PersonReid to PersonReidDLA
     std::unique_ptr<PersonReidDLA> reid_model_;

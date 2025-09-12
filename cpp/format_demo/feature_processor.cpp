@@ -17,9 +17,6 @@
 //#define ENABLE_DISK_IO
 // ======================= 【修改结束】 =======================
 
-const std::string REID_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model.onnx";
-const std::string FACE_DET_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/mobilenet0.25_Final.onnx";
-const std::string FACE_REC_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/w600k_r50_simplified.onnx";
 const int REID_INPUT_WIDTH = 128;
 const int REID_INPUT_HEIGHT = 256;
 
@@ -358,10 +355,19 @@ std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, 
     return {best_gid, best_score};
 }
 
-FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &device,
-                                   const std::string &feature_cache_path,
-                                   const nlohmann::json &boundary_config)
-        : mode_(mode), device_(device), feature_cache_path_(feature_cache_path) {
+// ======================= 【MODIFIED】 =======================
+// 修改: 更新构造函数以匹配新的签名，并使用成员变量存储路径
+FeatureProcessor::FeatureProcessor(const std::string& reid_model_path,
+                                   const std::string& face_det_model_path,
+                                   const std::string& face_rec_model_path,
+                                   const std::string& mode,
+                                   const std::string& device,
+                                   const std::string& feature_cache_path,
+                                   const nlohmann::json& boundary_config)
+        : m_reid_model_path(reid_model_path),
+          m_face_det_model_path(face_det_model_path),
+          m_face_rec_model_path(face_rec_model_path),
+          mode_(mode), device_(device), feature_cache_path_(feature_cache_path) {
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode." << std::endl;
     if (mode_ == "realtime") {
         std::cout << "Loading ReID and Face models for feature extraction..." << std::endl;
@@ -370,13 +376,13 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
             // MODIFIED HERE: Correctly initialize PersonReidDLA
             // Assuming DLA core 0 for now. This could be made configurable.
             // The engine cache path is also hardcoded for simplicity.
-            reid_model_ = std::make_unique<PersonReidDLA>(REID_MODEL_PATH, REID_INPUT_WIDTH, REID_INPUT_HEIGHT, 0,
+            reid_model_ = std::make_unique<PersonReidDLA>(m_reid_model_path, REID_INPUT_WIDTH, REID_INPUT_HEIGHT, 0,
                                                           "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model_dla.engine");
 
-            face_analyzer_ = std::make_unique<FaceAnalyzer>(FACE_DET_MODEL_PATH, FACE_REC_MODEL_PATH);
+            face_analyzer_ = std::make_unique<FaceAnalyzer>(m_face_det_model_path, m_face_rec_model_path);
             // DLA or GPU decision is now inside FaceAnalyzer's prepare method
             std::string provider = use_gpu ? "GPU" : "DLA";
-            face_analyzer_->prepare(provider, FACE_DET_MIN_SCORE, cv::Size(640, 640));
+            face_analyzer_->prepare(provider, FACE_DET_MIN_SCORE, cv::Size(640, 640)); //
         } catch (const std::exception &e) {
             std::cerr << "[FATAL] Failed to load models in realtime mode: " << e.what() << std::endl;
             throw;
@@ -386,6 +392,7 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
             if (!parent_path.empty()) std::filesystem::create_directories(parent_path);
         }
     } else if (mode_ == "load") {
+        // ... (load mode logic remains the same)
         if (feature_cache_path_.empty() || !std::filesystem::exists(feature_cache_path_)) {
             throw std::runtime_error("In 'load' mode, a valid feature_cache_path is required: " + feature_cache_path_);
         }
@@ -395,6 +402,7 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
         throw std::invalid_argument("Invalid mode: " + mode_ + ". Choose 'realtime' or 'load'.");
     }
 
+    // ... (boundary config and other setup remains the same)
     if (!boundary_config.is_null()) {
         for (auto const &[stream_id, config]: boundary_config.items()) {
             if (config.contains("intrusion_poly")) {
@@ -420,6 +428,7 @@ FeatureProcessor::FeatureProcessor(const std::string &mode, const std::string &d
     _init_db();
     io_thread_ = std::thread(&FeatureProcessor::_io_worker, this);
 }
+// ======================= 【修改结束】 =======================
 
 // ======================= 【MODIFIED】 =======================
 FeatureProcessor::~FeatureProcessor() {
