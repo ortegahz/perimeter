@@ -114,7 +114,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "load"; // 默认为 "load" 模式
+    std::string MODE = "realtime"; // 默认为 "load" 模式
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -218,7 +218,7 @@ int main(int argc, char **argv) {
                     .dets = loaded_data.packet.dets,
                     .config = proc_config
                 };
-                auto mp = processor.process_packet(proc_input);
+                auto proc_output = processor.process_packet(proc_input);
                 // ======================= 【修改结束】 =======================
                 auto t2 = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double, std::milli> proc_time = t2 - t1;
@@ -227,11 +227,32 @@ int main(int argc, char **argv) {
                 total_proc_time += proc_time.count();
                 proc_count++;
 
+                // ======================= 【MODIFIED】 =======================
+                // 新增：处理返回的告警信息
+                if (!proc_output.alarms.empty()) {
+                    std::cout << "\n\n*** ALARM TRIGGERED! Frame: " << fid << " ***\n";
+                    for (const auto& alarm : proc_output.alarms) {
+                        std::cout << "  - GID: " << alarm.gid << "\n";
+                        std::string base_path = "/mnt/nfs/alarm_" + alarm.gid + "_fid" + std::to_string(fid);
+
+                        // 保存告警帧、最新的行人/人脸图块以供查验
+                        cv::imwrite(base_path + "_frame.jpg", alarm.full_frame);
+                        if (!alarm.latest_body_patch.empty()) cv::imwrite(base_path + "_body_patch.jpg", alarm.latest_body_patch);
+                        if (!alarm.latest_face_patch.empty()) cv::imwrite(base_path + "_face_patch.jpg", alarm.latest_face_patch);
+
+                        // 在告警帧上绘制边界框并保存
+                        cv::Mat alarm_vis = alarm.full_frame.clone();
+                        cv::rectangle(alarm_vis, alarm.person_bbox, cv::Scalar(0, 0, 255), 3); // 红色粗框标出行人
+                        if (alarm.face_bbox.area() > 0) cv::rectangle(alarm_vis, alarm.face_bbox, cv::Scalar(0, 255, 255), 2); // 黄色框标出人脸
+                        cv::imwrite(base_path + "_annotated.jpg", alarm_vis);
+                    }
+                }
+                // ======================= 【修改结束】 =======================
                 // --- 可视化 ---
                 cv::Mat vis;
                 cv::resize(frame, vis, vis_size);
 
-                const auto &cam_map = mp.count(CAM_ID) ? mp.at(CAM_ID)
+                const auto &cam_map = proc_output.mp.count(CAM_ID) ? proc_output.mp.at(CAM_ID)
                                                        : std::map<int, std::tuple<std::string, float, int>>{};
 
                 // ======================= 【可视化部分保持不变】 =======================
@@ -366,15 +387,15 @@ int main(int argc, char **argv) {
                 writer.write(vis);
 
                 // 写入结果文件
-                if (mp.count(CAM_ID)) {
+                if (proc_output.mp.count(CAM_ID)) {
                     std::vector<int> sorted_tids;
-                    for (const auto &pair: mp.at(CAM_ID)) {
+                    for (const auto &pair: proc_output.mp.at(CAM_ID)) {
                         sorted_tids.push_back(pair.first);
                     }
                     std::sort(sorted_tids.begin(), sorted_tids.end());
 
                     for (int tid: sorted_tids) {
-                        const auto &tpl = mp.at(CAM_ID).at(tid);
+                        const auto &tpl = proc_output.mp.at(CAM_ID).at(tid);
                         fout << fid << ',' << CAM_ID << ',' << tid << ','
                              << std::get<0>(tpl) << ',' << std::get<1>(tpl) << ',' << std::get<2>(tpl) << "\n";
                     }

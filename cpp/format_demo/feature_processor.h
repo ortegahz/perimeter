@@ -187,6 +187,18 @@ private:
     std::set<int> alarmed_tids_;
 };
 
+/**
+ * @brief 包含一次告警触发时的详细上下文信息。
+ */
+struct AlarmTriggerInfo {
+    std::string gid;                // 触发告警的GID
+    cv::Mat full_frame;             // 触发告警时的完整帧图像 (CPU Mat)
+    cv::Rect2f person_bbox;         // 当前帧中该GID关联的行人框
+    cv::Rect2d face_bbox;           // 当前帧中该GID关联的人脸框 (如果找到)
+    cv::Mat latest_body_patch;      // GID库中最新的（或最具代表性的）行人图块
+    cv::Mat latest_face_patch;      // GID库中最新的（或最具代表性的）人脸图块
+};
+
 struct TrackAgg {
     void add_body(const std::vector<float> &feat, float score, const cv::Mat &patch);
 
@@ -289,6 +301,13 @@ struct ProcessInput {
 };
 // ======================= 【修改结束】 =======================
 
+struct ProcessOutput {
+    // 原有的实时匹配结果
+    std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> mp;
+    // 新增的告警信息列表 (通常为空，仅在触发新告警的帧中包含元素)
+    std::vector<AlarmTriggerInfo> alarms;
+};
+
 class FeatureProcessor {
 public:
     // ======================= 【MODIFIED】 =======================
@@ -305,7 +324,7 @@ public:
     ~FeatureProcessor();
 
     // 修改: 使用新的 ProcessInput 结构体作为唯一参数
-    std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> process_packet(const ProcessInput& input);
+    ProcessOutput process_packet(const ProcessInput& input);
 
     void submit_io_task(IoTask task);
 
@@ -323,7 +342,7 @@ private:
 
     std::vector<float> _gid_fused_rep(const std::string &gid);
 
-    void trigger_alarm(const std::string &gid, const TrackAgg &agg);
+    bool trigger_alarm(const std::string &gid, const TrackAgg &agg);
 
     // Re-ID worker thread
     void _reid_worker();
@@ -378,4 +397,5 @@ private:
     std::map<std::string, std::tuple<int, std::string>> behavior_alarm_state;
     std::map<std::string, std::unique_ptr<IntrusionDetector>> intrusion_detectors;
     std::map<std::string, std::unique_ptr<LineCrossingDetector>> line_crossing_detectors;
+    std::map<std::string, cv::Rect2d> current_frame_face_boxes_; // 临时存储TID-FaceBbox映射
 };

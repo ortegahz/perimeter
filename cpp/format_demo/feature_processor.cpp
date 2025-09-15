@@ -357,13 +357,13 @@ std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, 
 
 // ======================= 【MODIFIED】 =======================
 // 修改: 更新构造函数以匹配新的签名，并使用成员变量存储路径
-FeatureProcessor::FeatureProcessor(const std::string& reid_model_path,
-                                   const std::string& face_det_model_path,
-                                   const std::string& face_rec_model_path,
-                                   const std::string& mode,
-                                   const std::string& device,
-                                   const std::string& feature_cache_path,
-                                   const nlohmann::json& boundary_config)
+FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
+                                   const std::string &face_det_model_path,
+                                   const std::string &face_rec_model_path,
+                                   const std::string &mode,
+                                   const std::string &device,
+                                   const std::string &feature_cache_path,
+                                   const nlohmann::json &boundary_config)
         : m_reid_model_path(reid_model_path),
           m_face_det_model_path(face_det_model_path),
           m_face_rec_model_path(face_rec_model_path),
@@ -375,8 +375,9 @@ FeatureProcessor::FeatureProcessor(const std::string& reid_model_path,
         bool use_gpu = (device == "cuda"); // Note: DLA is Jetson specific, this flag is less relevant here.
         try {
             // Initialize the ReID model for the worker thread on DLA 1
-            reid_model_dla1_ = std::make_unique<PersonReidDLA>(m_reid_model_path, REID_INPUT_WIDTH, REID_INPUT_HEIGHT, 1,
-                                                          "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model_dla.engine");
+            reid_model_dla1_ = std::make_unique<PersonReidDLA>(m_reid_model_path, REID_INPUT_WIDTH, REID_INPUT_HEIGHT,
+                                                               1,
+                                                               "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model_dla.engine");
             std::cout << "Initialized Re-ID worker model on DLA 1." << std::endl;
 
             face_analyzer_ = std::make_unique<FaceAnalyzer>(m_face_det_model_path, m_face_rec_model_path);
@@ -393,16 +394,14 @@ FeatureProcessor::FeatureProcessor(const std::string& reid_model_path,
             auto parent_path = std::filesystem::path(feature_cache_path_).parent_path();
             if (!parent_path.empty()) std::filesystem::create_directories(parent_path);
         }
-    }
-    else if (mode_ == "load") {
+    } else if (mode_ == "load") {
         // In 'load' mode, no models are needed. We just load features from the cache.
         if (feature_cache_path_.empty() || !std::filesystem::exists(feature_cache_path_)) {
             throw std::runtime_error("In 'load' mode, a valid feature_cache_path is required: " + feature_cache_path_);
         }
         std::ifstream jf(feature_cache_path_);
         jf >> features_cache_;
-    }
-    else {
+    } else {
         throw std::invalid_argument("Invalid mode: " + mode_ + ". Choose 'realtime' or 'load'.");
     }
 
@@ -734,14 +733,14 @@ void FeatureProcessor::_reid_worker() {
         }
 
         try {
-            const auto& full_frame = *task.full_frame;
-            const auto& dets = *task.dets;
+            const auto &full_frame = *task.full_frame;
+            const auto &dets = *task.dets;
             const int H = full_frame.rows;
             const int W = full_frame.cols;
 
             ReidResults results;
 
-            for (const auto& det : dets) {
+            for (const auto &det: dets) {
                 if (det.class_id != 0) continue;
 
                 cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
@@ -761,11 +760,12 @@ void FeatureProcessor::_reid_worker() {
                 feat_mat_gpu.download(feat_mat_cpu);
 
                 results.push_back({
-                    .tid_str = task.cam_id + "_" + std::to_string(det.id),
-                    .body_feat = std::vector<float>(feat_mat_cpu.begin<float>(), feat_mat_cpu.end<float>()),
-                    .patch = patch.clone(),
-                    .det_score = det.score
-                });
+                                          .tid_str = task.cam_id + "_" + std::to_string(det.id),
+                                          .body_feat = std::vector<float>(feat_mat_cpu.begin<float>(),
+                                                                          feat_mat_cpu.end<float>()),
+                                          .patch = patch.clone(),
+                                          .det_score = det.score
+                                  });
             }
 
             task.promise.set_value(std::move(results));
@@ -774,7 +774,7 @@ void FeatureProcessor::_reid_worker() {
             // In case of any exception, notify the promise to avoid deadlocks.
             try {
                 task.promise.set_exception(std::current_exception());
-            } catch(...) {} // Ignore errors from setting exception
+            } catch (...) {} // Ignore errors from setting exception
         }
     }
 }
@@ -843,15 +843,15 @@ std::vector<float> FeatureProcessor::_gid_fused_rep(const std::string &gid) {
     return _fuse_feat(face_f, body_f);
 }
 
-void FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg) {
-    if (alarmed.count(gid)) return;
+bool FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg) {
+    if (alarmed.count(gid)) return false; // 如果已经告警过，则直接返回false
     auto cur_rep = _gid_fused_rep(gid);
-    if (cur_rep.empty()) return;
+    if (cur_rep.empty()) return false;
 
     for (const auto &[ogid, rep]: alarm_reprs) {
         if (sim_vec(cur_rep, rep) >= ALARM_DUP_THR) {
-            std::cout << "[ALARM] Skip " << gid << " (similar to " << ogid << ")" << std::endl;
-            return;
+            std::cout << "[ALARM] Skip " << gid << " (similar to " << ogid << ")" << std::endl; // 仍然打印日志，但不再触发
+            return false;
         }
     }
 
@@ -869,19 +869,23 @@ void FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg
     task.face_patches_backup = agg.face_patches();
     task.body_patches_backup = agg.body_patches();
     submit_io_task(task);
+
+    return true; // 成功触发了一个新的告警
 }
 
 // ======================= 【MODIFIED】 =======================
-// 修改: 函数签名以接收 ProcessInput 结构体
-auto FeatureProcessor::process_packet(const ProcessInput& input)
--> std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> {
+// 修改: 函数签名以接收 ProcessInput 结构体，并返回 ProcessOutput
+ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     // 在函数入口处解包，保持函数体内部逻辑不变，减少出错风险
-    const std::string& cam_id = input.cam_id;
+    const std::string &cam_id = input.cam_id;
     int fid = input.fid;
-    const cv::cuda::GpuMat& full_frame = input.full_frame;
-    const std::vector<Detection>& dets = input.dets;
-    const ProcessConfig& config = input.config;
+    const cv::cuda::GpuMat &full_frame = input.full_frame;
+    const std::vector<Detection> &dets = input.dets;
+    const ProcessConfig &config = input.config;
     // ======================= 【修改结束】 =======================
+
+    ProcessOutput output;
+    current_frame_face_boxes_.clear(); // 每帧开始时清空
 
     const auto &stream_id = cam_id;
     // 获取当前摄像机的匹配阈值，如果未特定设置，则使用默认值
@@ -922,7 +926,7 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
                 const int W = full_frame.cols;
                 std::set<size_t> used_face_indices;
 
-                for (const auto &det : dets) {
+                for (const auto &det: dets) {
                     if (det.class_id != 0) continue;
 
                     std::vector<size_t> matching_face_indices;
@@ -935,7 +939,7 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
                     if (matching_face_indices.size() != 1) continue;
 
                     size_t unique_face_idx = matching_face_indices[0];
-                    Face& face_global_coords = internal_face_info[unique_face_idx]; // Use reference to update
+                    Face &face_global_coords = internal_face_info[unique_face_idx]; // Use reference to update
                     if (face_global_coords.det_score < FACE_DET_MIN_SCORE) continue;
 
                     cv::Rect face_roi(face_global_coords.bbox);
@@ -955,8 +959,9 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
                         // Crop the real face patch from the GPU frame instead of using a dummy one.
                         cv::cuda::GpuMat gpu_face_patch = full_frame(face_roi);
                         cv::Mat face_patch;
-                        gpu_face_patch.download(face_patch);
                         std::string tid_str = stream_id + "_" + std::to_string(det.id);
+                        current_frame_face_boxes_[tid_str] = face_global_coords.bbox;
+                        gpu_face_patch.download(face_patch);
                         agg_pool[tid_str].add_face(f_emb, face_patch.clone());
                         // ======================= 【修改结束】 =======================
                         last_seen[tid_str] = fid;
@@ -970,7 +975,7 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
         auto reid_results = reid_future.get();
 
         // 4. Process the completed Re-ID results from the worker.
-        for (const auto& result : reid_results) {
+        for (const auto &result: reid_results) {
             // This is the crucial part: adding body features to the aggregation pool.
             agg_pool[result.tid_str].add_body(result.body_feat, result.det_score, result.patch);
             last_seen[result.tid_str] = fid; // Ensure last_seen is updated for body tracks as well.
@@ -981,7 +986,7 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
 
         // 5. Save all collected features for this frame to the cache file if enabled
         if (!feature_cache_path_.empty() && !extracted_features_for_this_frame.is_null()) {
-             features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
+            features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
         }
 
     } else if (mode_ == "load") {
@@ -989,7 +994,6 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
     }
     // ======================= 【修改结束】=======================
 
-    std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> realtime_map;
     for (auto const &[tid_str, agg]: agg_pool) {
         size_t last_underscore = tid_str.find_last_of('_');
         std::string s_id = tid_str.substr(0, last_underscore);
@@ -997,23 +1001,23 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
 
         if ((int) agg.body.size() < MIN_BODY4GID) {
             std::string gid_str = tid_str + "_-1_b_" + std::to_string(agg.body.size());
-            realtime_map[s_id][tid_num] = {gid_str, -1.f, 0};
+            output.mp[s_id][tid_num] = {gid_str, -1.f, 0};
             continue;
         }
         if ((int) agg.face.size() < MIN_FACE4GID) {
             std::string gid_str = tid_str + "_-1_f_" + std::to_string(agg.face.size());
-            realtime_map[s_id][tid_num] = {gid_str, -1.f, 0};
+            output.mp[s_id][tid_num] = {gid_str, -1.f, 0};
             continue;
         }
 
         auto [face_f, face_p] = agg.main_face_feat_and_patch();
         auto [body_f, body_p] = agg.main_body_feat_and_patch();
         if (face_f.empty()) {
-            realtime_map[s_id][tid_num] = {tid_str + "_-2_f", -1.f, 0};
+            output.mp[s_id][tid_num] = {tid_str + "_-2_f", -1.f, 0};
             continue;
         }
         if (body_f.empty()) {
-            realtime_map[s_id][tid_num] = {tid_str + "_-2_b", -1.f, 0};
+            output.mp[s_id][tid_num] = {tid_str + "_-2_b", -1.f, 0};
             continue;
         }
 
@@ -1028,7 +1032,7 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
             if (!cand_gid.empty() && cand_gid != bound_gid && score >= current_match_thr &&
                 (fid - state.last_bind_fid) < BIND_LOCK_FRAMES) {
                 int n_tid = gid_mgr.tid_hist.count(bound_gid) ? (int) gid_mgr.tid_hist.at(bound_gid).size() : 0;
-                realtime_map[s_id][tid_num] = {tid_str + "_-3", score, n_tid};
+                output.mp[s_id][tid_num] = {tid_str + "_-3", score, n_tid};
                 continue;
             }
         }
@@ -1043,34 +1047,88 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = (int) gid_mgr.tid_hist[cand_gid].size();
-                if (n >= config.alarm_cnt_th) trigger_alarm(cand_gid, agg);
-                realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
+                if (n >= config.alarm_cnt_th) {
+                    if (trigger_alarm(cand_gid, agg)) {
+                        AlarmTriggerInfo alarm_info;
+                        alarm_info.gid = cand_gid;
+                        input.full_frame.download(alarm_info.full_frame);
+                        for (const auto &det: dets) {
+                            if (stream_id + "_" + std::to_string(det.id) == tid_str) {
+                                alarm_info.person_bbox = det.tlwh;
+                                break;
+                            }
+                        }
+                        if (current_frame_face_boxes_.count(tid_str)) {
+                            alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
+                        }
+                        alarm_info.latest_body_patch = body_p.clone();
+                        alarm_info.latest_face_patch = face_p.clone();
+                        output.alarms.push_back(alarm_info);
+                    }
+                }
+                output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
             } else {
                 std::string flag = (flag_code == -1) ? "_-4_ud_f" : (flag_code == -2) ? "_-4_ud_b" : "_-4_c";
-                realtime_map[s_id][tid_num] = {tid_str + flag, -1.0f, 0};
+                output.mp[s_id][tid_num] = {tid_str + flag, -1.0f, 0};
             }
         } else if (gid_mgr.bank_faces.empty()) {
             std::string new_gid = gid_mgr.new_gid();
             gid_mgr.bind(new_gid, tid_str, fid, agg, this);
             tid2gid[tid_str] = new_gid;
-            state = {new_gid, CANDIDATE_FRAMES, fid};
-            ng_state.last_new_fid = fid;
+            candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
+            new_gid_state[tid_str].last_new_fid = fid;
             int n = (int) gid_mgr.tid_hist[new_gid].size();
-            if (n >= config.alarm_cnt_th) trigger_alarm(new_gid, agg);
-            realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
+            if (n >= config.alarm_cnt_th) {
+                if (trigger_alarm(new_gid, agg)) {
+                    AlarmTriggerInfo alarm_info;
+                    alarm_info.gid = new_gid;
+                    input.full_frame.download(alarm_info.full_frame);
+                    for (const auto &det: dets) {
+                        if (stream_id + "_" + std::to_string(det.id) == tid_str) {
+                            alarm_info.person_bbox = det.tlwh;
+                            break;
+                        }
+                    }
+                    if (current_frame_face_boxes_.count(tid_str)) {
+                        alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
+                    }
+                    alarm_info.latest_body_patch = body_p.clone();
+                    alarm_info.latest_face_patch = face_p.clone();
+                    output.alarms.push_back(alarm_info);
+                }
+            }
+            output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
         } else if (!cand_gid.empty() && score >= THR_NEW_GID) {
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 std::string new_gid = gid_mgr.new_gid();
                 gid_mgr.bind(new_gid, tid_str, fid, agg, this);
                 tid2gid[tid_str] = new_gid;
-                state = {new_gid, CANDIDATE_FRAMES, fid};
-                ng_state = {0, fid, 0};
+                candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
+                new_gid_state[tid_str] = {0, fid, 0};
                 int n = (int) gid_mgr.tid_hist[new_gid].size();
-                if (n >= config.alarm_cnt_th) trigger_alarm(new_gid, agg);
-                realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
+                if (n >= config.alarm_cnt_th) {
+                    if (trigger_alarm(new_gid, agg)) {
+                        AlarmTriggerInfo alarm_info;
+                        alarm_info.gid = new_gid;
+                        input.full_frame.download(alarm_info.full_frame);
+                        for (const auto &det: dets) {
+                            if (stream_id + "_" + std::to_string(det.id) == tid_str) {
+                                alarm_info.person_bbox = det.tlwh;
+                                break;
+                            }
+                        }
+                        if (current_frame_face_boxes_.count(tid_str)) {
+                            alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
+                        }
+                        alarm_info.latest_body_patch = body_p.clone();
+                        alarm_info.latest_face_patch = face_p.clone();
+                        output.alarms.push_back(alarm_info);
+                    }
+                }
+                output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
             } else {
-                realtime_map[s_id][tid_num] = {tid_str + "_-7", score, 0};
+                output.mp[s_id][tid_num] = {tid_str + "_-7", score, 0};
             }
         } else { // score < THR_NEW_GID
             ng_state.ambig_count = 0;
@@ -1080,16 +1138,34 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
                     std::string new_gid = gid_mgr.new_gid();
                     gid_mgr.bind(new_gid, tid_str, fid, agg, this);
                     tid2gid[tid_str] = new_gid;
-                    state = {new_gid, CANDIDATE_FRAMES, fid};
-                    ng_state = {0, fid, 0};
+                    candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
+                    new_gid_state[tid_str] = {0, fid, 0};
                     int n = (int) gid_mgr.tid_hist[new_gid].size();
-                    if (n >= config.alarm_cnt_th) trigger_alarm(new_gid, agg);
-                    realtime_map[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
+                    if (n >= config.alarm_cnt_th) {
+                        if (trigger_alarm(new_gid, agg)) {
+                            AlarmTriggerInfo alarm_info;
+                            alarm_info.gid = new_gid;
+                            input.full_frame.download(alarm_info.full_frame);
+                            for (const auto &det: dets) {
+                                if (stream_id + "_" + std::to_string(det.id) == tid_str) {
+                                    alarm_info.person_bbox = det.tlwh;
+                                    break;
+                                }
+                            }
+                            if (current_frame_face_boxes_.count(tid_str)) {
+                                alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
+                            }
+                            alarm_info.latest_body_patch = body_p.clone();
+                            alarm_info.latest_face_patch = face_p.clone();
+                            output.alarms.push_back(alarm_info);
+                        }
+                    }
+                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
                 } else {
-                    realtime_map[s_id][tid_num] = {tid_str + "_-5", -1.0f, 0};
+                    output.mp[s_id][tid_num] = {tid_str + "_-5", -1.0f, 0};
                 }
             } else {
-                realtime_map[s_id][tid_num] = {tid_str + "_-6", -1.0f, 0};
+                output.mp[s_id][tid_num] = {tid_str + "_-6", -1.0f, 0};
             }
         }
     }
@@ -1108,7 +1184,7 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
             }
             std::string info_str = !bound_gid.empty() ? (full_tid + "_" + bound_gid + std::get<1>(state_tuple)) : (
                     full_tid + "_-1" + std::get<1>(state_tuple));
-            realtime_map[s_id][t_id_int] = {info_str, 1.0f, n_tid};
+            output.mp[s_id][t_id_int] = {info_str, 1.0f, n_tid};
         }
     }
     behavior_alarm_state = active_alarms;
@@ -1152,7 +1228,7 @@ auto FeatureProcessor::process_packet(const ProcessInput& input)
         submit_io_task(task);
     }
 
-    return realtime_map;
+    return output;
 }
 
 // ======================= 【MODIFIED】 =======================
