@@ -236,12 +236,12 @@ int main(int argc, char **argv) {
                         std::string base_path = "/mnt/nfs/alarm_" + alarm.gid + "_fid" + std::to_string(fid);
 
                         // 保存告警帧、最新的行人/人脸图块以供查验
-                        cv::imwrite(base_path + "_frame.jpg", alarm.full_frame);
+                        cv::imwrite(base_path + "_frame.jpg", frame);
                         if (!alarm.latest_body_patch.empty()) cv::imwrite(base_path + "_body_patch.jpg", alarm.latest_body_patch);
                         if (!alarm.latest_face_patch.empty()) cv::imwrite(base_path + "_face_patch.jpg", alarm.latest_face_patch);
 
                         // 在告警帧上绘制边界框并保存
-                        cv::Mat alarm_vis = alarm.full_frame.clone();
+                        cv::Mat alarm_vis = frame.clone();
                         cv::rectangle(alarm_vis, alarm.person_bbox, cv::Scalar(0, 0, 255), 3); // 红色粗框标出行人
                         if (alarm.face_bbox.area() > 0) cv::rectangle(alarm_vis, alarm.face_bbox, cv::Scalar(0, 255, 255), 2); // 黄色框标出人脸
                         cv::imwrite(base_path + "_annotated.jpg", alarm_vis);

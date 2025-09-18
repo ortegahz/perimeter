@@ -192,7 +192,6 @@ private:
  */
 struct AlarmTriggerInfo {
     std::string gid;                // 触发告警的GID
-    cv::Mat full_frame;             // 触发告警时的完整帧图像 (CPU Mat)
     cv::Rect2f person_bbox;         // 当前帧中该GID关联的行人框
     cv::Rect2d face_bbox;           // 当前帧中该GID关联的人脸框 (如果找到)
     cv::Mat latest_body_patch;      // GID库中最新的（或最具代表性的）行人图块

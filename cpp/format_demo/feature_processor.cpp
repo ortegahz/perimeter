@@ -1050,7 +1050,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     if (trigger_alarm(cand_gid, agg)) {
                         AlarmTriggerInfo alarm_info;
                         alarm_info.gid = cand_gid;
-                        input.full_frame.download(alarm_info.full_frame);
                         for (const auto &det: dets) {
                             if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                                 alarm_info.person_bbox = det.tlwh;
@@ -1081,7 +1080,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 if (trigger_alarm(new_gid, agg)) {
                     AlarmTriggerInfo alarm_info;
                     alarm_info.gid = new_gid;
-                    input.full_frame.download(alarm_info.full_frame);
                     for (const auto &det: dets) {
                         if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                             alarm_info.person_bbox = det.tlwh;
@@ -1110,7 +1108,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     if (trigger_alarm(new_gid, agg)) {
                         AlarmTriggerInfo alarm_info;
                         alarm_info.gid = new_gid;
-                        input.full_frame.download(alarm_info.full_frame);
                         for (const auto &det: dets) {
                             if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                                 alarm_info.person_bbox = det.tlwh;
@@ -1144,7 +1141,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         if (trigger_alarm(new_gid, agg)) {
                             AlarmTriggerInfo alarm_info;
                             alarm_info.gid = new_gid;
-                            input.full_frame.download(alarm_info.full_frame);
                             for (const auto &det: dets) {
                                 if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                                     alarm_info.person_bbox = det.tlwh;
