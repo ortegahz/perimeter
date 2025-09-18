@@ -548,8 +548,13 @@ void FeatureProcessor::_io_worker() {
                 case IoTaskType::UPDATE_PROTOTYPE: {
                     auto full_path = std::filesystem::path(SAVE_DIR) / task.gid / task.path_suffix;
                     std::filesystem::create_directories(full_path.parent_path());
-                    cv::imwrite(full_path.string(), task.image);
 
+                    // 新增: task.image 是 RGB 格式, imwrite/imencode 需要 BGR 格式
+                    cv::Mat bgr_image;
+                    if (!task.image.empty()) {
+                        cv::cvtColor(task.image, bgr_image, cv::COLOR_RGB2BGR);
+                    }
+                    if (!bgr_image.empty()) cv::imwrite(full_path.string(), bgr_image);
                     // --- 数据库操作 ---
                     if (db_) {
                         std::string proto_type;
@@ -566,8 +571,10 @@ void FeatureProcessor::_io_worker() {
                             sqlite3_stmt *stmt;
                             if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
                                 std::vector<uchar> img_buf;
-                                cv::imencode(".jpg", task.image, img_buf);
-
+                                // 使用上面转换后的 bgr_image
+                                if (!bgr_image.empty()) {
+                                    cv::imencode(".jpg", bgr_image, img_buf);
+                                }
                                 sqlite3_bind_text(stmt, 1, task.gid.c_str(), -1, SQLITE_STATIC);
                                 sqlite3_bind_text(stmt, 2, proto_type.c_str(), -1, SQLITE_STATIC);
                                 sqlite3_bind_int(stmt, 3, proto_idx);
@@ -635,12 +642,18 @@ void FeatureProcessor::_io_worker() {
                     for (size_t i = 0; i < task.face_patches_backup.size(); ++i) {
                         char fname[16];
                         sprintf(fname, "%03zu.jpg", i);
-                        cv::imwrite((seq_face_dir / fname).string(), task.face_patches_backup[i]);
+                        // 新增: patch 是 RGB 格式, imwrite 需要 BGR 格式
+                        cv::Mat bgr_patch;
+                        cv::cvtColor(task.face_patches_backup[i], bgr_patch, cv::COLOR_RGB2BGR);
+                        cv::imwrite((seq_face_dir / fname).string(), bgr_patch);
                     }
                     for (size_t i = 0; i < task.body_patches_backup.size(); ++i) {
                         char fname[16];
                         sprintf(fname, "%03zu.jpg", i);
-                        cv::imwrite((seq_body_dir / fname).string(), task.body_patches_backup[i]);
+                        // 新增: patch 是 RGB 格式, imwrite 需要 BGR 格式
+                        cv::Mat bgr_patch;
+                        cv::cvtColor(task.body_patches_backup[i], bgr_patch, cv::COLOR_RGB2BGR);
+                        cv::imwrite((seq_body_dir / fname).string(), bgr_patch);
                     }
 
                     // --- 数据库备份 ---
@@ -667,8 +680,11 @@ void FeatureProcessor::_io_worker() {
                             if (sqlite3_prepare_v2(db_, sql_patch, -1, &patch_stmt, nullptr) == SQLITE_OK) {
                                 auto process_patches = [&](const std::vector<cv::Mat> &patches, const char *type) {
                                     for (const auto &patch: patches) {
+                                        // 新增: patch 是 RGB 格式, imencode 需要 BGR 格式
+                                        cv::Mat bgr_patch;
                                         std::vector<uchar> img_buf;
-                                        cv::imencode(".jpg", patch, img_buf);
+                                        cv::cvtColor(patch, bgr_patch, cv::COLOR_RGB2BGR);
+                                        cv::imencode(".jpg", bgr_patch, img_buf);
                                         sqlite3_bind_int64(patch_stmt, 1, alarm_db_id);
                                         sqlite3_bind_text(patch_stmt, 2, type, -1, SQLITE_STATIC);
                                         sqlite3_bind_blob(patch_stmt, 3, img_buf.data(), img_buf.size(), SQLITE_STATIC);

@@ -7,6 +7,7 @@
 #include <sstream>
 #include <chrono>
 #include "feature_processor.h" // Includes all necessary headers like opencv and json
+#include <opencv2/cudaimgproc.hpp>
 
 // ======================= 【MODIFIED】 =======================
 // 调整：将所有模型路径常量集中在此处，用于传递给构造函数
@@ -199,6 +200,9 @@ int main(int argc, char **argv) {
 
             try {
                 gpu_frame.upload(frame);
+                // 新增：将 BGR 帧转换为 RGB 帧，因为模型需要 RGB 输入
+                cv::cuda::GpuMat gpu_frame_rgb;
+                cv::cuda::cvtColor(gpu_frame, gpu_frame_rgb, cv::COLOR_BGR2RGB);
                 // 修改：统一从缓存加载基础检测信息 (dets) 和可视化信息 (face_info)
                 LoadedData loaded_data = load_packet_from_cache(CAM_ID, fid, RAW_DIR);
 
@@ -214,7 +218,7 @@ int main(int argc, char **argv) {
                 ProcessInput proc_input = {
                     .cam_id = CAM_ID,
                     .fid = fid,
-                    .full_frame = gpu_frame,
+                    .full_frame = gpu_frame_rgb,
                     .dets = loaded_data.packet.dets,
                     .config = proc_config
                 };
@@ -237,8 +241,17 @@ int main(int argc, char **argv) {
 
                         // 保存告警帧、最新的行人/人脸图块以供查验
                         cv::imwrite(base_path + "_frame.jpg", frame);
-                        if (!alarm.latest_body_patch.empty()) cv::imwrite(base_path + "_body_patch.jpg", alarm.latest_body_patch);
-                        if (!alarm.latest_face_patch.empty()) cv::imwrite(base_path + "_face_patch.jpg", alarm.latest_face_patch);
+                        // 新增：由于 patch 是 RGB 格式，保存前需转换为 BGR
+                        if (!alarm.latest_body_patch.empty()) {
+                            cv::Mat bgr_patch;
+                            cv::cvtColor(alarm.latest_body_patch, bgr_patch, cv::COLOR_RGB2BGR);
+                            cv::imwrite(base_path + "_body_patch.jpg", bgr_patch);
+                        }
+                        if (!alarm.latest_face_patch.empty()) {
+                            cv::Mat bgr_patch;
+                            cv::cvtColor(alarm.latest_face_patch, bgr_patch, cv::COLOR_RGB2BGR);
+                            cv::imwrite(base_path + "_face_patch.jpg", bgr_patch);
+                        }
 
                         // 在告警帧上绘制边界框并保存
                         cv::Mat alarm_vis = frame.clone();
