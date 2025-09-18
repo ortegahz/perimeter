@@ -326,8 +326,8 @@ GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &fac
     return 0;
 }
 
-void GlobalID::bind(const std::string &gid, const std::string &tid, int current_ts, const TrackAgg &agg,
-                    FeatureProcessor *fp) {
+void GlobalID::bind(const std::string &gid, const std::string &tid, uint64_t current_ts,
+                    const TrackAgg &agg, FeatureProcessor *fp) {
     auto [face_f, face_p] = agg.main_face_feat_and_patch();
     auto [body_f, body_p] = agg.main_body_feat_and_patch();
 
@@ -355,7 +355,6 @@ std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, 
     return {best_gid, best_score};
 }
 
-// ======================= 【MODIFIED】 =======================
 // 修改: 更新构造函数以匹配新的签名，并使用成员变量存储路径
 FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
                                    const std::string &face_det_model_path,
@@ -781,7 +780,7 @@ void FeatureProcessor::_reid_worker() {
 // ======================= 【修改结束】=======================
 
 // MODIFIED HERE: 整个函数被重构以使用 GpuMat
-void FeatureProcessor::_load_features_from_cache(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
+void FeatureProcessor::_load_features_from_cache(const std::string &cam_id, uint64_t fid, const cv::cuda::GpuMat &full_frame,
                                                  const std::vector<Detection> &dets) {
     const auto &stream_id = cam_id;
     const int H = full_frame.rows;
@@ -878,7 +877,7 @@ bool FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg
 ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     // 在函数入口处解包，保持函数体内部逻辑不变，减少出错风险
     const std::string &cam_id = input.cam_id;
-    int fid = input.fid;
+    uint64_t fid = input.fid;
     const cv::cuda::GpuMat &full_frame = input.full_frame;
     const std::vector<Detection> &dets = input.dets;
     const ProcessConfig &config = input.config;
@@ -1025,7 +1024,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
         auto &state = candidate_state[tid_str];
         auto &ng_state = new_gid_state[tid_str];
-        int time_since_last_new = fid - ng_state.last_new_fid;
+        uint64_t time_since_last_new = fid - ng_state.last_new_fid;
 
         if (tid2gid.count(tid_str)) {
             std::string bound_gid = tid2gid.at(tid_str);
@@ -1170,7 +1169,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         }
     }
 
-    std::map<std::string, std::tuple<int, std::string>> active_alarms;
+    std::map<std::string, std::tuple<uint64_t, std::string>> active_alarms;
     for (const auto &[full_tid, state_tuple]: behavior_alarm_state) {
         if (fid - std::get<0>(state_tuple) <= BEHAVIOR_ALARM_DURATION_FRAMES) {
             active_alarms[full_tid] = state_tuple;

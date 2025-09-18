@@ -21,14 +21,14 @@ struct LoadedData {
     std::vector<Face> face_info;
 };
 
-LoadedData load_packet_from_cache(const std::string &cam_id, int fid, const std::string &root_dir) {
+LoadedData load_packet_from_cache(const std::string &cam_id, uint64_t fid, const std::string &root_dir) {
     LoadedData data;
     data.packet.cam_id = cam_id;
     data.packet.fid = fid;
 
-    char fid_str[7];
-    sprintf(fid_str, "%06d", fid);
-    std::filesystem::path frame_dir = std::filesystem::path(root_dir) / cam_id / fid_str;
+    std::stringstream ss_fid;
+    ss_fid << std::setw(6) << std::setfill('0') << fid;
+    std::filesystem::path frame_dir = std::filesystem::path(root_dir) / cam_id / ss_fid.str();
 
     if (!std::filesystem::exists(frame_dir)) {
         throw std::runtime_error("Cache directory not found for fid " + std::to_string(fid));
@@ -114,7 +114,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "realtime"; // 默认为 "load" 模式
+    std::string MODE = "load"; // 默认为 "load" 模式
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -179,7 +179,7 @@ int main(int argc, char **argv) {
         fout << "frame_id,cam_id,tid,gid,score,n_tid\n";
         fout << std::fixed << std::setprecision(4);
 
-        int fid = 0;
+        uint64_t fid = 0;
         cv::Mat frame;
         cv::cuda::GpuMat gpu_frame;
 

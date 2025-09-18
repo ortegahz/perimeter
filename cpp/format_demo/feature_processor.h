@@ -76,7 +76,7 @@ struct Detection {
 
 struct Packet {
     std::string cam_id;
-    int fid;
+    uint64_t fid;
     std::vector<cv::Mat> patches;
     std::vector<Detection> dets;
 };
@@ -223,7 +223,7 @@ struct GlobalID {
 
     int can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f);
 
-    void bind(const std::string &gid, const std::string &tid, int current_ts, const TrackAgg &agg,
+    void bind(const std::string &gid, const std::string &tid, uint64_t current_ts, const TrackAgg &agg,
               class FeatureProcessor *fp);
 
     std::pair<std::string, float> probe(const std::vector<float> &face_f, const std::vector<float> &body_f);
@@ -232,18 +232,18 @@ struct GlobalID {
     std::map<std::string, std::vector<std::vector<float>>> bank_faces;
     std::map<std::string, std::vector<std::vector<float>>> bank_bodies;
     std::map<std::string, std::vector<std::string>> tid_hist;
-    std::map<std::string, int> last_update;
+    std::map<std::string, uint64_t> last_update;
 };
 
 struct CandidateState {
     std::string cand_gid = "";
     int count = 0;
-    int last_bind_fid = 0;
+    uint64_t last_bind_fid = 0;
 };
 
 struct NewGidState {
     int count = 0;
-    int last_new_fid = -NEW_GID_TIME_WINDOW;
+    uint64_t last_new_fid = 0;
     int ambig_count = 0;
 };
 
@@ -294,7 +294,7 @@ struct ReidTask {
 // 新增: 为 process_packet 定义统一的输入结构体
 struct ProcessInput {
     const std::string& cam_id;
-    int fid;
+    uint64_t fid;
     const cv::cuda::GpuMat& full_frame;
     const std::vector<Detection>& dets;
     const ProcessConfig& config;
@@ -335,7 +335,7 @@ public:
 
 private:
 
-    void _load_features_from_cache(const std::string &cam_id, int fid, const cv::cuda::GpuMat &full_frame,
+    void _load_features_from_cache(const std::string &cam_id, uint64_t fid, const cv::cuda::GpuMat &full_frame,
                                    const std::vector<Detection> &dets);
 
     std::vector<float> _fuse_feat(const std::vector<float> &face_f, const std::vector<float> &body_f);
@@ -389,12 +389,12 @@ private:
     std::map<std::string, TrackAgg> agg_pool;
     GlobalID gid_mgr;
     std::map<std::string, std::string> tid2gid;
-    std::unordered_map<std::string, int> last_seen;
+    std::unordered_map<std::string, uint64_t> last_seen;
     std::unordered_map<std::string, CandidateState> candidate_state;
     std::unordered_map<std::string, NewGidState> new_gid_state;
     std::set<std::string> alarmed;
     std::map<std::string, std::vector<float>> alarm_reprs;
-    std::map<std::string, std::tuple<int, std::string>> behavior_alarm_state;
+    std::map<std::string, std::tuple<uint64_t, std::string>> behavior_alarm_state;
     std::map<std::string, std::unique_ptr<IntrusionDetector>> intrusion_detectors;
     std::map<std::string, std::unique_ptr<LineCrossingDetector>> line_crossing_detectors;
     std::map<std::string, cv::Rect2d> current_frame_face_boxes_; // 临时存储TID-FaceBbox映射
