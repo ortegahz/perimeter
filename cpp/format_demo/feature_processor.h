@@ -40,8 +40,12 @@ constexpr int NEW_GID_TIME_WINDOW = 50;
 constexpr int BIND_LOCK_FRAMES = 15;
 constexpr int CANDIDATE_FRAMES = 2;
 constexpr int MAX_TID_IDLE_FRAMES = 256;
-constexpr int GID_MAX_IDLE_FRAMES = 1080000;
+constexpr int GID_MAX_IDLE_FRAMES = 25 / 2 * 60 * 60 * 24;
 constexpr int WAIT_FRAMES_AMBIGUOUS = 10;
+
+constexpr double FPS_ESTIMATE = 25.0 / 2.;
+constexpr double MAX_TID_IDLE_SEC = MAX_TID_IDLE_FRAMES / FPS_ESTIMATE;
+constexpr double GID_MAX_IDLE_SEC = GID_MAX_IDLE_FRAMES / FPS_ESTIMATE;
 
 constexpr int ALARM_CNT_TH = 2;
 constexpr float ALARM_DUP_THR = 0.4f;
@@ -222,7 +226,7 @@ struct GlobalID {
 
     int can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f);
 
-    void bind(const std::string &gid, const std::string &tid, uint64_t current_ts, const TrackAgg &agg,
+    void bind(const std::string &gid, const std::string &tid, double current_ts, const TrackAgg &agg,
               class FeatureProcessor *fp);
 
     std::pair<std::string, float> probe(const std::vector<float> &face_f, const std::vector<float> &body_f);
@@ -231,7 +235,7 @@ struct GlobalID {
     std::map<std::string, std::vector<std::vector<float>>> bank_faces;
     std::map<std::string, std::vector<std::vector<float>>> bank_bodies;
     std::map<std::string, std::vector<std::string>> tid_hist;
-    std::map<std::string, uint64_t> last_update;
+    std::map<std::string, double> last_update;
 };
 
 struct CandidateState {
@@ -317,7 +321,8 @@ public:
                               const std::string& mode = "realtime",
                               const std::string& device = "dla",
                               const std::string& feature_cache_path = "",
-                              const nlohmann::json& boundary_config = {});
+                              const nlohmann::json& boundary_config = {},
+                              bool use_fid_time = false);
     // ======================= 【修改结束】 =======================
 
     ~FeatureProcessor();
@@ -335,7 +340,7 @@ public:
 private:
 
     void _load_features_from_cache(const std::string &cam_id, uint64_t fid, const cv::cuda::GpuMat &full_frame,
-                                   const std::vector<Detection> &dets);
+                                   const std::vector<Detection> &dets, double now_stamp);
 
     std::vector<float> _fuse_feat(const std::vector<float> &face_f, const std::vector<float> &body_f);
 
@@ -370,6 +375,7 @@ private:
     sqlite3 *db_ = nullptr;
 
     std::string mode_;
+    bool use_fid_time_;
     std::string device_;
     std::string feature_cache_path_;
     nlohmann::json features_cache_;
@@ -388,7 +394,7 @@ private:
     std::map<std::string, TrackAgg> agg_pool;
     GlobalID gid_mgr;
     std::map<std::string, std::string> tid2gid;
-    std::unordered_map<std::string, uint64_t> last_seen;
+    std::unordered_map<std::string, double> last_seen;
     std::unordered_map<std::string, CandidateState> candidate_state;
     std::unordered_map<std::string, NewGidState> new_gid_state;
     std::set<std::string> alarmed;

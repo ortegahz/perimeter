@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "load"; // 默认为 "load" 模式
+    std::string MODE = "realtime"; // 默认为 "load" 模式
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -152,7 +152,8 @@ int main(int argc, char **argv) {
             MODE,                     // 明确传递，覆盖默认值
             "dla",                    // 明确传递
             FEATURE_CACHE_JSON,       // 明确传递，覆盖默认值
-            boundary_config);         // 明确传递，覆盖默认值
+            boundary_config,          // 明确传递，覆盖默认值
+            false);                    // 新增：use_fid_time=true, 使用帧号作为时间基准
         // ======================= 【修改结束】 =======================
 
         // 注意：在realtime模式下，FeatureProcessor会创建自己的FaceAnalyzer实例。

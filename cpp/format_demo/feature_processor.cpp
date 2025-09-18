@@ -326,7 +326,7 @@ GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &fac
     return 0;
 }
 
-void GlobalID::bind(const std::string &gid, const std::string &tid, uint64_t current_ts,
+void GlobalID::bind(const std::string &gid, const std::string &tid, double current_ts,
                     const TrackAgg &agg, FeatureProcessor *fp) {
     auto [face_f, face_p] = agg.main_face_feat_and_patch();
     auto [body_f, body_p] = agg.main_body_feat_and_patch();
@@ -362,11 +362,13 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
                                    const std::string &mode,
                                    const std::string &device,
                                    const std::string &feature_cache_path,
-                                   const nlohmann::json &boundary_config)
+                                   const nlohmann::json &boundary_config,
+                                   bool use_fid_time)
         : m_reid_model_path(reid_model_path),
           m_face_det_model_path(face_det_model_path),
           m_face_rec_model_path(face_rec_model_path),
-          mode_(mode), device_(device), feature_cache_path_(feature_cache_path) {
+          mode_(mode), use_fid_time_(use_fid_time), device_(device),
+          feature_cache_path_(feature_cache_path) {
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode." << std::endl;
 
     if (mode_ == "realtime") {
@@ -797,7 +799,7 @@ void FeatureProcessor::_reid_worker() {
 
 // MODIFIED HERE: 整个函数被重构以使用 GpuMat
 void FeatureProcessor::_load_features_from_cache(const std::string &cam_id, uint64_t fid, const cv::cuda::GpuMat &full_frame,
-                                                 const std::vector<Detection> &dets) {
+                                                 const std::vector<Detection> &dets, double now_stamp) {
     const auto &stream_id = cam_id;
     const int H = full_frame.rows;
     const int W = full_frame.cols;
@@ -829,8 +831,8 @@ void FeatureProcessor::_load_features_from_cache(const std::string &cam_id, uint
         if (fd.contains("face_feat") && !fd["face_feat"].is_null()) {
             auto ff = fd["face_feat"].get<std::vector<float>>();
             if (!ff.empty()) agg.add_face(ff, patch.clone());
-        }
-        last_seen[tid_str_json] = fid;
+        } // 注意：在load模式下，`last_seen`的更新依赖于`use_fid_time`的设置。
+        last_seen[tid_str_json] = now_stamp;
     }
 }
 
@@ -916,6 +918,18 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AL"};
     }
 
+    // --- 核心修改：超时逻辑 ---
+    double now_stamp, max_tid_idle, gid_max_idle;
+    if (use_fid_time_) {
+        now_stamp = static_cast<double>(fid);
+        max_tid_idle = MAX_TID_IDLE_FRAMES;
+        gid_max_idle = GID_MAX_IDLE_FRAMES;
+    } else {
+        now_stamp = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+        max_tid_idle = MAX_TID_IDLE_SEC;
+        gid_max_idle = GID_MAX_IDLE_SEC;
+    }
+
     // ======================= 【MODIFIED】 =======================
     // Reworked feature extraction pipeline for parallelism
     if (mode_ == "realtime") {
@@ -979,7 +993,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         gpu_face_patch.download(face_patch);
                         agg_pool[tid_str].add_face(f_emb, face_patch.clone());
                         // ======================= 【修改结束】 =======================
-                        last_seen[tid_str] = fid;
+                        last_seen[tid_str] = now_stamp;
                         if (!feature_cache_path_.empty()) extracted_features_for_this_frame[tid_str]["face_feat"] = f_emb;
                     } catch (const std::exception &) { continue; }
                 }
@@ -993,7 +1007,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         for (const auto &result: reid_results) {
             // This is the crucial part: adding body features to the aggregation pool.
             agg_pool[result.tid_str].add_body(result.body_feat, result.det_score, result.patch);
-            last_seen[result.tid_str] = fid; // Ensure last_seen is updated for body tracks as well.
+            last_seen[result.tid_str] = now_stamp; // Ensure last_seen is updated for body tracks as well.
             if (!feature_cache_path_.empty()) {
                 extracted_features_for_this_frame[result.tid_str]["body_feat"] = result.body_feat;
             }
@@ -1004,8 +1018,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
         }
 
-    } else if (mode_ == "load") {
-        _load_features_from_cache(cam_id, fid, full_frame, dets);
+    } else if (mode_ == "load") { // 注意：这里的 now_stamp 是基于 fid 的
+        _load_features_from_cache(cam_id, fid, full_frame, dets, now_stamp);
     }
     // ======================= 【修改结束】=======================
 
@@ -1058,7 +1072,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             state.cand_gid = cand_gid;
             int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f);
             if (state.count >= CANDIDATE_FRAMES && flag_code == 0) {
-                gid_mgr.bind(cand_gid, tid_str, fid, agg, this);
+                gid_mgr.bind(cand_gid, tid_str, now_stamp, agg, this);
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = (int) gid_mgr.tid_hist[cand_gid].size();
@@ -1087,7 +1101,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             }
         } else if (gid_mgr.bank_faces.empty()) {
             std::string new_gid = gid_mgr.new_gid();
-            gid_mgr.bind(new_gid, tid_str, fid, agg, this);
+            gid_mgr.bind(new_gid, tid_str, now_stamp, agg, this);
             tid2gid[tid_str] = new_gid;
             candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
             new_gid_state[tid_str].last_new_fid = fid;
@@ -1115,7 +1129,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 std::string new_gid = gid_mgr.new_gid();
-                gid_mgr.bind(new_gid, tid_str, fid, agg, this);
+                gid_mgr.bind(new_gid, tid_str, now_stamp, agg, this);
                 tid2gid[tid_str] = new_gid;
                 candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                 new_gid_state[tid_str] = {0, fid, 0};
@@ -1148,7 +1162,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 ng_state.count++;
                 if (ng_state.count >= NEW_GID_MIN_FRAMES) {
                     std::string new_gid = gid_mgr.new_gid();
-                    gid_mgr.bind(new_gid, tid_str, fid, agg, this);
+                    gid_mgr.bind(new_gid, tid_str, now_stamp, agg, this);
                     tid2gid[tid_str] = new_gid;
                     candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                     new_gid_state[tid_str] = {0, fid, 0};
@@ -1201,7 +1215,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     behavior_alarm_state = active_alarms;
 
     for (auto it = last_seen.cbegin(); it != last_seen.cend();) {
-        if (fid - it->second >= MAX_TID_IDLE_FRAMES) {
+        if (now_stamp - it->second >= max_tid_idle) {
             agg_pool.erase(it->first);
             tid2gid.erase(it->first);
             candidate_state.erase(it->first);
@@ -1212,8 +1226,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     }
 
     std::vector<std::string> gids_to_del;
-    for (auto const &[gid, last_fid]: gid_mgr.last_update) {
-        if (fid - last_fid >= GID_MAX_IDLE_FRAMES) gids_to_del.push_back(gid);
+    for (auto const &[gid, last_ts]: gid_mgr.last_update) {
+        if (now_stamp - last_ts >= gid_max_idle) gids_to_del.push_back(gid);
     }
     for (const auto &gid_del: gids_to_del) {
         std::vector<std::string> tids_to_clean;
