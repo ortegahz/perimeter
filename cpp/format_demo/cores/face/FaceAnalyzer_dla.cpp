@@ -314,18 +314,26 @@ std::vector<Face> FaceAnalyzer::detect(const cv::cuda::GpuMat &img) {
     float scale_ratio = static_cast<float>(det_size_.height) / std::max(orig_h, orig_w);
     int new_w = static_cast<int>(orig_w * scale_ratio), new_h = static_cast<int>(orig_h * scale_ratio);
 
-    // GPU resize+pad
+    // --- Optimization: Resize first, then convert color space to reduce computation ---
+    // 1. Resize the original full-size RGB image
     cv::cuda::GpuMat resized_img;
     cv::cuda::resize(img, resized_img, cv::Size(new_w, new_h), 0, 0, cv::INTER_LINEAR);
+
+    // 2. Pad the resized RGB image to the detection model's input size
     cv::cuda::GpuMat padded_img(det_size_, img.type(), cv::Scalar(0, 0, 0));
     resized_img.copyTo(padded_img(cv::Rect(0, 0, new_w, new_h)));
-    // GPU float32 & sub mean
+
+    // 3. Convert the padded, resized image from RGB to BGR for the detection model
+    cv::cuda::GpuMat bgr_img;
+    cv::cuda::cvtColor(padded_img, bgr_img, cv::COLOR_RGB2BGR);
+
+    // 4. Convert to float32 and subtract mean (model-specific preprocessing)
     cv::cuda::GpuMat processed_img;
-    padded_img.convertTo(processed_img, CV_32FC3);
+    bgr_img.convertTo(processed_img, CV_32FC3);
     cv::Scalar meanBGR(104, 117, 123);
     cv::cuda::subtract(processed_img, meanBGR, processed_img);
 
-    // HWC->CHW pack to float host buffer (分通道download再memcpy)
+    // 5. HWC->CHW packing to float host buffer for TensorRT input
     std::vector<float> input_data(det_size_.height * det_size_.width * 3);
     std::vector<cv::cuda::GpuMat> chs;
     cv::cuda::split(processed_img, chs);
@@ -337,7 +345,7 @@ std::vector<Face> FaceAnalyzer::detect(const cv::cuda::GpuMat &img) {
                     det_size_.width * det_size_.height * sizeof(float));
     }
 
-    // inference
+    // --- Inference ---
     int input_idx = findInputBinding(*m_det_engine, "input");
     if (input_idx < 0) throw std::runtime_error("FaceDet model must have an input binding named 'input'");
     int loc_idx = m_det_engine->getBindingIndex("boxes"),
@@ -364,6 +372,7 @@ std::vector<Face> FaceAnalyzer::detect(const cv::cuda::GpuMat &img) {
                     cudaMemcpyDeviceToHost, m_stream);
     cudaStreamSynchronize(m_stream);
 
+    // --- Post-processing ---
     const int top_k = 5000;
     const float nms_threshold = 0.4f;
     const int keep_top_k = 750;
@@ -445,16 +454,15 @@ cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::cuda::GpuMat &aligned
     if (aligned_img.size() != cv::Size(112, 112))
         throw std::runtime_error("Input must be 112x112.");
 
-    // --------- 1. BGR -> RGB ---------
+    // The input aligned_img is already in RGB format.
     cv::Mat cpu_img;
     aligned_img.download(cpu_img);
-    cv::cvtColor(cpu_img, cpu_img, cv::COLOR_BGR2RGB);
 
-    // --------- 2. 转 float 并归一化 ---------
+    // --------- 1. 转 float 并归一化 ---------
     cpu_img.convertTo(cpu_img, CV_32FC3);
     cpu_img = (cpu_img - 127.5) / 128.0;
 
-    // --------- 3. HWC -> CHW ---------
+    // --------- 2. HWC -> CHW ---------
     std::vector<cv::Mat> chs(3);
     cv::split(cpu_img, chs);  // R=chs[0], G=chs[1], B=chs[2]
 
@@ -465,7 +473,7 @@ cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::cuda::GpuMat &aligned
                112 * 112 * sizeof(float));
     }
 
-    // --------- 4. 推理 ---------
+    // --------- 3. 推理 ---------
     int input_idx = findInputBinding(*m_rec_engine);
     int output_idx = findOutputBinding(*m_rec_engine);
 
@@ -478,7 +486,7 @@ cv::Mat FaceAnalyzer::get_embedding_from_aligned(const cv::cuda::GpuMat &aligned
                     m_buffer_sizes_rec[output_idx], cudaMemcpyDeviceToHost, m_stream);
     cudaStreamSynchronize(m_stream);
 
-    // --------- 5. L2 Normalize ---------
+    // --------- 4. L2 Normalize ---------
     cv::normalize(result, result, 1.0, 0.0, cv::NORM_L2);
 
     return result.clone();

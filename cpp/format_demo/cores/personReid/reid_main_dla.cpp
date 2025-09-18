@@ -115,6 +115,8 @@ int main() {
                 continue;
             }
 
+            cv::cvtColor(img_cpu, img_cpu, cv::COLOR_BGR2RGB);
+
             // 上传到 GPU
             cv::cuda::GpuMat img;
             img.upload(img_cpu);

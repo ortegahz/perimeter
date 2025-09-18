@@ -23,13 +23,13 @@ public:
 
     /**
      * @brief 提取特征向量，直接使用 GpuMat，避免 CPU 拷贝。
-     * @param bgr GPU 上的 BGR 图像。
+     * @param rgb GPU 上的 RGB 图像。
      * @return 1xN 的 GpuMat (CV_32F)，已 L2 归一化。
      */
-    cv::cuda::GpuMat extract_feat(const cv::cuda::GpuMat &bgr);
+    cv::cuda::GpuMat extract_feat(const cv::cuda::GpuMat &rgb);
 
 private:
-    cv::cuda::GpuMat run(const cv::cuda::GpuMat &bgr, bool flip);
+    cv::cuda::GpuMat run(const cv::cuda::GpuMat &rgb, bool flip);
 
     void buildEngineFromOnnx(const std::string &onnx_path);
 

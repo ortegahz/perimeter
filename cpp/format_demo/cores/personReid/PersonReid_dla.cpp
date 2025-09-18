@@ -78,9 +78,9 @@ PersonReidDLA::~PersonReidDLA() {
 }
 
 // --- 公共接口实现 ---
-cv::cuda::GpuMat PersonReidDLA::extract_feat(const cv::cuda::GpuMat &bgr) {
-    cv::cuda::GpuMat feat_orig = run(bgr, false);
-    cv::cuda::GpuMat feat_flip = run(bgr, true);
+cv::cuda::GpuMat PersonReidDLA::extract_feat(const cv::cuda::GpuMat &rgb) {
+    cv::cuda::GpuMat feat_orig = run(rgb, false);
+    cv::cuda::GpuMat feat_flip = run(rgb, true);
 
     if (feat_orig.empty() || feat_flip.empty()) {
         std::cerr << "Warning: empty feature!" << std::endl;
@@ -103,16 +103,15 @@ cv::cuda::GpuMat PersonReidDLA::extract_feat(const cv::cuda::GpuMat &bgr) {
 }
 
 // --- 私有方法 ---
-cv::cuda::GpuMat PersonReidDLA::run(const cv::cuda::GpuMat &bgr, bool flip) {
+cv::cuda::GpuMat PersonReidDLA::run(const cv::cuda::GpuMat &rgb, bool flip) {
     // 1. 图像预处理 (GPU 完成)
     cv::cuda::GpuMat img_proc;
-    if (flip) cv::cuda::flip(bgr, img_proc, 1);
-    else img_proc = bgr;
+    if (flip) cv::cuda::flip(rgb, img_proc, 1);
+    else img_proc = rgb;
 
-    cv::cuda::GpuMat img_resized, img_rgb, img_float;
+    cv::cuda::GpuMat img_resized, img_float;
     cv::cuda::resize(img_proc, img_resized, input_size_);
-    cv::cuda::cvtColor(img_resized, img_rgb, cv::COLOR_BGR2RGB);
-    img_rgb.convertTo(img_float, CV_32F, 1.0 / 255.0);
+    img_resized.convertTo(img_float, CV_32F, 1.0 / 255.0);
 
     // 标准化
     std::vector<cv::cuda::GpuMat> chans(3);

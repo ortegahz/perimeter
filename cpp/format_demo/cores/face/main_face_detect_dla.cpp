@@ -118,6 +118,8 @@ int main(int argc, char *argv[]) {
                     std::cerr << "[WARNING] 读取失败: " << entry_path << std::endl;
                     continue;
                 }
+                // The get() interface expects an RGB image, so convert from BGR (read by imread) to RGB.
+                cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
                 cv::cuda::GpuMat gpu_img;
                 gpu_img.upload(img);
 
@@ -155,6 +157,8 @@ int main(int argc, char *argv[]) {
                         std::string stem = p.stem().string();
                         std::string save_path_str = (fs::path(output_aligned_dir) /
                                                      (stem + "_face" + std::to_string(face_idx) + ".jpg")).string();
+                        // Convert the RGB aligned face back to BGR before saving, as imwrite expects BGR.
+                        cv::cvtColor(aligned_to_save, aligned_to_save, cv::COLOR_RGB2BGR);
                         cv::imwrite(save_path_str, aligned_to_save);
                     }
                     if (detection_txt_file.is_open()) {

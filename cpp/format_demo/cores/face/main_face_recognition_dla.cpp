@@ -13,7 +13,7 @@ int main() {
     // ---------------- 配置 ----------------
     std::string bmp_folder_path = "/mnt/nfs/face_aligned_py_bmp/";      // 已裁剪对齐到112x112的bmp
     std::string output_txt_path = "/mnt/nfs/embeddings_cpp_from_aligned_bmps.txt";
-    std::string rec_model_path = "/mnt/nfs/w600k_r50_simplified.onnx";
+    std::string rec_model_path = "/mnt/nfs/w600k_r50_simplified_org.onnx";
     // 假设没有用到 det_model，这里传一个空即可
     std::string det_model_path = "/mnt/nfs/mobilenet0.25_Final.onnx";
 
@@ -48,6 +48,7 @@ int main() {
                 std::cerr << "[WARNING] Invalid image (skip): " << bmp_path << "\n";
                 continue;
             }
+            cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
 
             // 上传到GPU（接口签名要求GpuMat）
             cv::cuda::GpuMat gpu_img;
