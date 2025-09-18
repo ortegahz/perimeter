@@ -377,7 +377,7 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
             // Initialize the ReID model for the worker thread on DLA 1
             reid_model_dla1_ = std::make_unique<PersonReidDLA>(m_reid_model_path, REID_INPUT_WIDTH, REID_INPUT_HEIGHT,
                                                                1,
-                                                               "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model_dla.engine");
+                                                               "/home/nvidia/VSCodeProject/smartboxcore/models/reid_model.dla.engine");
             std::cout << "Initialized Re-ID worker model on DLA 1." << std::endl;
 
             face_analyzer_ = std::make_unique<FaceAnalyzer>(m_face_det_model_path, m_face_rec_model_path);

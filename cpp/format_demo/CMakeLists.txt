@@ -60,7 +60,7 @@ set(TRT_LIBS ${NVINFER_LIB} ${NVONNXPARSER_LIB})
 # ----------------- nlohmann/json (header-only) -----------------
 add_library(nlohmann_json INTERFACE)
 target_include_directories(nlohmann_json INTERFACE
-        ${PERIMETER_LIBS_DIR}/json/include
+        ${PERIMETER_LIBS_DIR}/nlohmann_json/include
 )
 
 # ----------------- Eigen (header-only) -----------------

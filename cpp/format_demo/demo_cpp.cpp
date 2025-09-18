@@ -10,9 +10,9 @@
 
 // ======================= 【MODIFIED】 =======================
 // 调整：将所有模型路径常量集中在此处，用于传递给构造函数
-const std::string REID_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model.onnx";
-const std::string FACE_DET_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/mobilenet0.25_Final.onnx";
-const std::string FACE_REC_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/w600k_r50_simplified.onnx";
+const std::string REID_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/reid_model.onnx";
+const std::string FACE_DET_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/mobilenet0.25_Final.onnx";
+const std::string FACE_REC_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/w600k_r50_simplified.onnx";
 // ======================= 【修改结束】 =======================
 
 // -------- 修改：load_packet_from_cache 返回一个包含 packet 和 face_info 的结构体 --------
