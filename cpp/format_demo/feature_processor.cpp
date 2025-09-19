@@ -365,13 +365,15 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
                                    const std::string &device,
                                    const std::string &feature_cache_path,
                                    const nlohmann::json &boundary_config,
-                                   bool use_fid_time)
+                                   bool use_fid_time,
+                                   bool enable_alarm_saving)
         : m_reid_model_path(reid_model_path),
           m_face_det_model_path(face_det_model_path),
           m_face_rec_model_path(face_rec_model_path),
           mode_(mode), use_fid_time_(use_fid_time), device_(device),
-          feature_cache_path_(feature_cache_path) {
-    std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode." << std::endl;
+          feature_cache_path_(feature_cache_path),
+          m_enable_alarm_saving(enable_alarm_saving) {
+    std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is " << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
 
     if (mode_ == "realtime") {
         std::cout << "Loading ReID and Face models for feature extraction..." << std::endl;
@@ -1307,15 +1309,24 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         alarmed.erase(gid_del);
         alarm_reprs.erase(gid_del);
 
+#ifdef ENABLE_DISK_IO
         IoTask task;
         task.type = IoTaskType::CLEANUP_GID_DIR;
         task.gid = gid_del;
         submit_io_task(task);
+#endif
     }
 
-    if (!triggered_alarms_this_frame.empty()) {
+    // 仅当功能开关打开且确实有报警时才执行保存逻辑
+    if (m_enable_alarm_saving && !triggered_alarms_this_frame.empty()) {
         // ======================= 【NEW LOGIC】 =======================
         // 为本帧触发的每个报警，提交保存上下文信息（图片和文本）的异步任务
+
+        // 1. 如果需要保存图片，提前将GPU帧下载并转换为BGR格式
+        cv::Mat frame_bgr_for_saving;
+        cv::cuda::GpuMat temp_gpu_bgr;
+        cv::cuda::cvtColor(full_frame, temp_gpu_bgr, cv::COLOR_RGB2BGR);
+        temp_gpu_bgr.download(frame_bgr_for_saving);
 
         // 1. 准备 frame_info.txt 的内容
         // 为确保输出一致，对TID进行排序
@@ -1363,9 +1374,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 img_task.type = IoTaskType::SAVE_ALARM_CONTEXT_IMAGES;
                 img_task.gid = gid;
                 img_task.timestamp = timestamp;
-                if (input.full_frame_bgr) {
-                    img_task.full_frame_bgr = input.full_frame_bgr->clone();
-                }
+                img_task.full_frame_bgr = frame_bgr_for_saving.clone();
                 img_task.latest_body_patch_rgb = it->latest_body_patch.clone();
                 img_task.latest_face_patch_rgb = it->latest_face_patch.clone();
                 img_task.person_bbox = it->person_bbox;

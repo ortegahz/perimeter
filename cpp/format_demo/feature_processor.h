@@ -323,7 +323,6 @@ struct ProcessInput {
     const cv::cuda::GpuMat &full_frame;
     const std::vector<Detection> &dets;
     const ProcessConfig &config;
-    const cv::Mat* full_frame_bgr = nullptr; // 新增
 };
 // ======================= 【修改结束】 =======================
 
@@ -345,7 +344,8 @@ public:
                               const std::string &device = "dla",
                               const std::string &feature_cache_path = "",
                               const nlohmann::json &boundary_config = {},
-                              bool use_fid_time = false);
+                              bool use_fid_time = false,
+                              bool enable_alarm_saving = false);
     // ======================= 【修改结束】 =======================
 
     ~FeatureProcessor();
@@ -408,6 +408,7 @@ private:
     std::string m_reid_model_path;
     std::string m_face_det_model_path;
     std::string m_face_rec_model_path;
+    bool m_enable_alarm_saving;
 
     // MODIFIED HERE: Changed from PersonReid to PersonReidDLA
     std::unique_ptr<PersonReidDLA> reid_model_;

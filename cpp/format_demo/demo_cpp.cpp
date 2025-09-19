@@ -147,20 +147,21 @@ int main(int argc, char **argv) {
         // ======================= 【MODIFIED】 =======================
         // 修改: 使用新的构造函数实例化 FeatureProcessor
         FeatureProcessor processor(
-            REID_MODEL_PATH,
-            FACE_DET_MODEL_PATH,
-            FACE_REC_MODEL_PATH,
-            MODE,                     // 明确传递，覆盖默认值
-            "dla",                    // 明确传递
-            FEATURE_CACHE_JSON,       // 明确传递，覆盖默认值
-            boundary_config,          // 明确传递，覆盖默认值
-            _use_fid_time);                    // 新增：use_fid_time=true, 使用帧号作为时间基准
+                REID_MODEL_PATH,
+                FACE_DET_MODEL_PATH,
+                FACE_REC_MODEL_PATH,
+                MODE,                     // 明确传递，覆盖默认值
+                "dla",                    // 明确传递
+                FEATURE_CACHE_JSON,       // 明确传递，覆盖默认值
+                boundary_config,          // 明确传递，覆盖默认值
+                _use_fid_time,
+                true);                    // 新增：use_fid_time=true, 使用帧号作为时间基准
         // ======================= 【修改结束】 =======================
 
         // 注意：在realtime模式下，FeatureProcessor会创建自己的FaceAnalyzer实例。
         // 此处的face_analyzer仅用于演示，实际处理在processor内部完成。
 
-        cv::VideoCapture cap(VIDEO_PATH);
+        cv::VideoCapture cap(VIDEO_PATH, cv::CAP_FFMPEG);
         if (!cap.isOpened()) {
             std::cerr << "Cannot open video for reading: " << VIDEO_PATH << std::endl;
             return -1;
@@ -218,12 +219,11 @@ int main(int argc, char **argv) {
                 // ======================= 【MODIFIED】 =======================
                 // 创建新的输入结构体并调用修改后的 process_packet 接口
                 ProcessInput proc_input = {
-                    .cam_id = CAM_ID,
-                    .fid = fid,
-                    .full_frame = gpu_frame_rgb,
-                    .dets = loaded_data.packet.dets,
-                    .config = proc_config,
-                    .full_frame_bgr = &frame // 新增：传入原始BGR帧的指针
+                        CAM_ID,
+                        fid,
+                        gpu_frame_rgb,
+                        loaded_data.packet.dets,
+                        proc_config
                 };
                 auto proc_output = processor.process_packet(proc_input);
                 // ======================= 【修改结束】 =======================
@@ -238,7 +238,7 @@ int main(int argc, char **argv) {
                 // 新增：处理返回的告警信息
                 if (!proc_output.alarms.empty()) {
                     std::cout << "\n\n*** ALARM TRIGGERED! Frame: " << fid << " ***\n";
-                    for (const auto& alarm : proc_output.alarms) {
+                    for (const auto &alarm: proc_output.alarms) {
                         std::cout << "  - GID: " << alarm.gid << "\n";
                         std::string base_path = "/mnt/nfs/alarm_" + alarm.gid + "_fid" + std::to_string(fid);
 
@@ -259,7 +259,8 @@ int main(int argc, char **argv) {
                         // 在告警帧上绘制边界框并保存
                         cv::Mat alarm_vis = frame.clone();
                         cv::rectangle(alarm_vis, alarm.person_bbox, cv::Scalar(0, 0, 255), 3); // 红色粗框标出行人
-                        if (alarm.face_bbox.area() > 0) cv::rectangle(alarm_vis, alarm.face_bbox, cv::Scalar(0, 255, 255), 2); // 黄色框标出人脸
+                        if (alarm.face_bbox.area() > 0)
+                            cv::rectangle(alarm_vis, alarm.face_bbox, cv::Scalar(0, 255, 255), 2); // 黄色框标出人脸
                         cv::imwrite(base_path + "_annotated.jpg", alarm_vis);
                     }
                 }
@@ -269,7 +270,7 @@ int main(int argc, char **argv) {
                 cv::resize(frame, vis, vis_size);
 
                 const auto &cam_map = proc_output.mp.count(CAM_ID) ? proc_output.mp.at(CAM_ID)
-                                                       : std::map<int, std::tuple<std::string, float, int>>{};
+                                                                   : std::map<int, std::tuple<std::string, float, int>>{};
 
                 // ======================= 【可视化部分保持不变】 =======================
                 for (const auto &det: loaded_data.packet.dets) {
@@ -348,14 +349,14 @@ int main(int argc, char **argv) {
                     }
 
                     // --- 确定边界框颜色 ---
-                    const cv::Scalar colors[] = {{0,   0,   255},
+                    const cv::Scalar colors[] = {{0,   0, 255},
                                                  {0,   255, 0},
                                                  {255, 255, 0},
                                                  {0,   255, 255},
-                                                 {255, 0,   255},
-                                                 {128, 0,   0},
+                                                 {255, 0, 255},
+                                                 {128, 0, 0},
                                                  {0,   128, 0},
-                                                 {0,   0,   128}};
+                                                 {0,   0, 128}};
                     cv::Scalar color = (color_override[0] != -1)
                                        ? color_override
                                        : colors[color_id % (sizeof(colors) / sizeof(cv::Scalar))];
