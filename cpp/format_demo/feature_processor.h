@@ -17,6 +17,7 @@
 #include <atomic>
 #include <future>
 #include <queue>
+#include <optional>
 
 #include <sqlite3.h>
 // MODIFIED HERE: Include the correct header
@@ -254,24 +255,41 @@ struct NewGidState {
     int ambig_count = 0;
 };
 
-// 定义I/O任务
 enum class IoTaskType {
-    CREATE_DIRS,    // 初始化环境
-    SAVE_PROTOTYPE,   // 保存一个新的原型
-    UPDATE_PROTOTYPE, // 更新一个已有的原型
+    CREATE_DIRS,             // 初始化环境
+    SAVE_PROTOTYPE,          // 保存一个新的原型
+    UPDATE_PROTOTYPE,        // 更新已有原型
     REMOVE_FILES,
     BACKUP_ALARM,
-    CLEANUP_GID_DIR
+    CLEANUP_GID_DIR,
+    SAVE_ALARM_INFO,         // 保存报警的文本信息
+    SAVE_ALARM_CONTEXT_IMAGES // 保存报警的相关图片
 };
 
 struct IoTask {
     IoTaskType type;
     std::string gid;
+
+    // 新增: 用于 SAVE_ALARM_CONTEXT_IMAGES
+    cv::Mat full_frame_bgr;
+    cv::Mat latest_body_patch_rgb;
+    cv::Mat latest_face_patch_rgb;
+    cv::Rect2f person_bbox;
+    cv::Rect2d face_bbox;
+
+    // 用于 SAVE_PROTOTYPE/UPDATE_PROTOTYPE
     cv::Mat image;
-    std::vector<float> feature; // 用于SAVE/UPDATE_PROTOTYPE
+    std::vector<float> feature;
     std::string path_suffix;
     std::vector<std::string> files_to_remove;
+
+    // 通用字段
     std::string timestamp;
+
+    // 用于 SAVE_ALARM_INFO
+    std::string alarm_info_content;
+
+    // 用于 BACKUP_ALARM
     std::vector<cv::Mat> face_patches_backup;
     std::vector<cv::Mat> body_patches_backup;
 };
@@ -291,8 +309,8 @@ struct ReidResult {
  */
 using ReidResults = std::vector<ReidResult>;
 struct ReidTask {
-    const cv::cuda::GpuMat* full_frame;
-    const std::vector<Detection>* dets;
+    const cv::cuda::GpuMat *full_frame;
+    const std::vector<Detection> *dets;
     std::string cam_id;
     std::promise<ReidResults> promise; // Requires <future>
 };
@@ -300,11 +318,12 @@ struct ReidTask {
 // ======================= 【MODIFIED】 =======================
 // 新增: 为 process_packet 定义统一的输入结构体
 struct ProcessInput {
-    const std::string& cam_id;
+    const std::string &cam_id;
     uint64_t fid;
-    const cv::cuda::GpuMat& full_frame;
-    const std::vector<Detection>& dets;
-    const ProcessConfig& config;
+    const cv::cuda::GpuMat &full_frame;
+    const std::vector<Detection> &dets;
+    const ProcessConfig &config;
+    const cv::Mat* full_frame_bgr = nullptr; // 新增
 };
 // ======================= 【修改结束】 =======================
 
@@ -319,20 +338,20 @@ class FeatureProcessor {
 public:
     // ======================= 【MODIFIED】 =======================
     // 修改构造函数：模型路径为必要参数，其他参数为可选
-    explicit FeatureProcessor(const std::string& reid_model_path,
-                              const std::string& face_det_model_path,
-                              const std::string& face_rec_model_path,
-                              const std::string& mode = "realtime",
-                              const std::string& device = "dla",
-                              const std::string& feature_cache_path = "",
-                              const nlohmann::json& boundary_config = {},
+    explicit FeatureProcessor(const std::string &reid_model_path,
+                              const std::string &face_det_model_path,
+                              const std::string &face_rec_model_path,
+                              const std::string &mode = "realtime",
+                              const std::string &device = "dla",
+                              const std::string &feature_cache_path = "",
+                              const nlohmann::json &boundary_config = {},
                               bool use_fid_time = false);
     // ======================= 【修改结束】 =======================
 
     ~FeatureProcessor();
 
     // 修改: 使用新的 ProcessInput 结构体作为唯一参数
-    ProcessOutput process_packet(const ProcessInput& input);
+    ProcessOutput process_packet(const ProcessInput &input);
 
     void submit_io_task(IoTask task);
 
@@ -350,7 +369,7 @@ private:
 
     std::vector<float> _gid_fused_rep(const std::string &gid);
 
-    bool trigger_alarm(const std::string &gid, const TrackAgg &agg);
+    std::optional<std::string> trigger_alarm(const std::string &gid, const TrackAgg &agg);
 
     // Re-ID worker thread
     void _reid_worker();

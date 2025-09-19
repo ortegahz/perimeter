@@ -222,7 +222,8 @@ int main(int argc, char **argv) {
                     .fid = fid,
                     .full_frame = gpu_frame_rgb,
                     .dets = loaded_data.packet.dets,
-                    .config = proc_config
+                    .config = proc_config,
+                    .full_frame_bgr = &frame // 新增：传入原始BGR帧的指针
                 };
                 auto proc_output = processor.process_packet(proc_input);
                 // ======================= 【修改结束】 =======================
