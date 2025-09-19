@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "load"; // 默认为 "load" 模式
+    std::string MODE = "load"; // realtime or load
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -143,6 +143,7 @@ int main(int argc, char **argv) {
     nlohmann::json boundary_config; // 留空
 
     try {
+        bool _use_fid_time = (MODE == "load");
         // ======================= 【MODIFIED】 =======================
         // 修改: 使用新的构造函数实例化 FeatureProcessor
         FeatureProcessor processor(
@@ -153,7 +154,7 @@ int main(int argc, char **argv) {
             "dla",                    // 明确传递
             FEATURE_CACHE_JSON,       // 明确传递，覆盖默认值
             boundary_config,          // 明确传递，覆盖默认值
-            false);                    // 新增：use_fid_time=true, 使用帧号作为时间基准
+            _use_fid_time);                    // 新增：use_fid_time=true, 使用帧号作为时间基准
         // ======================= 【修改结束】 =======================
 
         // 注意：在realtime模式下，FeatureProcessor会创建自己的FaceAnalyzer实例。
