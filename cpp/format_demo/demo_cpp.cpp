@@ -349,14 +349,14 @@ int main(int argc, char **argv) {
                     }
 
                     // --- 确定边界框颜色 ---
-                    const cv::Scalar colors[] = {{0,   0, 255},
+                    const cv::Scalar colors[] = {{0,   0,   255},
                                                  {0,   255, 0},
                                                  {255, 255, 0},
                                                  {0,   255, 255},
-                                                 {255, 0, 255},
-                                                 {128, 0, 0},
+                                                 {255, 0,   255},
+                                                 {128, 0,   0},
                                                  {0,   128, 0},
-                                                 {0,   0, 128}};
+                                                 {0,   0,   128}};
                     cv::Scalar color = (color_override[0] != -1)
                                        ? color_override
                                        : colors[color_id % (sizeof(colors) / sizeof(cv::Scalar))];

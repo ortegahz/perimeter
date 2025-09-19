@@ -373,7 +373,8 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
           mode_(mode), use_fid_time_(use_fid_time), device_(device),
           feature_cache_path_(feature_cache_path),
           m_enable_alarm_saving(enable_alarm_saving) {
-    std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is " << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
+    std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is "
+              << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
 
     if (mode_ == "realtime") {
         std::cout << "Loading ReID and Face models for feature extraction..." << std::endl;
