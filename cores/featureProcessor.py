@@ -690,6 +690,8 @@ class FeatureProcessor:
         realtime_map: Dict[str, Dict[int, Tuple[str, float, int]]] = {}
         for tid, agg in list(self.agg_pool.items()):
             ts, tn = tid.split("_")
+            if ts != stream_id:
+                continue
             if len(agg.body) < MIN_BODY4GID or len(agg.face) < MIN_FACE4GID:
                 flag = f"{tid}_-1_b_{len(agg.body)}" if len(agg.body) < MIN_BODY4GID else f"{tid}_-1_f_{len(agg.face)}"
                 realtime_map.setdefault(ts, {})[int(tn)] = (flag, -1.0, 0)

@@ -1082,7 +1082,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     }
     // ======================= 【修改结束】=======================
 
+    // ======================= 【FIXED】 =======================
+    // 关键修复：在主循环入口处增加过滤器，确保只处理属于当前摄像头(stream_id)的轨迹。
+    // 这从根本上解决了跨摄像头上下文污染的问题，且改动极小。
     for (auto const &[tid_str, agg]: agg_pool) {
+        if (tid_str.rfind(stream_id, 0) != 0) continue;
+
         size_t last_underscore = tid_str.find_last_of('_');
         std::string s_id = tid_str.substr(0, last_underscore);
         int tid_num = std::stoi(tid_str.substr(last_underscore + 1));
