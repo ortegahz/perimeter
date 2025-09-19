@@ -58,9 +58,13 @@ constexpr int BEHAVIOR_ALARM_DURATION_FRAMES = 256;
 constexpr float MIN_HW_RATIO = 1.5f;
 constexpr float FACE_DET_MIN_SCORE = 0.60f;
 
-const std::string SAVE_DIR = "/mnt/nfs/perimeter_cpp";
-const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
-const std::string DB_PATH = "/mnt/nfs/perimeter_data.db";
+//const std::string SAVE_DIR = "/mnt/nfs/perimeter_cpp";
+//const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
+//const std::string DB_PATH = "/mnt/nfs/perimeter_data.db";
+
+#define SAVE_DIR "/mnt/nfs/perimeter_cpp"
+#define ALARM_DIR "/mnt/nfs/perimeter_alarm_cpp"
+#define DB_PATH "/mnt/nfs/perimeter_data.db"
 
 /* ---------- 可调参数结构体 ---------- */
 struct ProcessConfig {

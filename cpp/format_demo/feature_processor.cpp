@@ -474,9 +474,9 @@ void FeatureProcessor::submit_io_task(IoTask task) {
 
 void FeatureProcessor::_init_db() {
     // 如果文件已存在，先删除，确保从干净状态开始
-    std::remove(DB_PATH.c_str());
+    std::remove(DB_PATH);
 
-    if (sqlite3_open(DB_PATH.c_str(), &db_) != SQLITE_OK) {
+    if (sqlite3_open(DB_PATH, &db_) != SQLITE_OK) {
         std::string errmsg = db_ ? sqlite3_errmsg(db_) : "Unknown SQLite error";
         throw std::runtime_error("Can't open database: " + errmsg);
     }
@@ -540,6 +540,7 @@ void FeatureProcessor::_io_worker() {
         try {
             switch (task.type) {
                 case IoTaskType::CREATE_DIRS: {
+                    std::cout << "SAVE_DIR --> " << SAVE_DIR << std::endl;
                     if (std::filesystem::exists(SAVE_DIR)) std::filesystem::remove_all(SAVE_DIR);
                     if (std::filesystem::exists(ALARM_DIR)) std::filesystem::remove_all(ALARM_DIR);
                     std::filesystem::create_directories(SAVE_DIR);
