@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "load"; // realtime or load
+    std::string MODE = "realtime"; // realtime or load
     if (argc > 1) {
         MODE = argv[1];
     }
