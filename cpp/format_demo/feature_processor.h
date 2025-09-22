@@ -69,9 +69,13 @@ constexpr float FACE_DET_MIN_SCORE = 0.60f;
 //const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
 //const std::string DB_PATH = "/mnt/nfs/perimeter_data.db";
 
-#define SAVE_DIR "/home/nvidia/perimeter_cpp"
-#define ALARM_DIR "/home/nvidia/perimeter_alarm_cpp"
-#define DB_PATH "/home/nvidia/perimeter_data.db"
+#define SAVE_DIR "/mnt/nfs/perimeter_cpp"
+#define ALARM_DIR "/mnt/nfs/perimeter_alarm_cpp"
+#define DB_PATH "/mnt/nfs/perimeter_data.db"
+
+//#define SAVE_DIR "/home/nvidia/perimeter_cpp"
+//#define ALARM_DIR "/home/nvidia/perimeter_alarm_cpp"
+//#define DB_PATH "/home/nvidia/perimeter_data.db"
 
 /* ---------- 可调参数结构体 ---------- */
 struct ProcessConfig {
@@ -207,6 +211,7 @@ private:
  */
 struct AlarmTriggerInfo {
     std::string gid;                // 触发告警的GID
+    double first_seen_timestamp = 0.0; // 新增：GID首次识别的时间戳(秒)
     cv::Rect2f person_bbox;         // 当前帧中该GID关联的行人框
     cv::Rect2d face_bbox;           // 当前帧中该GID关联的人脸框 (如果找到)
     cv::Mat latest_body_patch;      // GID库中最新的（或最具代表性的）行人图块
@@ -247,6 +252,7 @@ struct GlobalID {
     std::map<std::string, std::vector<std::vector<float>>> bank_bodies;
     std::map<std::string, std::vector<std::string>> tid_hist;
     std::map<std::string, double> last_update;
+    std::map<std::string, double> first_seen_ts; // 新增：记录每个 GID 首次出现的时间戳
 };
 
 struct CandidateState {

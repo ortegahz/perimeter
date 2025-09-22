@@ -339,6 +339,11 @@ void GlobalID::bind(const std::string &gid, const std::string &tid, double curre
     auto &v = tid_hist[gid];
     if (std::find(v.begin(), v.end(), tid) == v.end()) v.push_back(tid);
     last_update[gid] = current_ts;
+
+    // 新增：如果这是第一次绑定该 GID，记录其首次出现的时间戳
+    if (first_seen_ts.find(gid) == first_seen_ts.end()) {
+        first_seen_ts[gid] = current_ts;
+    }
 }
 
 std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, const std::vector<float> &body_f) {
@@ -1151,6 +1156,10 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     if (auto timestamp_opt = trigger_alarm(cand_gid, agg, now_stamp)) {
                         AlarmTriggerInfo alarm_info;
                         alarm_info.gid = cand_gid;
+                        // 新增: 填充首次识别时间戳
+                        alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(cand_gid)
+                                                              ? gid_mgr.first_seen_ts.at(cand_gid)
+                                                              : now_stamp; // 回退到当前时间戳
                         for (const auto &det: dets) {
                             if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                                 alarm_info.person_bbox = det.tlwh;
@@ -1185,6 +1194,10 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 if (auto timestamp_opt = trigger_alarm(new_gid, agg, now_stamp)) {
                     AlarmTriggerInfo alarm_info;
                     alarm_info.gid = new_gid;
+                    // 新增: 填充首次识别时间戳
+                    alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(new_gid)
+                                                          ? gid_mgr.first_seen_ts.at(new_gid)
+                                                          : now_stamp; // 回退到当前时间戳
                     for (const auto &det: dets) {
                         if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                             alarm_info.person_bbox = det.tlwh;
@@ -1217,6 +1230,10 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     if (auto timestamp_opt = trigger_alarm(new_gid, agg, now_stamp)) {
                         AlarmTriggerInfo alarm_info;
                         alarm_info.gid = new_gid;
+                        // 新增: 填充首次识别时间戳
+                        alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(new_gid)
+                                                              ? gid_mgr.first_seen_ts.at(new_gid)
+                                                              : now_stamp; // 回退到当前时间戳
                         for (const auto &det: dets) {
                             if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                                 alarm_info.person_bbox = det.tlwh;
@@ -1254,6 +1271,10 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         if (auto timestamp_opt = trigger_alarm(new_gid, agg, now_stamp)) {
                             AlarmTriggerInfo alarm_info;
                             alarm_info.gid = new_gid;
+                            // 新增: 填充首次识别时间戳
+                            alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(new_gid)
+                                                                  ? gid_mgr.first_seen_ts.at(new_gid)
+                                                                  : now_stamp; // 回退到当前时间戳
                             for (const auto &det: dets) {
                                 if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                                     alarm_info.person_bbox = det.tlwh;
@@ -1331,6 +1352,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         gid_mgr.bank_bodies.erase(gid_del);
         gid_mgr.tid_hist.erase(gid_del);
         gid_mgr.last_update.erase(gid_del);
+        gid_mgr.first_seen_ts.erase(gid_del);
         alarmed.erase(gid_del);
         alarm_reprs.erase(gid_del);
 

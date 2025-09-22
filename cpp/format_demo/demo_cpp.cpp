@@ -298,6 +298,10 @@ int main(int argc, char **argv) {
                     std::cout << "\n\n*** ALARM TRIGGERED! Frame: " << fid << " ***\n";
                     for (const auto &alarm: proc_output.alarms) {
                         std::cout << "  - GID: " << alarm.gid << "\n";
+                        // 新增：打印 GID 首次出现的时间戳
+                        GstClockTime first_seen_gst_ts = static_cast<GstClockTime>(alarm.first_seen_timestamp * 1e9);
+                        std::cout << "  - First Seen Time: " << format_ntp_timestamp(first_seen_gst_ts) << "\n";
+
                         std::string base_path = "/mnt/nfs/alarm_" + alarm.gid + "_fid" + std::to_string(fid);
 
                         // 保存告警帧、最新的行人/人脸图块以供查验
