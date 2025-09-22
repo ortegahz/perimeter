@@ -9,6 +9,53 @@
 #include "feature_processor.h" // Includes all necessary headers like opencv and json
 #include <opencv2/cudaimgproc.hpp>
 
+// ======================= 【新增】 =======================
+// GStreamer 相关的时间戳类型和处理函数
+// 我们需要在这里定义它，以便创建要传递的变量
+#ifndef GST_CLOCK_TIME_NONE
+using GstClockTime = uint64_t;
+#define GST_CLOCK_TIME_NONE ((GstClockTime)-1)
+#endif
+
+/**
+ * @brief 将 GStreamer NTP 时间戳格式化为人类可读的字符串 (用于调试打印)。
+ * @param ntp_timestamp GStreamer 时钟时间（纳秒）。
+ * @return 格式化后的时间字符串 (例如 "YYYY-MM-DD HH:MM:SS.ms")。
+ */
+static std::string format_ntp_timestamp(GstClockTime ntp_timestamp) {
+    if (ntp_timestamp == 0 || ntp_timestamp == GST_CLOCK_TIME_NONE) {
+        return "[INVALID TIMESTAMP]";
+    }
+    time_t seconds = ntp_timestamp / 1000000000;
+    long milliseconds = (ntp_timestamp % 1000000000) / 1000000;
+    char time_str_buffer[128];
+    struct tm broken_down_time;
+    localtime_r(&seconds, &broken_down_time);
+    int len = strftime(time_str_buffer, sizeof(time_str_buffer),
+                       "%Y-%m-%d %H:%M:%S", &broken_down_time);
+    snprintf(time_str_buffer + len, sizeof(time_str_buffer) - len,
+             ".%03ld", milliseconds);
+    return std::string(time_str_buffer);
+}
+
+/**
+ * @brief 一个占位函数，用于模拟从 GStreamer 流中获取当前帧的 NTP 时间戳。
+ * @param frame_id 当前帧号。
+ * @param fps 视频的帧率。
+ * @return 模拟的 GstClockTime 时间戳。
+ */
+GstClockTime get_current_frame_ntp_timestamp(uint64_t frame_id, double fps) {
+    // 这是一个模拟实现。在您的 GStreamer 应用中，您应该从 GstBuffer 中提取真实的时间戳。
+    // 例如：buffer->pts 或 buffer->dts
+
+    // 为了演示，我们基于系统时钟模拟一个连续的时间戳
+    auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now().time_since_epoch()
+    ).count();
+    return static_cast<GstClockTime>(now_ns);
+}
+// ======================= 【新增结束】 =======================
+
 // ======================= 【MODIFIED】 =======================
 // 调整：将所有模型路径常量集中在此处，用于传递给构造函数
 const std::string REID_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/reid_model.onnx";
@@ -71,7 +118,7 @@ LoadedData load_packet_from_cache(const std::string &cam_id, uint64_t fid, const
     std::sort(original_indices.begin(), original_indices.end(), [&](int a, int b) {
         const auto &det_a = temp_dets[a];
         const auto &det_b = temp_dets[b];
-        if (det_a.id != det_b.id) return det_a.id < det_a.id;
+        if (det_a.id != det_b.id) return det_a.id < det_b.id;
         if (std::abs(det_a.score - det_b.score) > 1e-5) return det_a.score > det_b.score;
         const auto &tlwh_a = det_a.tlwh;
         const auto &tlwh_b = det_b.tlwh;
@@ -115,7 +162,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "realtime"; // realtime or load
+    std::string MODE = "load"; // realtime or load
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -218,9 +265,20 @@ int main(int argc, char **argv) {
                 auto t1 = std::chrono::high_resolution_clock::now();
                 // ======================= 【MODIFIED】 =======================
                 // 创建新的输入结构体并调用修改后的 process_packet 接口
+                GstClockTime timestamp;
+                if (_use_fid_time) {
+                    // 在 'load' 模式下，时间戳由内部基于 fid 生成，此处传入的值会被忽略。
+                    // 传入 0 作为占位符。
+                    timestamp = 0;
+                } else {
+                    // 在 'realtime' 模式下，获取原始的 GstClockTime 时间戳。
+                    timestamp = get_current_frame_ntp_timestamp(fid, fps);
+                }
+
                 ProcessInput proc_input = {
                         CAM_ID,
                         fid,
+                        timestamp, // 直接传入原始的 GstClockTime
                         gpu_frame_rgb,
                         loaded_data.packet.dets,
                         proc_config

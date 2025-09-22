@@ -917,7 +917,7 @@ std::vector<float> FeatureProcessor::_gid_fused_rep(const std::string &gid) {
     return _fuse_feat(face_f, body_f);
 }
 
-std::optional<std::string> FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg) {
+std::optional<std::string> FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg, double frame_timestamp) {
     if (alarmed.count(gid)) return std::nullopt; // 如果已经告警过，则直接返回false
     auto cur_rep = _gid_fused_rep(gid);
     if (cur_rep.empty()) return std::nullopt;
@@ -932,10 +932,14 @@ std::optional<std::string> FeatureProcessor::trigger_alarm(const std::string &gi
     alarmed.insert(gid);
     alarm_reprs[gid] = cur_rep;
 
-    time_t now_time = time(0);
+    // 使用传入的、精确到帧的时间戳来生成字符串
+    time_t seconds = static_cast<time_t>(frame_timestamp);
+    long milliseconds = static_cast<long>((frame_timestamp - seconds) * 1000);
     char buf[80];
-    strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", localtime(&now_time));
-    std::string timestamp_str(buf);
+    struct tm broken_down_time;
+    localtime_r(&seconds, &broken_down_time);
+    strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &broken_down_time);
+    std::string timestamp_str(buf); // 暂时不加毫秒，如果需要可以拼接
 
     IoTask task;
     task.type = IoTaskType::BACKUP_ALARM;
@@ -969,22 +973,25 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                                                        : MATCH_THR;
 
     if (intrusion_detectors.count(stream_id)) {
-        for (int tid: intrusion_detectors.at(stream_id)->check(dets, stream_id))
+        for (int tid : intrusion_detectors.at(stream_id)->check(dets, stream_id))
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AA"};
     }
     if (line_crossing_detectors.count(stream_id)) {
-        for (int tid: line_crossing_detectors.at(stream_id)->check(dets, stream_id))
+        for (int tid : line_crossing_detectors.at(stream_id)->check(dets, stream_id))
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AL"};
     }
 
     // --- 核心修改：超时逻辑 ---
-    double now_stamp, max_tid_idle, gid_max_idle;
+    double now_stamp; // 内部统一使用 double 秒级时间戳
+    double max_tid_idle, gid_max_idle;
     if (use_fid_time_) {
+        // 如果是基于帧号计时（例如 'load' 模式），则 fid 是时间源
         now_stamp = static_cast<double>(fid);
         max_tid_idle = MAX_TID_IDLE_FRAMES;
         gid_max_idle = GID_MAX_IDLE_FRAMES;
     } else {
-        now_stamp = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+        // 如果是实时模式，将传入的 GstClockTime (纳秒) 转换为 double (秒)
+        now_stamp = static_cast<double>(input.timestamp) / 1000000000.0;
         max_tid_idle = MAX_TID_IDLE_SEC;
         gid_max_idle = GID_MAX_IDLE_SEC;
     }
@@ -1141,7 +1148,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 state.last_bind_fid = fid;
                 int n = (int) gid_mgr.tid_hist[cand_gid].size();
                 if (n >= config.alarm_cnt_th) {
-                    if (auto timestamp_opt = trigger_alarm(cand_gid, agg)) {
+                    if (auto timestamp_opt = trigger_alarm(cand_gid, agg, now_stamp)) {
                         AlarmTriggerInfo alarm_info;
                         alarm_info.gid = cand_gid;
                         for (const auto &det: dets) {
@@ -1175,7 +1182,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             new_gid_state[tid_str].last_new_fid = fid;
             int n = (int) gid_mgr.tid_hist[new_gid].size();
             if (n >= config.alarm_cnt_th) {
-                if (auto timestamp_opt = trigger_alarm(new_gid, agg)) {
+                if (auto timestamp_opt = trigger_alarm(new_gid, agg, now_stamp)) {
                     AlarmTriggerInfo alarm_info;
                     alarm_info.gid = new_gid;
                     for (const auto &det: dets) {
@@ -1207,7 +1214,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 new_gid_state[tid_str] = {0, fid, 0};
                 int n = (int) gid_mgr.tid_hist[new_gid].size();
                 if (n >= config.alarm_cnt_th) {
-                    if (auto timestamp_opt = trigger_alarm(new_gid, agg)) {
+                    if (auto timestamp_opt = trigger_alarm(new_gid, agg, now_stamp)) {
                         AlarmTriggerInfo alarm_info;
                         alarm_info.gid = new_gid;
                         for (const auto &det: dets) {
@@ -1244,7 +1251,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     new_gid_state[tid_str] = {0, fid, 0};
                     int n = (int) gid_mgr.tid_hist[new_gid].size();
                     if (n >= config.alarm_cnt_th) {
-                        if (auto timestamp_opt = trigger_alarm(new_gid, agg)) {
+                        if (auto timestamp_opt = trigger_alarm(new_gid, agg, now_stamp)) {
                             AlarmTriggerInfo alarm_info;
                             alarm_info.gid = new_gid;
                             for (const auto &det: dets) {

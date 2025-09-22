@@ -22,6 +22,12 @@
 #include <sqlite3.h>
 // MODIFIED HERE: Include the correct header
 #include "cores/personReid/PersonReid_dla.hpp"
+#include <cstdint> // For uint64_t
+
+// ======================= 【MODIFIED】 =======================
+// 定义 `GstClockTime` 类型别名，使其在模块内自包含
+using GstClockTime = uint64_t;
+// ======================= 【修改结束】 =======================
 #include "cores/face/FaceAnalyzer_dla.hpp"
 
 /* ---------- 常量定义 ---------- */
@@ -320,6 +326,7 @@ struct ReidTask {
 struct ProcessInput {
     const std::string &cam_id;
     uint64_t fid;
+    GstClockTime timestamp; // 修改为 GstClockTime (uint64_t)
     const cv::cuda::GpuMat &full_frame;
     const std::vector<Detection> &dets;
     const ProcessConfig &config;
@@ -345,7 +352,7 @@ public:
                               const std::string &feature_cache_path = "",
                               const nlohmann::json &boundary_config = {},
                               bool use_fid_time = false,
-                              bool enable_alarm_saving = false);
+                              bool enable_alarm_saving = true);
     // ======================= 【修改结束】 =======================
 
     ~FeatureProcessor();
@@ -369,7 +376,7 @@ private:
 
     std::vector<float> _gid_fused_rep(const std::string &gid);
 
-    std::optional<std::string> trigger_alarm(const std::string &gid, const TrackAgg &agg);
+    std::optional<std::string> trigger_alarm(const std::string &gid, const TrackAgg &agg, double frame_timestamp);
 
     // Re-ID worker thread
     void _reid_worker();
