@@ -63,9 +63,9 @@ constexpr float FACE_DET_MIN_SCORE = 0.60f;
 //const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
 //const std::string DB_PATH = "/mnt/nfs/perimeter_data.db";
 
-#define SAVE_DIR "/mnt/nfs/perimeter_cpp"
-#define ALARM_DIR "/mnt/nfs/perimeter_alarm_cpp"
-#define DB_PATH "/mnt/nfs/perimeter_data.db"
+#define SAVE_DIR "/home/nvidia/perimeter_cpp"
+#define ALARM_DIR "/home/nvidia/perimeter_alarm_cpp"
+#define DB_PATH "/home/nvidia/perimeter_data.db"
 
 /* ---------- 可调参数结构体 ---------- */
 struct ProcessConfig {
