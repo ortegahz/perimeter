@@ -89,6 +89,8 @@ struct ProcessConfig {
     std::map<std::string, float> face_weight_by_cam;
     // Per-camera weight for body ReID feature. Defaults to W_BODY if not specified.
     std::map<std::string, float> reid_weight_by_cam;
+    //【修改】Key: cam_id, Value: 徘徊报警时间 (毫秒)。如果未设置，则默认为0 (禁用)。
+    std::map<std::string, long long> alarmDuration_ms_by_cam;
 };
 
 /* ---------- 数据结构定义 ---------- */
@@ -351,6 +353,8 @@ struct ProcessOutput {
     std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> mp;
     // 新增的告警信息列表 (通常为空，仅在触发新告警的帧中包含元素)
     std::vector<AlarmTriggerInfo> alarms;
+    // 新增：TID 可见时长 (秒)，用于UI显示
+    std::map<std::string, double> tid_durations_sec;
 };
 
 class FeatureProcessor {
@@ -441,6 +445,7 @@ private:
     GlobalID gid_mgr;
     std::map<std::string, std::string> tid2gid;
     std::unordered_map<std::string, double> last_seen;
+    std::unordered_map<std::string, double> first_seen_tid; // 新增：记录TID首次出现的时间戳
     std::unordered_map<std::string, CandidateState> candidate_state;
     std::unordered_map<std::string, NewGidState> new_gid_state;
     std::set<std::string> alarmed;

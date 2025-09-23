@@ -266,8 +266,12 @@ int main(int argc, char **argv) {
                 proc_config.face_switch_by_cam[CAM_ID] = true;
                 proc_config.face_weight_by_cam[CAM_ID] = 0.6f;
                 proc_config.reid_weight_by_cam[CAM_ID] = 0.4f;
+                //【修改】为 "cam1" 设置3秒的徘徊时间
+                proc_config.alarmDuration_ms_by_cam[CAM_ID] = 0;
                 // 示例：若有另一路 "cam2"，可禁用人脸处理 (权重将自动变为 0% 人脸 + 100% ReID)。
                 // proc_config.face_switch_by_cam["cam2"] = false;
+                // 示例：可以为 "cam2" 设置不同的徘徊时间，或者不设置（默认为0，即禁用）
+                // proc_config.alarmDuration_ms_by_cam["cam2"] = 5000; // 5秒
 
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();
@@ -351,6 +355,11 @@ int main(int argc, char **argv) {
                     int color_id = det.id;
                     cv::Scalar color_override(-1, -1, -1); // 用于强制指定颜色的哨兵值
 
+                    // --- 新增：获取TID的可见时长 ---
+                    std::string tid_str = CAM_ID + "_" + std::to_string(det.id);
+                    double duration_sec = proc_output.tid_durations_sec.count(tid_str)
+                                          ? proc_output.tid_durations_sec.at(tid_str) : 0.0;
+
                     // --- 检查此 TID 是否有处理器返回的结果 ---
                     if (cam_map.count(det.id)) {
                         const auto &tpl = cam_map.at(det.id);
@@ -414,6 +423,8 @@ int main(int argc, char **argv) {
                                 display_status = "New GID Cool";
                             } else if (full_gid_str.find("_-7") != std::string::npos) {
                                 display_status = "Ambig Wait";
+                            } else if (full_gid_str.find("_-8_wait_d") != std::string::npos) {
+                                display_status = "Wait Duration";
                             }
                         }
                     }
@@ -445,9 +456,10 @@ int main(int argc, char **argv) {
                     cv::putText(vis, display_text_top, cv::Point(x, std::max(y - 5, 10)), cv::FONT_HERSHEY_SIMPLEX, 0.5,
                                 color, 1);
 
-                    // 底部文本: n_tid 和 score
+                    //【修改】底部文本: n_tid, score 和 duration
                     std::ostringstream ss_bottom;
-                    ss_bottom << "n=" << n_tid << " s=" << std::fixed << std::setprecision(2) << score;
+                    ss_bottom << "n=" << n_tid << " s=" << std::fixed << std::setprecision(2) << score
+                              << " d=" << std::fixed << std::setprecision(1) << duration_sec << "s";
                     cv::putText(vis, ss_bottom.str(), cv::Point(x, std::max(y + h + 15, 15)), cv::FONT_HERSHEY_SIMPLEX,
                                 0.4,
                                 color, 1);

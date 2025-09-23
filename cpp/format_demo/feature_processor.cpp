@@ -871,6 +871,11 @@ FeatureProcessor::_load_features_from_cache(const std::string &cam_id, uint64_t 
     std::string fid_str = std::to_string(fid);
     if (!features_cache_.contains(fid_str)) return;
 
+    for (const auto &det: dets) {
+        std::string tid_str_json = stream_id + "_" + std::to_string(det.id);
+        first_seen_tid.try_emplace(tid_str_json, now_stamp);
+    }
+
     const auto &frame_features = features_cache_.at(fid_str);
 
     for (const auto &det: dets) {
@@ -925,7 +930,8 @@ std::vector<float> FeatureProcessor::_gid_fused_rep(const std::string &gid) {
     return _fuse_feat(face_f, body_f);
 }
 
-std::optional<std::string> FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg, double frame_timestamp) {
+std::optional<std::string>
+FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg, double frame_timestamp) {
     if (alarmed.count(gid)) return std::nullopt; // 如果已经告警过，则直接返回false
     auto cur_rep = _gid_fused_rep(gid);
     if (cur_rep.empty()) return std::nullopt;
@@ -992,11 +998,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                                                        : MATCH_THR;
 
     if (intrusion_detectors.count(stream_id)) {
-        for (int tid : intrusion_detectors.at(stream_id)->check(dets, stream_id))
+        for (int tid: intrusion_detectors.at(stream_id)->check(dets, stream_id))
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AA"};
     }
     if (line_crossing_detectors.count(stream_id)) {
-        for (int tid : line_crossing_detectors.at(stream_id)->check(dets, stream_id))
+        for (int tid: line_crossing_detectors.at(stream_id)->check(dets, stream_id))
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AL"};
     }
 
@@ -1013,6 +1019,22 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         now_stamp = static_cast<double>(input.timestamp) / 1000000000.0;
         max_tid_idle = MAX_TID_IDLE_SEC;
         gid_max_idle = GID_MAX_IDLE_SEC;
+    }
+
+    // 【修改】获取该摄像头的徘徊时间配置，如果未设置则默认为0
+    long long current_alarm_duration_ms = 0;
+    if (config.alarmDuration_ms_by_cam.count(cam_id)) {
+        current_alarm_duration_ms = config.alarmDuration_ms_by_cam.at(cam_id);
+    }
+
+    // 计算徘徊时间阈值 (单位与 now_stamp 一致)
+    double alarmDuration_threshold = 0.0;
+    if (current_alarm_duration_ms > 0) {
+        if (use_fid_time_) {
+            alarmDuration_threshold = (double) current_alarm_duration_ms / 1000.0 * FPS_ESTIMATE;
+        } else {
+            alarmDuration_threshold = (double) current_alarm_duration_ms / 1000.0;
+        }
     }
 
     // ======================= 【MODIFIED】 =======================
@@ -1074,6 +1096,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         cv::cuda::GpuMat gpu_face_patch = full_frame(face_roi);
                         cv::Mat face_patch;
                         std::string tid_str = stream_id + "_" + std::to_string(det.id);
+                        // 新增：如果TID首次出现，记录其时间戳
+                        first_seen_tid.try_emplace(tid_str, now_stamp);
                         current_frame_face_boxes_[tid_str] = face_global_coords.bbox;
                         gpu_face_patch.download(face_patch);
                         agg_pool[tid_str].add_face(f_emb, face_patch.clone());
@@ -1090,6 +1114,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
         // 4. Process the completed Re-ID results from the worker.
         for (const auto &result: reid_results) {
+            // 新增：如果TID首次出现，记录其时间戳
+            first_seen_tid.try_emplace(result.tid_str, now_stamp);
             // This is the crucial part: adding body features to the aggregation pool.
             agg_pool[result.tid_str].add_body(result.body_feat, result.det_score, result.patch);
             last_seen[result.tid_str] = now_stamp; // Ensure last_seen is updated for body tracks as well.
@@ -1114,9 +1140,22 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     for (auto const &[tid_str, agg]: agg_pool) {
         if (tid_str.rfind(stream_id, 0) != 0) continue;
 
+        // 新增：计算可见时长并填充输出，以便在UI上显示
+        double duration = 0.0;
+        if (first_seen_tid.count(tid_str)) {
+            duration = now_stamp - first_seen_tid.at(tid_str);
+        }
+        output.tid_durations_sec[tid_str] = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
+
         size_t last_underscore = tid_str.find_last_of('_');
         std::string s_id = tid_str.substr(0, last_underscore);
         int tid_num = std::stoi(tid_str.substr(last_underscore + 1));
+
+        // 【修改】检查是否满足徘徊时间
+        if (current_alarm_duration_ms > 0 && duration < alarmDuration_threshold) {
+            output.mp[s_id][tid_num] = {tid_str + "_-8_wait_d", -1.f, 0};
+            continue;
+        }
 
         if ((int) agg.body.size() < MIN_BODY4GID) {
             std::string gid_str = tid_str + "_-1_b_" + std::to_string(agg.body.size());
@@ -1189,8 +1228,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         alarm_info.gid = cand_gid;
                         // 新增: 填充首次识别时间戳
                         alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(cand_gid)
-                                                              ? gid_mgr.first_seen_ts.at(cand_gid)
-                                                              : now_stamp; // 回退到当前时间戳
+                                                          ? gid_mgr.first_seen_ts.at(cand_gid)
+                                                          : now_stamp; // 回退到当前时间戳
                         for (const auto &det: dets) {
                             if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                                 alarm_info.person_bbox = det.tlwh;
@@ -1227,8 +1266,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     alarm_info.gid = new_gid;
                     // 新增: 填充首次识别时间戳
                     alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(new_gid)
-                                                          ? gid_mgr.first_seen_ts.at(new_gid)
-                                                          : now_stamp; // 回退到当前时间戳
+                                                      ? gid_mgr.first_seen_ts.at(new_gid)
+                                                      : now_stamp; // 回退到当前时间戳
                     for (const auto &det: dets) {
                         if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                             alarm_info.person_bbox = det.tlwh;
@@ -1263,8 +1302,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         alarm_info.gid = new_gid;
                         // 新增: 填充首次识别时间戳
                         alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(new_gid)
-                                                              ? gid_mgr.first_seen_ts.at(new_gid)
-                                                              : now_stamp; // 回退到当前时间戳
+                                                          ? gid_mgr.first_seen_ts.at(new_gid)
+                                                          : now_stamp; // 回退到当前时间戳
                         for (const auto &det: dets) {
                             if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                                 alarm_info.person_bbox = det.tlwh;
@@ -1304,8 +1343,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                             alarm_info.gid = new_gid;
                             // 新增: 填充首次识别时间戳
                             alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(new_gid)
-                                                                  ? gid_mgr.first_seen_ts.at(new_gid)
-                                                                  : now_stamp; // 回退到当前时间戳
+                                                              ? gid_mgr.first_seen_ts.at(new_gid)
+                                                              : now_stamp; // 回退到当前时间戳
                             for (const auto &det: dets) {
                                 if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                                     alarm_info.person_bbox = det.tlwh;
@@ -1356,6 +1395,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     for (auto it = last_seen.cbegin(); it != last_seen.cend();) {
         if (now_stamp - it->second >= max_tid_idle) {
             agg_pool.erase(it->first);
+            first_seen_tid.erase(it->first);
             tid2gid.erase(it->first);
             candidate_state.erase(it->first);
             new_gid_state.erase(it->first);
@@ -1373,6 +1413,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         for (auto const &[tid_str, g]: tid2gid) { if (g == gid_del) tids_to_clean.push_back(tid_str); }
         for (const auto &tid_str: tids_to_clean) {
             agg_pool.erase(tid_str);
+            first_seen_tid.erase(tid_str);
             tid2gid.erase(tid_str);
             candidate_state.erase(tid_str);
             new_gid_state.erase(tid_str);
