@@ -397,7 +397,10 @@ private:
 
     std::vector<float> _gid_fused_rep(const std::string &gid);
 
-    std::optional<std::string> trigger_alarm(const std::string &gid, const TrackAgg &agg, double frame_timestamp);
+    // ======================= 【MODIFIED: 函数签名变更】 =======================
+    std::optional<std::pair<std::string, std::string>>
+    trigger_alarm(const std::string &gid, const TrackAgg &agg, double frame_timestamp);
+    // ======================= 【修改结束】 =======================
 
     // Re-ID worker thread
     void _reid_worker();
