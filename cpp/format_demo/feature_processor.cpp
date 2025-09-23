@@ -1109,6 +1109,53 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
 }
 // ======================= 【修改结束】 =======================
 
+// ======================= 【NEW】 =======================
+// 新增的私有辅助函数，用于封装重复的报警逻辑
+void FeatureProcessor::_check_and_process_alarm(
+        ProcessOutput &output,
+        const ProcessConfig &config,
+        const std::string &tid_str,
+        const std::string &gid,
+        const TrackAgg &agg,
+        double now_stamp,
+        const std::vector<Detection> &dets,
+        const std::string &stream_id,
+        const cv::Mat &body_p,
+        const cv::Mat &face_p,
+        std::vector<std::tuple<std::string, std::string, bool>> &triggered_alarms_this_frame) {
+
+    int n = gid_mgr.tid_hist.count(gid) ? (int) gid_mgr.tid_hist.at(gid).size() : 0;
+
+    if (n >= config.alarm_cnt_th) {
+        if (auto alarm_data_opt = trigger_alarm(tid_str, gid, agg, now_stamp)) {
+            auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
+
+            AlarmTriggerInfo alarm_info;
+            alarm_info.gid = gid_to_alarm;
+            alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(gid_to_alarm)
+                                              ? gid_mgr.first_seen_ts.at(gid_to_alarm)
+                                              : now_stamp;
+            for (const auto &det: dets) {
+                if (stream_id + "_" + std::to_string(det.id) == tid_str) {
+                    alarm_info.person_bbox = det.tlwh;
+                    break;
+                }
+            }
+
+            if (alarm_info.person_bbox.area() > 0) {
+                triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp, was_newly_saved);
+                if (current_frame_face_boxes_.count(tid_str)) {
+                    alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
+                }
+                alarm_info.latest_body_patch = body_p.clone();
+                alarm_info.latest_face_patch = face_p.clone();
+                output.alarms.push_back(alarm_info);
+            }
+        }
+    }
+}
+// ======================= 【修改结束】 =======================
+
 // ======================= 【MODIFIED】 =======================
 // 修改: 函数签名以接收 ProcessInput 结构体，并返回 ProcessOutput
 ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
@@ -1383,37 +1430,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
-                if (n >= config.alarm_cnt_th) {
-                    // ======================= 【MODIFIED: 调用 trigger_alarm 并处理其新返回值】 =======================
-                    if (auto alarm_data_opt = trigger_alarm(tid_str, cand_gid, agg, now_stamp)) {
-                        auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
+                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, dets, stream_id, body_p,
+                                         face_p, triggered_alarms_this_frame);
 
-                        AlarmTriggerInfo alarm_info;
-                        alarm_info.gid = gid_to_alarm;
-                        // 注意：这里我们查找的是报警 GID 的首次出现时间
-                        alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(gid_to_alarm)
-                                                          ? gid_mgr.first_seen_ts.at(gid_to_alarm)
-                                                          : now_stamp; // 回退到当前时间戳
-                        for (const auto &det: dets) {
-                            if (stream_id + "_" + std::to_string(det.id) == tid_str) {
-                                alarm_info.person_bbox = det.tlwh;
-                                break;
-                            }
-                        }
-
-                        // 仅当在当前帧找到有效的bbox时，才将此告警信息添加到输出中
-                        if (alarm_info.person_bbox.area() > 0) {
-                            triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp, was_newly_saved);
-                            if (current_frame_face_boxes_.count(tid_str)) {
-                                alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
-                            }
-                            alarm_info.latest_body_patch = body_p.clone();
-                            alarm_info.latest_face_patch = face_p.clone();
-                            output.alarms.push_back(alarm_info);
-                        }
-                    }
-                    // ======================= 【修改结束】 =======================
-                }
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
             } else {
                 std::string flag = (flag_code == -1) ? "_-4_ud_f" : (flag_code == -2) ? "_-4_ud_b" : "_-4_c";
@@ -1426,36 +1445,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
             new_gid_state[tid_str].last_new_fid = fid;
             int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-            if (n >= config.alarm_cnt_th) {
-                // ======================= 【MODIFIED: 调用 trigger_alarm 并处理其新返回值】 =======================
-                if (auto alarm_data_opt = trigger_alarm(tid_str, new_gid, agg, now_stamp)) {
-                    auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
+            _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, dets, stream_id, body_p,
+                                     face_p, triggered_alarms_this_frame);
 
-                    AlarmTriggerInfo alarm_info;
-                    alarm_info.gid = gid_to_alarm;
-                    alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(gid_to_alarm)
-                                                      ? gid_mgr.first_seen_ts.at(gid_to_alarm)
-                                                      : now_stamp; // 回退到当前时间戳
-                    for (const auto &det: dets) {
-                        if (stream_id + "_" + std::to_string(det.id) == tid_str) {
-                            alarm_info.person_bbox = det.tlwh;
-                            break;
-                        }
-                    }
-
-                    // 仅当在当前帧找到有效的bbox时，才将此告警信息添加到输出中
-                    if (alarm_info.person_bbox.area() > 0) {
-                        triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp, was_newly_saved);
-                        if (current_frame_face_boxes_.count(tid_str)) {
-                            alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
-                        }
-                        alarm_info.latest_body_patch = body_p.clone();
-                        alarm_info.latest_face_patch = face_p.clone();
-                        output.alarms.push_back(alarm_info);
-                    }
-                }
-                // ======================= 【修改结束】 =======================
-            }
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
         } else if (!cand_gid.empty() && score >= THR_NEW_GID) {
             ng_state.ambig_count++;
@@ -1466,36 +1458,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                 new_gid_state[tid_str] = {0, fid, 0};
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                if (n >= config.alarm_cnt_th) {
-                    // ======================= 【MODIFIED: 调用 trigger_alarm 并处理其新返回值】 =======================
-                    if (auto alarm_data_opt = trigger_alarm(tid_str, new_gid, agg, now_stamp)) {
-                        auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
+                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, dets, stream_id, body_p,
+                                         face_p, triggered_alarms_this_frame);
 
-                        AlarmTriggerInfo alarm_info;
-                        alarm_info.gid = gid_to_alarm;
-                        alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(gid_to_alarm)
-                                                          ? gid_mgr.first_seen_ts.at(gid_to_alarm)
-                                                          : now_stamp; // 回退到当前时间戳
-                        for (const auto &det: dets) {
-                            if (stream_id + "_" + std::to_string(det.id) == tid_str) {
-                                alarm_info.person_bbox = det.tlwh;
-                                break;
-                            }
-                        }
-
-                        // 仅当在当前帧找到有效的bbox时，才将此告警信息添加到输出中
-                        if (alarm_info.person_bbox.area() > 0) {
-                            triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp, was_newly_saved);
-                            if (current_frame_face_boxes_.count(tid_str)) {
-                                alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
-                            }
-                            alarm_info.latest_body_patch = body_p.clone();
-                            alarm_info.latest_face_patch = face_p.clone();
-                            output.alarms.push_back(alarm_info);
-                        }
-                    }
-                    // ======================= 【修改结束】 =======================
-                }
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
             } else {
                 output.mp[s_id][tid_num] = {tid_str + "_-7", score, 0};
@@ -1511,36 +1476,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                     new_gid_state[tid_str] = {0, fid, 0};
                     int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                    if (n >= config.alarm_cnt_th) {
-                        // ======================= 【MODIFIED: 调用 trigger_alarm 并处理其新返回值】 =======================
-                        if (auto alarm_data_opt = trigger_alarm(tid_str, new_gid, agg, now_stamp)) {
-                            auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
+                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, dets, stream_id, body_p,
+                                             face_p, triggered_alarms_this_frame);
 
-                            AlarmTriggerInfo alarm_info;
-                            alarm_info.gid = gid_to_alarm;
-                            alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(gid_to_alarm)
-                                                              ? gid_mgr.first_seen_ts.at(gid_to_alarm)
-                                                              : now_stamp; // 回退到当前时间戳
-                            for (const auto &det: dets) {
-                                if (stream_id + "_" + std::to_string(det.id) == tid_str) {
-                                    alarm_info.person_bbox = det.tlwh;
-                                    break;
-                                }
-                            }
-
-                            // 仅当在当前帧找到有效的bbox时，才将此告警信息添加到输出中
-                            if (alarm_info.person_bbox.area() > 0) {
-                                triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp, was_newly_saved);
-                                if (current_frame_face_boxes_.count(tid_str)) {
-                                    alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
-                                }
-                                alarm_info.latest_body_patch = body_p.clone();
-                                alarm_info.latest_face_patch = face_p.clone();
-                                output.alarms.push_back(alarm_info);
-                            }
-                        }
-                        // ======================= 【修改结束】 =======================
-                    }
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
                 } else {
                     output.mp[s_id][tid_num] = {tid_str + "_-5", -1.0f, 0};

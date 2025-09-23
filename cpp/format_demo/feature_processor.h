@@ -402,6 +402,22 @@ private:
     trigger_alarm(const std::string &tid_str, const std::string &gid, const TrackAgg &agg, double frame_timestamp);
     // ======================= 【修改结束】 =======================
 
+    // ======================= 【NEW】 =======================
+    // 新增的私有辅助函数，用于封装重复的报警逻辑
+    void _check_and_process_alarm(
+            ProcessOutput &output,
+            const ProcessConfig &config,
+            const std::string &tid_str,
+            const std::string &gid,
+            const TrackAgg &agg,
+            double now_stamp,
+            const std::vector<Detection> &dets,
+            const std::string &stream_id,
+            const cv::Mat &body_p,
+            const cv::Mat &face_p,
+            std::vector<std::tuple<std::string, std::string, bool>> &triggered_alarms_this_frame);
+    // ======================= 【修改结束】 =======================
+
     // Re-ID worker thread
     void _reid_worker();
 
