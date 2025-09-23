@@ -993,9 +993,26 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     current_frame_face_boxes_.clear(); // 每帧开始时清空
 
     const auto &stream_id = cam_id;
-    // 获取当前摄像机的匹配阈值，如果未特定设置，则使用默认值
-    float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id)
-                                                                       : MATCH_THR;
+
+    // --- 确定当前帧的匹配阈值 ---
+    // 1. 根据灵敏度设置一个基础阈值
+    int sensitivity = 2; // 默认中等灵敏度
+    if (config.sensitivity_by_cam.count(stream_id)) {
+        sensitivity = config.sensitivity_by_cam.at(stream_id);
+    }
+    float base_match_thr;
+    switch (sensitivity) {
+        case 1: // 低灵敏度 -> 高阈值，更难匹配
+            base_match_thr = 0.6f;
+            break;
+        case 3: // 高灵敏度 -> 低阈值，更容易匹配
+            base_match_thr = 0.4f;
+            break;
+        default: // case 2 或其他值
+            base_match_thr = MATCH_THR; // 中等灵敏度，使用默认阈值 0.5f
+    }
+    // 2. 允许使用具体的浮点数值覆盖基于灵敏度的设置，提供更精细的控制
+    float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id) : base_match_thr;
 
     if (intrusion_detectors.count(stream_id)) {
         for (int tid: intrusion_detectors.at(stream_id)->check(dets, stream_id))

@@ -260,7 +260,12 @@ int main(int argc, char **argv) {
                 // --- 新增：定义本次处理的配置参数 ---
                 ProcessConfig proc_config;
                 proc_config.alarm_cnt_th = 2;  // 示例：将全局告警计数阈值改为2
-                proc_config.match_thr_by_cam[CAM_ID] = 0.5f; // 示例：为当前相机"cam1"设置特定的匹配阈值
+                //proc_config.match_thr_by_cam[CAM_ID] = 0.5f; // 示例：为当前相机"cam1"设置特定的浮点数匹配阈值，会覆盖下面的灵敏度设置
+                // 新增：设置相机 "cam1" 的匹配灵敏度
+                // 灵敏度级别: 1 (低), 2 (中), 3 (高)。
+                // 高灵敏度意味着使用较低的匹配分数阈值，更容易匹配上 (例如_ 阈值=0.4)。
+                proc_config.sensitivity_by_cam[CAM_ID] = 2; // 示例: 设置为高灵敏度
+
                 // 新增：人脸/ReID权重配置
                 // 为 "cam1" 启用人脸处理，并设置权重为 70% 人脸 + 30% ReID。
                 proc_config.face_switch_by_cam[CAM_ID] = true;
