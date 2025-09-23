@@ -358,7 +358,8 @@ public:
                               const std::string &feature_cache_path = "",
                               const nlohmann::json &boundary_config = {},
                               bool use_fid_time = false,
-                              bool enable_alarm_saving = true);
+                              bool enable_alarm_saving = true,
+                              bool processing_enabled = true);
     // ======================= 【修改结束】 =======================
 
     ~FeatureProcessor();
@@ -422,6 +423,7 @@ private:
     std::string m_face_det_model_path;
     std::string m_face_rec_model_path;
     bool m_enable_alarm_saving;
+    bool m_processing_enabled;
 
     // MODIFIED HERE: Changed from PersonReid to PersonReidDLA
     std::unique_ptr<PersonReidDLA> reid_model_;

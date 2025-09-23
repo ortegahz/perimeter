@@ -371,13 +371,15 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
                                    const std::string &feature_cache_path,
                                    const nlohmann::json &boundary_config,
                                    bool use_fid_time,
-                                   bool enable_alarm_saving)
+                                   bool enable_alarm_saving,
+                                   bool processing_enabled)
         : m_reid_model_path(reid_model_path),
           m_face_det_model_path(face_det_model_path),
           m_face_rec_model_path(face_rec_model_path),
           mode_(mode), use_fid_time_(use_fid_time), device_(device),
           feature_cache_path_(feature_cache_path),
-          m_enable_alarm_saving(enable_alarm_saving) {
+          m_enable_alarm_saving(enable_alarm_saving),
+          m_processing_enabled(processing_enabled) {
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is "
               << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
 
@@ -960,6 +962,11 @@ std::optional<std::string> FeatureProcessor::trigger_alarm(const std::string &gi
 // ======================= 【MODIFIED】 =======================
 // 修改: 函数签名以接收 ProcessInput 结构体，并返回 ProcessOutput
 ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
+    // 新增：算法总开关
+    if (!m_processing_enabled) {
+        return {}; // 如果禁用，直接返回空结果
+    }
+
     // 在函数入口处解包，保持函数体内部逻辑不变，减少出错风险
     const std::string &cam_id = input.cam_id;
     uint64_t fid = input.fid;
