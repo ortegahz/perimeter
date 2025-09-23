@@ -868,7 +868,8 @@ void FeatureProcessor::_load_state_from_db() {
                 // 如果存在关联的图像，则将其写入文件系统
                 if (image_blob && image_bytes > 0) {
                     try {
-                        std::vector<uchar> img_data(static_cast<const uchar*>(image_blob), static_cast<const uchar*>(image_blob) + image_bytes);
+                        std::vector<uchar> img_data(static_cast<const uchar *>(image_blob),
+                                                    static_cast<const uchar *>(image_blob) + image_bytes);
                         cv::Mat image = cv::imdecode(img_data, cv::IMREAD_COLOR);
                         if (!image.empty()) {
                             std::filesystem::path out_dir = std::filesystem::path(SAVE_DIR) / gid / type;
@@ -879,7 +880,7 @@ void FeatureProcessor::_load_state_from_db() {
                             std::filesystem::path out_path = out_dir / filename;
                             cv::imwrite(out_path.string(), image);
                         }
-                    } catch (const std::exception& e) {
+                    } catch (const std::exception &e) {
                         std::cerr << "Warning: Failed to decode/save image for GID " << gid << "/" << type << "/" << idx
                                   << ". Error: " << e.what() << std::endl;
                     }
@@ -1042,14 +1043,20 @@ std::vector<float> FeatureProcessor::_gid_fused_rep(const std::string &gid) {
 }
 
 // ======================= 【MODIFIED: 函数逻辑和签名变更】 =======================
-std::optional<std::pair<std::string, std::string>>
-FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg, double frame_timestamp) {
+std::optional<std::tuple<std::string, std::string, bool>>
+FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &gid, const TrackAgg &agg,
+                                double frame_timestamp) {
     auto cur_rep = _gid_fused_rep(gid);
     if (cur_rep.empty()) return std::nullopt;
+
+    std::string gid_to_report = gid;
+    bool is_new_alarm_gid = true;
 
     // 检查当前 GID 是否与已有的“原始报警GID”相似
     for (const auto &[ogid, rep]: alarm_reprs) {
         if (sim_vec(cur_rep, rep) >= ALARM_DUP_THR) {
+            gid_to_report = ogid;
+            is_new_alarm_gid = false;
             // 如果相似，则无论当前 gid 是谁，都将此次报警归属于原始的 ogid
             if (gid != ogid) {
                 std::cout << "[ALARM] GID " << gid << " is similar to original alarmer " << ogid << ". Reporting as "
@@ -1057,33 +1064,40 @@ FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg, dou
             } else {
                 std::cout << "[ALARM] Re-triggering for original GID " << gid << "." << std::endl;
             }
-
-            // 无论如何，都使用 ogid 来备份和返回
-            time_t seconds = static_cast<time_t>(frame_timestamp);
-            char buf[80];
-            struct tm broken_down_time;
-            localtime_r(&seconds, &broken_down_time);
-            strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &broken_down_time);
-            std::string timestamp_str(buf);
-
-            IoTask task;
-            task.type = IoTaskType::BACKUP_ALARM;
-            task.gid = ogid; // **核心：使用原始 GID**
-            task.timestamp = timestamp_str;
-            task.face_patches_backup = agg.face_patches();
-            task.body_patches_backup = agg.body_patches();
-            submit_io_task(task);
-
-            return std::make_pair(ogid, timestamp_str);
+            break; // 找到匹配项，中断循环
         }
     }
 
     // 如果遍历完所有原始报警者都不相似，则此 gid 成为一个新的“原始报警GID”
-    std::cout << "[ALARM] New original alarmer: " << gid << "." << std::endl;
-    alarmed.insert(gid);
-    alarm_reprs[gid] = cur_rep;
+    if (is_new_alarm_gid) {
+        std::cout << "[ALARM] New original alarmer: " << gid << "." << std::endl;
+        alarmed.insert(gid);
+        alarm_reprs[gid] = cur_rep;
+    }
 
-    // 使用当前gid进行备份和返回
+    // --- 新增：检查此TID是否已保存过报警 ---
+    bool was_newly_saved = false;
+    if (saved_alarm_tids_.find(tid_str) == saved_alarm_tids_.end()) {
+        was_newly_saved = true;
+        saved_alarm_tids_.insert(tid_str);
+
+        // 仅在首次保存此TID的报警时，提交原型备份任务 (Back up GID prototypes)
+        time_t seconds_for_task = static_cast<time_t>(frame_timestamp);
+        char buf_for_task[80];
+        struct tm broken_down_time_for_task;
+        localtime_r(&seconds_for_task, &broken_down_time_for_task);
+        strftime(buf_for_task, sizeof(buf_for_task), "%Y%m%d_%H%M%S", &broken_down_time_for_task);
+
+        IoTask task;
+        task.type = IoTaskType::BACKUP_ALARM;
+        task.gid = gid_to_report;
+        task.timestamp = std::string(buf_for_task);
+        task.face_patches_backup = agg.face_patches();
+        task.body_patches_backup = agg.body_patches();
+        submit_io_task(task);
+    }
+
+    // --- 无论是否保存，都生成时间戳并返回报警信号 ---
     time_t seconds = static_cast<time_t>(frame_timestamp);
     char buf[80];
     struct tm broken_down_time;
@@ -1091,15 +1105,7 @@ FeatureProcessor::trigger_alarm(const std::string &gid, const TrackAgg &agg, dou
     strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &broken_down_time);
     std::string timestamp_str(buf);
 
-    IoTask task;
-    task.type = IoTaskType::BACKUP_ALARM;
-    task.gid = gid;
-    task.timestamp = timestamp_str;
-    task.face_patches_backup = agg.face_patches();
-    task.body_patches_backup = agg.body_patches();
-    submit_io_task(task);
-
-    return std::make_pair(gid, timestamp_str);
+    return std::make_tuple(gid_to_report, timestamp_str, was_newly_saved);
 }
 // ======================= 【修改结束】 =======================
 
@@ -1126,7 +1132,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     }
 
     ProcessOutput output;
-    std::vector<std::tuple<std::string, std::string>> triggered_alarms_this_frame; // <gid, timestamp>
+    std::vector<std::tuple<std::string, std::string, bool>> triggered_alarms_this_frame; // <gid, timestamp, was_newly_saved>
     current_frame_face_boxes_.clear(); // 每帧开始时清空
 
     const auto &stream_id = cam_id;
@@ -1379,8 +1385,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
                 if (n >= config.alarm_cnt_th) {
                     // ======================= 【MODIFIED: 调用 trigger_alarm 并处理其新返回值】 =======================
-                    if (auto alarm_data_opt = trigger_alarm(cand_gid, agg, now_stamp)) {
-                        auto &[gid_to_alarm, timestamp] = *alarm_data_opt;
+                    if (auto alarm_data_opt = trigger_alarm(tid_str, cand_gid, agg, now_stamp)) {
+                        auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
 
                         AlarmTriggerInfo alarm_info;
                         alarm_info.gid = gid_to_alarm;
@@ -1397,7 +1403,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
                         // 仅当在当前帧找到有效的bbox时，才将此告警信息添加到输出中
                         if (alarm_info.person_bbox.area() > 0) {
-                            triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp);
+                            triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp, was_newly_saved);
                             if (current_frame_face_boxes_.count(tid_str)) {
                                 alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
                             }
@@ -1422,8 +1428,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
             if (n >= config.alarm_cnt_th) {
                 // ======================= 【MODIFIED: 调用 trigger_alarm 并处理其新返回值】 =======================
-                if (auto alarm_data_opt = trigger_alarm(new_gid, agg, now_stamp)) {
-                    auto &[gid_to_alarm, timestamp] = *alarm_data_opt;
+                if (auto alarm_data_opt = trigger_alarm(tid_str, new_gid, agg, now_stamp)) {
+                    auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
 
                     AlarmTriggerInfo alarm_info;
                     alarm_info.gid = gid_to_alarm;
@@ -1439,7 +1445,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
                     // 仅当在当前帧找到有效的bbox时，才将此告警信息添加到输出中
                     if (alarm_info.person_bbox.area() > 0) {
-                        triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp);
+                        triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp, was_newly_saved);
                         if (current_frame_face_boxes_.count(tid_str)) {
                             alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
                         }
@@ -1462,8 +1468,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
                 if (n >= config.alarm_cnt_th) {
                     // ======================= 【MODIFIED: 调用 trigger_alarm 并处理其新返回值】 =======================
-                    if (auto alarm_data_opt = trigger_alarm(new_gid, agg, now_stamp)) {
-                        auto &[gid_to_alarm, timestamp] = *alarm_data_opt;
+                    if (auto alarm_data_opt = trigger_alarm(tid_str, new_gid, agg, now_stamp)) {
+                        auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
 
                         AlarmTriggerInfo alarm_info;
                         alarm_info.gid = gid_to_alarm;
@@ -1479,7 +1485,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
                         // 仅当在当前帧找到有效的bbox时，才将此告警信息添加到输出中
                         if (alarm_info.person_bbox.area() > 0) {
-                            triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp);
+                            triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp, was_newly_saved);
                             if (current_frame_face_boxes_.count(tid_str)) {
                                 alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
                             }
@@ -1507,8 +1513,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
                     if (n >= config.alarm_cnt_th) {
                         // ======================= 【MODIFIED: 调用 trigger_alarm 并处理其新返回值】 =======================
-                        if (auto alarm_data_opt = trigger_alarm(new_gid, agg, now_stamp)) {
-                            auto &[gid_to_alarm, timestamp] = *alarm_data_opt;
+                        if (auto alarm_data_opt = trigger_alarm(tid_str, new_gid, agg, now_stamp)) {
+                            auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
 
                             AlarmTriggerInfo alarm_info;
                             alarm_info.gid = gid_to_alarm;
@@ -1524,7 +1530,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
                             // 仅当在当前帧找到有效的bbox时，才将此告警信息添加到输出中
                             if (alarm_info.person_bbox.area() > 0) {
-                                triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp);
+                                triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp, was_newly_saved);
                                 if (current_frame_face_boxes_.count(tid_str)) {
                                     alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
                                 }
@@ -1567,6 +1573,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     for (auto it = last_seen.cbegin(); it != last_seen.cend();) {
         if (now_stamp - it->second >= max_tid_idle) {
             agg_pool.erase(it->first);
+            saved_alarm_tids_.erase(it->first); // 清理已保存报警的TID记录
             first_seen_tid.erase(it->first);
             tid2gid.erase(it->first);
             candidate_state.erase(it->first);
@@ -1610,70 +1617,81 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
     // 仅当功能开关打开且确实有报警时才执行保存逻辑
     if (m_enable_alarm_saving && !triggered_alarms_this_frame.empty()) {
-        // ======================= 【NEW LOGIC】 =======================
-        // 为本帧触发的每个报警，提交保存上下文信息（图片和文本）的异步任务
-
-        // 1. 如果需要保存图片，提前将GPU帧下载并转换为BGR格式
-        cv::Mat frame_bgr_for_saving;
-        cv::cuda::GpuMat temp_gpu_bgr;
-        cv::cuda::cvtColor(full_frame, temp_gpu_bgr, cv::COLOR_RGB2BGR);
-        temp_gpu_bgr.download(frame_bgr_for_saving);
-
-        // 1. 准备 frame_info.txt 的内容
-        // 为确保输出一致，对TID进行排序
-        std::map<std::string, std::vector<int>> sorted_tids_by_cam;
-        for (const auto &[cam, tids_map]: output.mp) {
-            for (const auto &[tid, result_tuple]: tids_map) {
-                sorted_tids_by_cam[cam].push_back(tid);
-            }
-            if (sorted_tids_by_cam.count(cam)) {
-                std::sort(sorted_tids_by_cam.at(cam).begin(), sorted_tids_by_cam.at(cam).end());
+        // --- 新增：识别出本帧中首次需要保存上下文的报警集合 ---
+        std::set<std::pair<std::string, std::string>> unique_new_alarms_to_save; // <gid, timestamp>
+        for (const auto &[gid, timestamp, was_newly_saved]: triggered_alarms_this_frame) {
+            if (was_newly_saved) {
+                unique_new_alarms_to_save.insert({gid, timestamp});
             }
         }
 
-        std::stringstream ss;
-        ss << std::fixed << std::setprecision(4);
-        ss << "frame_id,cam_id,tid,gid,score,n_tid\n";
-        for (const auto &[cam, sorted_tids]: sorted_tids_by_cam) {
-            if (output.mp.count(cam)) {
-                for (int tid: sorted_tids) {
-                    if (output.mp.at(cam).count(tid)) {
-                        const auto &tpl = output.mp.at(cam).at(tid);
-                        ss << fid << ',' << cam << ',' << tid << ','
-                           << std::get<0>(tpl) << ',' << std::get<1>(tpl) << ',' << std::get<2>(tpl) << "\n";
+        // 只有在存在需要保存上下文的新报警时，才执行耗时的文件I/O准备
+        if (!unique_new_alarms_to_save.empty()) {
+            // ======================= 【NEW LOGIC】 =======================
+            // 为本帧触发的每个报警，提交保存上下文信息（图片和文本）的异步任务
+
+            // 1. 如果需要保存图片，提前将GPU帧下载并转换为BGR格式
+            cv::Mat frame_bgr_for_saving;
+            cv::cuda::GpuMat temp_gpu_bgr;
+            cv::cuda::cvtColor(full_frame, temp_gpu_bgr, cv::COLOR_RGB2BGR);
+            temp_gpu_bgr.download(frame_bgr_for_saving);
+
+            // 1. 准备 frame_info.txt 的内容
+            // 为确保输出一致，对TID进行排序
+            std::map<std::string, std::vector<int>> sorted_tids_by_cam;
+            for (const auto &[cam, tids_map]: output.mp) {
+                for (const auto &[tid, result_tuple]: tids_map) {
+                    sorted_tids_by_cam[cam].push_back(tid);
+                }
+                if (sorted_tids_by_cam.count(cam)) {
+                    std::sort(sorted_tids_by_cam.at(cam).begin(), sorted_tids_by_cam.at(cam).end());
+                }
+            }
+
+            std::stringstream ss;
+            ss << std::fixed << std::setprecision(4);
+            ss << "frame_id,cam_id,tid,gid,score,n_tid\n";
+            for (const auto &[cam, sorted_tids]: sorted_tids_by_cam) {
+                if (output.mp.count(cam)) {
+                    for (int tid: sorted_tids) {
+                        if (output.mp.at(cam).count(tid)) {
+                            const auto &tpl = output.mp.at(cam).at(tid);
+                            ss << fid << ',' << cam << ',' << tid << ','
+                               << std::get<0>(tpl) << ',' << std::get<1>(tpl) << ',' << std::get<2>(tpl) << "\n";
+                        }
                     }
                 }
             }
-        }
-        std::string content = ss.str();
+            std::string content = ss.str();
 
-        // 2. 遍历本帧所有新触发的报警，为每个报警创建并提交任务
-        for (const auto &[gid, timestamp]: triggered_alarms_this_frame) {
-            // 2a. 提交保存 frame_info.txt 的任务
-            IoTask txt_task;
-            txt_task.type = IoTaskType::SAVE_ALARM_INFO;
-            txt_task.gid = gid;
-            txt_task.timestamp = timestamp;
-            txt_task.alarm_info_content = content;
-            submit_io_task(std::move(txt_task));
+            // 2. 遍历本帧所有新触发的报警，为每个报警创建并提交任务
+            for (const auto &[gid, timestamp]: unique_new_alarms_to_save) {
+                // 2a. 提交保存 frame_info.txt 的任务
+                IoTask txt_task;
+                txt_task.type = IoTaskType::SAVE_ALARM_INFO;
+                txt_task.gid = gid;
+                txt_task.timestamp = timestamp;
+                txt_task.alarm_info_content = content;
+                submit_io_task(std::move(txt_task));
 
-            // 2b. 提交保存相关图片的任务
-            auto it = std::find_if(output.alarms.begin(), output.alarms.end(),
-                                   [&](const AlarmTriggerInfo &a) { return a.gid == gid; });
-            if (it != output.alarms.end()) {
-                IoTask img_task;
-                img_task.type = IoTaskType::SAVE_ALARM_CONTEXT_IMAGES;
-                img_task.gid = gid;
-                img_task.timestamp = timestamp;
-                img_task.full_frame_bgr = frame_bgr_for_saving.clone();
-                img_task.latest_body_patch_rgb = it->latest_body_patch.clone();
-                img_task.latest_face_patch_rgb = it->latest_face_patch.clone();
-                img_task.person_bbox = it->person_bbox;
-                img_task.face_bbox = it->face_bbox;
-                submit_io_task(std::move(img_task));
+                // 2b. 提交保存相关图片的任务
+                auto it = std::find_if(output.alarms.begin(), output.alarms.end(),
+                                       [&](const AlarmTriggerInfo &a) { return a.gid == gid; });
+                if (it != output.alarms.end()) {
+                    IoTask img_task;
+                    img_task.type = IoTaskType::SAVE_ALARM_CONTEXT_IMAGES;
+                    img_task.gid = gid;
+                    img_task.timestamp = timestamp;
+                    img_task.full_frame_bgr = frame_bgr_for_saving.clone();
+                    img_task.latest_body_patch_rgb = it->latest_body_patch.clone();
+                    img_task.latest_face_patch_rgb = it->latest_face_patch.clone();
+                    img_task.person_bbox = it->person_bbox;
+                    img_task.face_bbox = it->face_bbox;
+                    submit_io_task(std::move(img_task));
+                }
             }
+            // ======================= 【END NEW LOGIC】 =======================
         }
-        // ======================= 【END NEW LOGIC】 =======================
     }
 
     return output;

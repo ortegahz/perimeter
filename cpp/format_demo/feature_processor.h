@@ -398,8 +398,8 @@ private:
     std::vector<float> _gid_fused_rep(const std::string &gid);
 
     // ======================= 【MODIFIED: 函数签名变更】 =======================
-    std::optional<std::pair<std::string, std::string>>
-    trigger_alarm(const std::string &gid, const TrackAgg &agg, double frame_timestamp);
+    std::optional<std::tuple<std::string, std::string, bool>>
+    trigger_alarm(const std::string &tid_str, const std::string &gid, const TrackAgg &agg, double frame_timestamp);
     // ======================= 【修改结束】 =======================
 
     // Re-ID worker thread
@@ -457,6 +457,7 @@ private:
     GlobalID gid_mgr;
     std::map<std::string, std::string> tid2gid;
     std::unordered_map<std::string, double> last_seen;
+    std::set<std::string> saved_alarm_tids_; // 新增：记录已保存过报警的TID
     std::unordered_map<std::string, double> first_seen_tid; // 新增：记录TID首次出现的时间戳
     std::unordered_map<std::string, CandidateState> candidate_state;
     std::unordered_map<std::string, NewGidState> new_gid_state;
