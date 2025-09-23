@@ -441,8 +441,17 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
         }
     }
 
-    submit_io_task({IoTaskType::CREATE_DIRS});
-    _init_db();
+    // ======================= 【MODIFIED: 初始化逻辑变更】 =======================
+    bool db_existed_before_init = std::filesystem::exists(DB_PATH);
+    _init_or_load_db();
+
+    // 新增: 如果数据库存在并已加载，则立即保存内存状态以供验证
+    if (db_existed_before_init) {
+        save_final_state_to_file("/mnt/nfs/state_after_load_in_processor.txt");
+    }
+
+    submit_io_task({IoTaskType::CREATE_DIRS}); // 移到DB初始化后
+    // ======================= 【修改结束】 =======================
 
     // Start worker threads
     io_thread_ = std::thread(&FeatureProcessor::_io_worker, this);
@@ -485,15 +494,8 @@ void FeatureProcessor::submit_io_task(IoTask task) {
     queue_cond_.notify_one();
 }
 
-void FeatureProcessor::_init_db() {
-    // 如果文件已存在，先删除，确保从干净状态开始
-    std::remove(DB_PATH);
-
-    if (sqlite3_open(DB_PATH, &db_) != SQLITE_OK) {
-        std::string errmsg = db_ ? sqlite3_errmsg(db_) : "Unknown SQLite error";
-        throw std::runtime_error("Can't open database: " + errmsg);
-    }
-
+// ======================= 【MODIFIED: 数据库函数重构】 =======================
+void FeatureProcessor::_create_db_schema() {
     char *zErrMsg = nullptr;
     const char *schema = R"(
         PRAGMA foreign_keys = ON;
@@ -529,8 +531,26 @@ void FeatureProcessor::_init_db() {
         db_ = nullptr;
         throw std::runtime_error(err_msg);
     }
-    std::cout << "Database initialized successfully at " << DB_PATH << std::endl;
+    std::cout << "New database schema created successfully at " << DB_PATH << std::endl;
 }
+
+void FeatureProcessor::_init_or_load_db() {
+    bool db_exists = std::filesystem::exists(DB_PATH);
+
+    if (sqlite3_open(DB_PATH, &db_) != SQLITE_OK) {
+        std::string errmsg = db_ ? sqlite3_errmsg(db_) : "Unknown SQLite error";
+        throw std::runtime_error("Can't open database: " + errmsg);
+    }
+
+    if (db_exists) {
+        std::cout << "Existing database found. Loading state..." << std::endl;
+        _load_state_from_db();
+    } else {
+        std::cout << "No existing database found. Creating a new one..." << std::endl;
+        _create_db_schema();
+    }
+}
+// ======================= 【修改结束】 =======================
 
 void FeatureProcessor::_close_db() {
     if (db_) sqlite3_close(db_);
@@ -553,11 +573,12 @@ void FeatureProcessor::_io_worker() {
         try {
             switch (task.type) {
                 case IoTaskType::CREATE_DIRS: {
-                    std::cout << "SAVE_DIR --> " << SAVE_DIR << std::endl;
-                    if (std::filesystem::exists(SAVE_DIR)) std::filesystem::remove_all(SAVE_DIR);
-                    if (std::filesystem::exists(ALARM_DIR)) std::filesystem::remove_all(ALARM_DIR);
+                    // ======================= 【MODIFIED: 不再删除SAVE_DIR】 =======================
+                    // 不再删除 SAVE_DIR，因为可能包含从数据库加载的 GID 对应的持久化原型图像
+                    if (std::filesystem::exists(ALARM_DIR)) std::filesystem::remove_all(ALARM_DIR); // 报警目录可以每次安全地清理
                     std::filesystem::create_directories(SAVE_DIR);
                     std::filesystem::create_directories(ALARM_DIR);
+                    // ======================= 【修改结束】 =======================
                     break;
                 }
                 case IoTaskType::SAVE_PROTOTYPE:
@@ -797,6 +818,67 @@ void FeatureProcessor::_io_worker() {
         }
     }
 }
+
+// ======================= 【MODIFIED: 新增的DB加载函数】 =======================
+void FeatureProcessor::_load_state_from_db() {
+    // 该函数根据您的 db_load_demo.cpp 精确实现
+    const char *sql = "SELECT gid, type, idx, feature FROM prototypes ORDER BY gid, type, idx;";
+    sqlite3_stmt *stmt;
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        std::cerr << "Error: Failed to prepare statement for DB loading: " << sqlite3_errmsg(db_) << std::endl;
+        return;
+    }
+
+    int loaded_prototypes = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        std::string gid = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
+        std::string type = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+        // idx (列2) 已被 ORDER BY 用于排序，这里不再需要读取
+
+        const void *feature_blob = sqlite3_column_blob(stmt, 3);
+        int feature_bytes = sqlite3_column_bytes(stmt, 3);
+
+        if (feature_blob && feature_bytes > 0) {
+            int num_floats = feature_bytes / sizeof(float);
+            std::vector<float> feature(static_cast<const float *>(feature_blob),
+                                       static_cast<const float *>(feature_blob) + num_floats);
+
+            bool feature_matched = false;
+            if (type == "faces" && num_floats == EMB_FACE_DIM) {
+                gid_mgr.bank_faces[gid].push_back(std::move(feature));
+                feature_matched = true;
+            } else if (type == "bodies" && num_floats == 512) {  // TODO 512 / EMB_BODY_DIM ?
+                gid_mgr.bank_bodies[gid].push_back(std::move(feature));
+                feature_matched = true;
+            }
+
+            if (feature_matched) {
+                loaded_prototypes++;
+            }
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    // 从加载的 GID 中推断下一个 GID 序号
+    int max_gid_num = 0;
+    std::set<std::string> all_gids;
+    for (const auto &pair: gid_mgr.bank_faces) all_gids.insert(pair.first);
+    for (const auto &pair: gid_mgr.bank_bodies) all_gids.insert(pair.first);
+
+    for (const auto &gid: all_gids) {
+        if (gid.rfind("G", 0) == 0 && gid.length() > 1) {
+            try {
+                max_gid_num = std::max(max_gid_num, std::stoi(gid.substr(1)));
+            } catch (const std::exception &) { /* Ignore parsing errors */ }
+        }
+    }
+    gid_mgr.gid_next = max_gid_num + 1;
+
+    std::cout << "Successfully loaded " << loaded_prototypes << " prototypes for " << all_gids.size()
+              << " GIDs. Next GID is set to: " << gid_mgr.gid_next << std::endl;
+}
+// ======================= 【修改结束】 =======================
 
 // ======================= 【MODIFIED】 =======================
 // New worker thread function to handle Re-ID feature extraction in parallel.

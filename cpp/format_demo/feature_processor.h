@@ -408,7 +408,13 @@ private:
     // I/O线程相关
     void _io_worker();
 
-    void _init_db();
+    // ======================= 【MODIFIED: 函数声明变更】 =======================
+    void _init_or_load_db();
+
+    void _create_db_schema();
+
+    void _load_state_from_db();
+    // ======================= 【修改结束】 =======================
 
     void _close_db();
 
