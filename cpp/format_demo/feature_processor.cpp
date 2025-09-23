@@ -821,8 +821,15 @@ void FeatureProcessor::_io_worker() {
 
 // ======================= 【MODIFIED: 新增的DB加载函数】 =======================
 void FeatureProcessor::_load_state_from_db() {
-    // 该函数根据您的 db_load_demo.cpp 精确实现
-    const char *sql = "SELECT gid, type, idx, feature FROM prototypes ORDER BY gid, type, idx;";
+    // 在从数据库加载状态前，先清空并重建文件系统缓存，以确保两者同步
+    if (std::filesystem::exists(SAVE_DIR)) {
+        std::filesystem::remove_all(SAVE_DIR);
+    }
+    std::filesystem::create_directories(SAVE_DIR);
+    std::cout << "Filesystem cache directory '" << SAVE_DIR << "' has been reset for DB synchronization." << std::endl;
+
+    // 修改SQL语句，同时选择image列
+    const char *sql = "SELECT gid, type, idx, feature, image FROM prototypes ORDER BY gid, type, idx;";
     sqlite3_stmt *stmt;
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
@@ -834,10 +841,12 @@ void FeatureProcessor::_load_state_from_db() {
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         std::string gid = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
         std::string type = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
-        // idx (列2) 已被 ORDER BY 用于排序，这里不再需要读取
+        int idx = sqlite3_column_int(stmt, 2);
 
         const void *feature_blob = sqlite3_column_blob(stmt, 3);
         int feature_bytes = sqlite3_column_bytes(stmt, 3);
+        const void *image_blob = sqlite3_column_blob(stmt, 4);
+        int image_bytes = sqlite3_column_bytes(stmt, 4);
 
         if (feature_blob && feature_bytes > 0) {
             int num_floats = feature_bytes / sizeof(float);
@@ -855,6 +864,26 @@ void FeatureProcessor::_load_state_from_db() {
 
             if (feature_matched) {
                 loaded_prototypes++;
+
+                // 如果存在关联的图像，则将其写入文件系统
+                if (image_blob && image_bytes > 0) {
+                    try {
+                        std::vector<uchar> img_data(static_cast<const uchar*>(image_blob), static_cast<const uchar*>(image_blob) + image_bytes);
+                        cv::Mat image = cv::imdecode(img_data, cv::IMREAD_COLOR);
+                        if (!image.empty()) {
+                            std::filesystem::path out_dir = std::filesystem::path(SAVE_DIR) / gid / type;
+                            std::filesystem::create_directories(out_dir);
+
+                            char filename[32];
+                            sprintf(filename, "%02d.jpg", idx);
+                            std::filesystem::path out_path = out_dir / filename;
+                            cv::imwrite(out_path.string(), image);
+                        }
+                    } catch (const std::exception& e) {
+                        std::cerr << "Warning: Failed to decode/save image for GID " << gid << "/" << type << "/" << idx
+                                  << ". Error: " << e.what() << std::endl;
+                    }
+                }
             }
         }
     }
@@ -876,7 +905,7 @@ void FeatureProcessor::_load_state_from_db() {
     gid_mgr.gid_next = max_gid_num + 1;
 
     std::cout << "Successfully loaded " << loaded_prototypes << " prototypes for " << all_gids.size()
-              << " GIDs. Next GID is set to: " << gid_mgr.gid_next << std::endl;
+              << " GIDs from DB and re-created filesystem cache. Next GID is set to: " << gid_mgr.gid_next << std::endl;
 }
 // ======================= 【修改结束】 =======================
 
