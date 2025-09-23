@@ -83,6 +83,12 @@ struct ProcessConfig {
     std::map<std::string, float> match_thr_by_cam;
     // Global alarm count threshold.
     int alarm_cnt_th = ALARM_CNT_TH;
+    // Per-camera switch for face processing. Defaults to true if not specified.
+    std::map<std::string, bool> face_switch_by_cam;
+    // Per-camera weight for face feature. Defaults to W_FACE if not specified.
+    std::map<std::string, float> face_weight_by_cam;
+    // Per-camera weight for body ReID feature. Defaults to W_BODY if not specified.
+    std::map<std::string, float> reid_weight_by_cam;
 };
 
 /* ---------- 数据结构定义 ---------- */
@@ -245,7 +251,8 @@ struct GlobalID {
     void bind(const std::string &gid, const std::string &tid, double current_ts, const TrackAgg &agg,
               class FeatureProcessor *fp);
 
-    std::pair<std::string, float> probe(const std::vector<float> &face_f, const std::vector<float> &body_f);
+    std::pair<std::string, float> probe(const std::vector<float> &face_f, const std::vector<float> &body_f,
+                                        float w_face, float w_body);
 
     int gid_next = 1;
     std::map<std::string, std::vector<std::vector<float>>> bank_faces;

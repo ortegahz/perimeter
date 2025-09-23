@@ -162,7 +162,7 @@ int main(int argc, char **argv) {
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
 
-    std::string MODE = "realtime"; // realtime or load
+    std::string MODE = "load"; // realtime or load
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -259,8 +259,15 @@ int main(int argc, char **argv) {
 
                 // --- 新增：定义本次处理的配置参数 ---
                 ProcessConfig proc_config;
-                proc_config.alarm_cnt_th = 2;  // 示例：将全局告警计数阈值改为3
+                proc_config.alarm_cnt_th = 2;  // 示例：将全局告警计数阈值改为2
                 proc_config.match_thr_by_cam[CAM_ID] = 0.5f; // 示例：为当前相机"cam1"设置特定的匹配阈值
+                // 新增：人脸/ReID权重配置
+                // 为 "cam1" 启用人脸处理，并设置权重为 70% 人脸 + 30% ReID。
+                proc_config.face_switch_by_cam[CAM_ID] = true;
+                proc_config.face_weight_by_cam[CAM_ID] = 0.6f;
+                proc_config.reid_weight_by_cam[CAM_ID] = 0.4f;
+                // 示例：若有另一路 "cam2"，可禁用人脸处理 (权重将自动变为 0% 人脸 + 100% ReID)。
+                // proc_config.face_switch_by_cam["cam2"] = false;
 
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();

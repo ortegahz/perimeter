@@ -346,14 +346,15 @@ void GlobalID::bind(const std::string &gid, const std::string &tid, double curre
     }
 }
 
-std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, const std::vector<float> &body_f) {
+std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, const std::vector<float> &body_f,
+                                              float w_face, float w_body) {
     std::string best_gid;
     float best_score = -1.f;
     for (auto const &[gid, face_pool]: bank_faces) {
         if (!bank_bodies.count(gid) || face_pool.empty() || bank_bodies.at(gid).empty()) continue;
         float face_sim = face_f.empty() ? 0.f : sim_vec(face_f, avg_feats(face_pool));
         float body_sim = body_f.empty() ? 0.f : sim_vec(body_f, avg_feats(bank_bodies.at(gid)));
-        float sc = W_FACE * face_sim + W_BODY * body_sim;
+        float sc = w_face * face_sim + w_body * body_sim;
         if (sc > best_score) {
             best_score = sc;
             best_gid = gid;
@@ -975,6 +976,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     const ProcessConfig &config = input.config;
     // ======================= 【修改结束】 =======================
 
+    // 根据配置确定当前相机是否启用人脸处理
+    bool face_enabled = true; // 默认为启用
+    if (config.face_switch_by_cam.count(cam_id)) {
+        face_enabled = config.face_switch_by_cam.at(cam_id);
+    }
+
     ProcessOutput output;
     std::vector<std::tuple<std::string, std::string>> triggered_alarms_this_frame; // <gid, timestamp>
     current_frame_face_boxes_.clear(); // 每帧开始时清空
@@ -1026,7 +1033,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         // 2. Main thread performs its own tasks concurrently while the Re-ID worker is running.
         // This includes face detection, face-person matching, and face feature extraction.
         std::vector<Face> internal_face_info;
-        if (face_analyzer_) {
+        if (face_enabled && face_analyzer_) {
             internal_face_info = face_analyzer_->detect(full_frame);
             if (!internal_face_info.empty()) {
                 const int H = full_frame.rows;
@@ -1124,16 +1131,33 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
         auto [face_f, face_p] = agg.main_face_feat_and_patch();
         auto [body_f, body_p] = agg.main_body_feat_and_patch();
-        if (face_f.empty()) {
+        // 如果启用了人脸但特征为空，则认为是不稳定状态
+        if (face_enabled && face_f.empty()) {
             output.mp[s_id][tid_num] = {tid_str + "_-2_f", -1.f, 0};
             continue;
         }
+        // ReID特征是必须的
         if (body_f.empty()) {
             output.mp[s_id][tid_num] = {tid_str + "_-2_b", -1.f, 0};
             continue;
         }
 
-        auto [cand_gid, score] = gid_mgr.probe(face_f, body_f);
+        // 根据配置确定用于探测的融合权重
+        float w_face = W_FACE;
+        float w_body = W_BODY;
+        if (!face_enabled) {
+            w_face = 0.0f;
+            w_body = 1.0f;
+        } else {
+            if (config.face_weight_by_cam.count(stream_id)) {
+                w_face = config.face_weight_by_cam.at(stream_id);
+            }
+            if (config.reid_weight_by_cam.count(stream_id)) {
+                w_body = config.reid_weight_by_cam.at(stream_id);
+            }
+        }
+
+        auto [cand_gid, score] = gid_mgr.probe(face_f, body_f, w_face, w_body);
 
         auto &state = candidate_state[tid_str];
         auto &ng_state = new_gid_state[tid_str];
