@@ -664,8 +664,9 @@ void FeatureProcessor::_io_worker() {
                 }
                 case IoTaskType::BACKUP_ALARM: {
                     // --- 文件系统备份 ---
-                    std::filesystem::path dst_dir =
-                            std::filesystem::path(ALARM_DIR) / (task.gid + "_" + task.timestamp);
+                    std::string dir_name = task.gid + "_" + task.tid_str + "_n" + std::to_string(task.n) + "_" + task.timestamp;
+                    std::filesystem::path dst_dir = std::filesystem::path(ALARM_DIR) / dir_name;
+
                     std::filesystem::path src_dir = std::filesystem::path(SAVE_DIR) / task.gid;
                     if (std::filesystem::exists(src_dir))
                         std::filesystem::copy(src_dir, dst_dir, std::filesystem::copy_options::recursive |
@@ -763,8 +764,9 @@ void FeatureProcessor::_io_worker() {
                     break;
                 }
                 case IoTaskType::SAVE_ALARM_INFO: {
-                    auto dst_path =
-                            std::filesystem::path(ALARM_DIR) / (task.gid + "_" + task.timestamp) / "frame_info.txt";
+                    std::string dir_name = task.gid + "_" + task.tid_str + "_n" + std::to_string(task.n) + "_" + task.timestamp;
+                    auto dst_path = std::filesystem::path(ALARM_DIR) / dir_name / "frame_info.txt";
+
                     // BACKUP_ALARM 任务会创建目录，但为了安全起见，这里也确保一下
                     if (!dst_path.parent_path().empty()) {
                         std::filesystem::create_directories(dst_path.parent_path());
@@ -779,7 +781,9 @@ void FeatureProcessor::_io_worker() {
                     break;
                 }
                 case IoTaskType::SAVE_ALARM_CONTEXT_IMAGES: {
-                    auto base_path = std::filesystem::path(ALARM_DIR) / (task.gid + "_" + task.timestamp);
+                    std::string dir_name = task.gid + "_" + task.tid_str + "_n" + std::to_string(task.n) + "_" + task.timestamp;
+                    auto base_path = std::filesystem::path(ALARM_DIR) / dir_name;
+
                     std::filesystem::create_directories(base_path);
 
                     // 保存原始帧
@@ -1044,7 +1048,7 @@ std::vector<float> FeatureProcessor::_gid_fused_rep(const std::string &gid) {
 
 // ======================= 【MODIFIED: 函数逻辑和签名变更】 =======================
 std::optional<std::tuple<std::string, std::string, bool>>
-FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &gid, const TrackAgg &agg,
+FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &gid, int n, const TrackAgg &agg,
                                 double frame_timestamp) {
     auto cur_rep = _gid_fused_rep(gid);
     if (cur_rep.empty()) return std::nullopt;
@@ -1091,6 +1095,8 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
         IoTask task;
         task.type = IoTaskType::BACKUP_ALARM;
         task.gid = gid_to_report;
+        task.tid_str = tid_str;
+        task.n = n;
         task.timestamp = std::string(buf_for_task);
         task.face_patches_backup = agg.face_patches();
         task.body_patches_backup = agg.body_patches();
@@ -1123,16 +1129,17 @@ void FeatureProcessor::_check_and_process_alarm(
         const std::string &stream_id,
         const cv::Mat &body_p,
         const cv::Mat &face_p,
-        std::vector<std::tuple<std::string, std::string, bool>> &triggered_alarms_this_frame) {
+        std::vector<std::tuple<std::string, std::string, std::string, int, bool>> &triggered_alarms_this_frame) {
 
     int n = gid_mgr.tid_hist.count(gid) ? (int) gid_mgr.tid_hist.at(gid).size() : 0;
 
     if (n >= config.alarm_cnt_th) {
-        if (auto alarm_data_opt = trigger_alarm(tid_str, gid, agg, now_stamp)) {
+        if (auto alarm_data_opt = trigger_alarm(tid_str, gid, n, agg, now_stamp)) {
             auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
 
             AlarmTriggerInfo alarm_info;
             alarm_info.gid = gid_to_alarm;
+            alarm_info.tid_str = tid_str;
             alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(gid_to_alarm)
                                               ? gid_mgr.first_seen_ts.at(gid_to_alarm)
                                               : now_stamp_gst;
@@ -1146,7 +1153,7 @@ void FeatureProcessor::_check_and_process_alarm(
             alarm_info.n = n;
 
             if (alarm_info.person_bbox.area() > 0) {
-                triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp, was_newly_saved);
+                triggered_alarms_this_frame.emplace_back(gid_to_alarm, tid_str, timestamp, n, was_newly_saved);
                 if (current_frame_face_boxes_.count(tid_str)) {
                     alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
                 }
@@ -1182,7 +1189,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     }
 
     ProcessOutput output;
-    std::vector<std::tuple<std::string, std::string, bool>> triggered_alarms_this_frame; // <gid, timestamp, was_newly_saved>
+    std::vector<std::tuple<std::string, std::string, std::string, int, bool>> triggered_alarms_this_frame; // <gid, tid_str, timestamp, n, was_newly_saved>
     current_frame_face_boxes_.clear(); // 每帧开始时清空
 
     const auto &stream_id = cam_id;
@@ -1563,10 +1570,13 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     // 仅当功能开关打开且确实有报警时才执行保存逻辑
     if (m_enable_alarm_saving && !triggered_alarms_this_frame.empty()) {
         // --- 新增：识别出本帧中首次需要保存上下文的报警集合 ---
-        std::set<std::pair<std::string, std::string>> unique_new_alarms_to_save; // <gid, timestamp>
-        for (const auto &[gid, timestamp, was_newly_saved]: triggered_alarms_this_frame) {
-            if (was_newly_saved) {
-                unique_new_alarms_to_save.insert({gid, timestamp});
+        // The old set is not enough. We need to iterate the full tuple vector.
+        std::vector<std::tuple<std::string, std::string, std::string, int>> unique_new_alarms_to_save; // <gid, tid_str, timestamp, n>
+        std::set<std::string> seen_gids_for_saving; // To ensure we only save context once per GID per frame
+        for (const auto &[gid, tid_str, timestamp, n, was_newly_saved]: triggered_alarms_this_frame) {
+            if (was_newly_saved && seen_gids_for_saving.find(gid) == seen_gids_for_saving.end()) {
+                unique_new_alarms_to_save.emplace_back(gid, tid_str, timestamp, n);
+                seen_gids_for_saving.insert(gid);
             }
         }
 
@@ -1610,22 +1620,26 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             std::string content = ss.str();
 
             // 2. 遍历本帧所有新触发的报警，为每个报警创建并提交任务
-            for (const auto &[gid, timestamp]: unique_new_alarms_to_save) {
+            for (const auto &[gid, tid_str, timestamp, n]: unique_new_alarms_to_save) {
                 // 2a. 提交保存 frame_info.txt 的任务
                 IoTask txt_task;
                 txt_task.type = IoTaskType::SAVE_ALARM_INFO;
                 txt_task.gid = gid;
+                txt_task.tid_str = tid_str;
+                txt_task.n = n;
                 txt_task.timestamp = timestamp;
                 txt_task.alarm_info_content = content;
                 submit_io_task(std::move(txt_task));
 
                 // 2b. 提交保存相关图片的任务
                 auto it = std::find_if(output.alarms.begin(), output.alarms.end(),
-                                       [&](const AlarmTriggerInfo &a) { return a.gid == gid; });
+                                       [&](const AlarmTriggerInfo &a) { return a.gid == gid && a.tid_str == tid_str; });
                 if (it != output.alarms.end()) {
                     IoTask img_task;
                     img_task.type = IoTaskType::SAVE_ALARM_CONTEXT_IMAGES;
                     img_task.gid = gid;
+                    img_task.tid_str = tid_str;
+                    img_task.n = n;
                     img_task.timestamp = timestamp;
                     img_task.full_frame_bgr = frame_bgr_for_saving.clone();
                     img_task.latest_body_patch_rgb = it->latest_body_patch.clone();

@@ -222,6 +222,7 @@ private:
  */
 struct AlarmTriggerInfo {
     std::string gid;                // 触发告警的GID
+    std::string tid_str;            // 触发告警的TID (cam_id + track_id)
     GstClockTime first_seen_timestamp = 0; // 新增：GID首次识别的时间戳(GstClockTime)
     cv::Rect2f person_bbox;         // 当前帧中该GID关联的行人框
     cv::Rect2d face_bbox;           // 当前帧中该GID关联的人脸框 (如果找到)
@@ -293,7 +294,9 @@ enum class IoTaskType {
 
 struct IoTask {
     IoTaskType type;
-    std::string gid;
+    std::string gid;                 // GID
+    std::string tid_str;             // TID (cam_id + track_id)
+    int n;                           // 识别次数 n
 
     // 新增: 用于 SAVE_ALARM_CONTEXT_IMAGES
     cv::Mat full_frame_bgr;
@@ -400,7 +403,7 @@ private:
 
     // ======================= 【MODIFIED: 函数签名变更】 =======================
     std::optional<std::tuple<std::string, std::string, bool>>
-    trigger_alarm(const std::string &tid_str, const std::string &gid, const TrackAgg &agg, double frame_timestamp);
+    trigger_alarm(const std::string &tid_str, const std::string &gid, int n, const TrackAgg &agg, double frame_timestamp);
     // ======================= 【修改结束】 =======================
 
     // ======================= 【NEW】 =======================
@@ -417,7 +420,7 @@ private:
             const std::string &stream_id,
             const cv::Mat &body_p,
             const cv::Mat &face_p,
-            std::vector<std::tuple<std::string, std::string, bool>> &triggered_alarms_this_frame);
+            std::vector<std::tuple<std::string, std::string, std::string, int, bool>> &triggered_alarms_this_frame);
     // ======================= 【修改结束】 =======================
 
     // Re-ID worker thread
