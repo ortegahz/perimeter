@@ -388,12 +388,10 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
         std::cout << "Loading ReID and Face models for feature extraction..." << std::endl;
         bool use_gpu = (device == "cuda"); // Note: DLA is Jetson specific, this flag is less relevant here.
         try {
-            // Initialize the ReID model for the worker thread on DLA 1
-            reid_model_dla1_ = std::make_unique<PersonReidDLA>(m_reid_model_path, REID_INPUT_WIDTH, REID_INPUT_HEIGHT,
-                                                               1,
-                                                               "/home/nvidia/VSCodeProject/smartboxcore/models/reid_model.dla.engine");
-            std::cout << "Initialized Re-ID worker model on DLA 1." << std::endl;
-
+            // 初始化将在主线程中使用的 ReID 模型，分配给 DLA Core 1
+            reid_model_ = std::make_unique<PersonReidDLA>(m_reid_model_path, REID_INPUT_WIDTH, REID_INPUT_HEIGHT,
+                                                          1, "/home/nvidia/VSCodeProject/smartboxcore/models/reid_model.dla.engine");
+            std::cout << "Initialized Re-ID model on DLA 1 for main thread." << std::endl;
             face_analyzer_ = std::make_unique<FaceAnalyzer>(m_face_det_model_path, m_face_rec_model_path);
             std::string provider = use_gpu ? "GPU" : "DLA";
             // Dedicate DLA core 0 to the FaceAnalyzer.
@@ -455,23 +453,12 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
 
     // Start worker threads
     io_thread_ = std::thread(&FeatureProcessor::_io_worker, this);
-    // Only start the reid worker thread in realtime mode
-    if (mode_ == "realtime") {
-        reid_thread_ = std::thread(&FeatureProcessor::_reid_worker, this);
-    }
 }
 // ======================= 【修改结束】 =======================
 
 // ======================= 【MODIFIED】 =======================
 FeatureProcessor::~FeatureProcessor() {
-    // Stop Re-ID thread first
-    if (reid_thread_.joinable()) {
-        stop_reid_thread_ = true;
-        reid_queue_cond_.notify_all();
-        reid_thread_.join();
-        std::cout << "Re-ID worker thread finished." << std::endl;
-    }
-
+    // 停止IO线程，Re-ID线程已被移除
     // 确保析构时，I/O线程被正确停止，数据库被安全关闭
     if (!stop_io_thread_.load()) {
         stop_io_thread_ = true;
@@ -914,69 +901,6 @@ void FeatureProcessor::_load_state_from_db() {
 }
 // ======================= 【修改结束】 =======================
 
-// ======================= 【MODIFIED】 =======================
-// New worker thread function to handle Re-ID feature extraction in parallel.
-void FeatureProcessor::_reid_worker() {
-    while (true) {
-        ReidTask task;
-        {
-            std::unique_lock<std::mutex> lock(reid_queue_mutex_);
-            reid_queue_cond_.wait(lock, [this] { return !reid_queue_.empty() || stop_reid_thread_; });
-            if (stop_reid_thread_ && reid_queue_.empty()) {
-                return;
-            }
-            task = std::move(reid_queue_.front());
-            reid_queue_.pop();
-        }
-
-        try {
-            const auto &full_frame = *task.full_frame;
-            const auto &dets = *task.dets;
-            const int H = full_frame.rows;
-            const int W = full_frame.cols;
-
-            ReidResults results;
-
-            for (const auto &det: dets) {
-                if (det.class_id != 0) continue;
-
-                cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
-                if (roi.width <= 0 || roi.height <= 0) continue;
-
-                cv::cuda::GpuMat gpu_patch = full_frame(roi);
-                cv::Mat patch;
-                gpu_patch.download(patch);
-
-                if (!is_long_patch(patch)) continue;
-
-                // Use the dedicated model for the worker thread (on DLA 1)
-                cv::cuda::GpuMat feat_mat_gpu = reid_model_dla1_->extract_feat(gpu_patch);
-                if (feat_mat_gpu.empty()) continue;
-
-                cv::Mat feat_mat_cpu;
-                feat_mat_gpu.download(feat_mat_cpu);
-
-                results.push_back({
-                                          .tid_str = task.cam_id + "_" + std::to_string(det.id),
-                                          .body_feat = std::vector<float>(feat_mat_cpu.begin<float>(),
-                                                                          feat_mat_cpu.end<float>()),
-                                          .patch = patch.clone(),
-                                          .det_score = det.score
-                                  });
-            }
-
-            task.promise.set_value(std::move(results));
-
-        } catch (...) {
-            // In case of any exception, notify the promise to avoid deadlocks.
-            try {
-                task.promise.set_exception(std::current_exception());
-            } catch (...) {} // Ignore errors from setting exception
-        }
-    }
-}
-// ======================= 【修改结束】=======================
-
 // MODIFIED HERE: 整个函数被重构以使用 GpuMat
 void
 FeatureProcessor::_load_features_from_cache(const std::string &cam_id, uint64_t fid, const cv::cuda::GpuMat &full_frame,
@@ -1263,19 +1187,37 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     // Reworked feature extraction pipeline for parallelism
     if (mode_ == "realtime") {
         nlohmann::json extracted_features_for_this_frame;
+        const int H = full_frame.rows;
+        const int W = full_frame.cols;
 
-        // 1. Dispatch Re-ID task to worker thread and get a future
-        std::promise<ReidResults> reid_promise;
-        auto reid_future = reid_promise.get_future();
-        {
-            std::lock_guard<std::mutex> lock(reid_queue_mutex_);
-            // Explicitly create a ReidTask rvalue to avoid ambiguity with brace-enclosed initializer lists.
-            reid_queue_.push(ReidTask{&full_frame, &dets, cam_id, std::move(reid_promise)});
+        // --- DEADLOCK FIX: 串行执行DLA任务 ---
+        // 1. 首先在主线程中执行Re-ID特征提取 (使用DLA Core 1)
+        for (const auto &det : dets) {
+            if (det.class_id != 0) continue;
+
+            cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
+            if (roi.width <= 0 || roi.height <= 0) continue;
+
+            cv::cuda::GpuMat gpu_patch = full_frame(roi);
+            cv::Mat patch;
+            gpu_patch.download(patch);
+
+            if (!is_long_patch(patch)) continue;
+
+            cv::cuda::GpuMat feat_mat_gpu = reid_model_->extract_feat(gpu_patch);
+            if (feat_mat_gpu.empty()) continue;
+
+            cv::Mat feat_mat_cpu;
+            feat_mat_gpu.download(feat_mat_cpu);
+            std::vector<float> body_feat(feat_mat_cpu.begin<float>(), feat_mat_cpu.end<float>());
+            std::string tid_str = stream_id + "_" + std::to_string(det.id);
+            first_seen_tid.try_emplace(tid_str, now_stamp);
+            agg_pool[tid_str].add_body(body_feat, det.score, patch.clone());
+            last_seen[tid_str] = now_stamp;
+            if (!feature_cache_path_.empty()) extracted_features_for_this_frame[tid_str]["body_feat"] = body_feat;
         }
-        reid_queue_cond_.notify_one();
 
-        // 2. Main thread performs its own tasks concurrently while the Re-ID worker is running.
-        // This includes face detection, face-person matching, and face feature extraction.
+        // 2. 然后在主线程中执行人脸分析 (使用 DLA Core 0)
         std::vector<Face> internal_face_info;
         if (face_enabled && face_analyzer_) {
             internal_face_info = face_analyzer_->detect(full_frame);
@@ -1331,22 +1273,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             }
         }
 
-        // 3. Late Synchronization: Now, wait for the Re-ID results from the worker thread.
-        auto reid_results = reid_future.get();
-
-        // 4. Process the completed Re-ID results from the worker.
-        for (const auto &result: reid_results) {
-            // 新增：如果TID首次出现，记录其时间戳
-            first_seen_tid.try_emplace(result.tid_str, now_stamp);
-            // This is the crucial part: adding body features to the aggregation pool.
-            agg_pool[result.tid_str].add_body(result.body_feat, result.det_score, result.patch);
-            last_seen[result.tid_str] = now_stamp; // Ensure last_seen is updated for body tracks as well.
-            if (!feature_cache_path_.empty()) {
-                extracted_features_for_this_frame[result.tid_str]["body_feat"] = result.body_feat;
-            }
-        }
-
-        // 5. Save all collected features for this frame to the cache file if enabled
+        // 3. 保存所有本帧提取的特征到缓存文件
         if (!feature_cache_path_.empty() && !extracted_features_for_this_frame.is_null()) {
             features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
         }

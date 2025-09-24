@@ -317,16 +317,10 @@ struct IoTask {
     // 用于 SAVE_ALARM_INFO
     std::string alarm_info_content;
 
-    // 用于 BACKUP_ALARM
     std::vector<cv::Mat> face_patches_backup;
     std::vector<cv::Mat> body_patches_backup;
-};
 
-/**
- * @brief Holds the result of a single person Re-ID extraction from the worker thread.
- */
-struct ReidResult {
-    std::string tid_str;
+    // 用于 BACKUP_ALARM
     std::vector<float> body_feat;
     cv::Mat patch;
     float det_score;
@@ -335,13 +329,6 @@ struct ReidResult {
 /**
  * @brief Task structure for the Re-ID worker thread.
  */
-using ReidResults = std::vector<ReidResult>;
-struct ReidTask {
-    const cv::cuda::GpuMat *full_frame;
-    const std::vector<Detection> *dets;
-    std::string cam_id;
-    std::promise<ReidResults> promise; // Requires <future>
-};
 
 // ======================= 【MODIFIED】 =======================
 // 新增: 为 process_packet 定义统一的输入结构体
@@ -423,9 +410,6 @@ private:
             std::vector<std::tuple<std::string, std::string, std::string, int, bool>> &triggered_alarms_this_frame);
     // ======================= 【修改结束】 =======================
 
-    // Re-ID worker thread
-    void _reid_worker();
-
     // I/O线程相关
     void _io_worker();
 
@@ -445,13 +429,6 @@ private:
     std::condition_variable queue_cond_;
     std::atomic<bool> stop_io_thread_{false};
 
-    // Re-ID线程相关
-    std::thread reid_thread_;
-    std::queue<ReidTask> reid_queue_;
-    std::mutex reid_queue_mutex_;
-    std::condition_variable reid_queue_cond_;
-    std::atomic<bool> stop_reid_thread_{false};
-
     // 数据库句柄
     sqlite3 *db_ = nullptr;
 
@@ -470,8 +447,7 @@ private:
     bool m_processing_enabled;
 
     // MODIFIED HERE: Changed from PersonReid to PersonReidDLA
-    std::unique_ptr<PersonReidDLA> reid_model_;
-    std::unique_ptr<PersonReidDLA> reid_model_dla1_; // For the worker thread on DLA1
+    std::unique_ptr<PersonReidDLA> reid_model_; // Re-ID 模型，将在主线程中使用
     std::unique_ptr<FaceAnalyzer> face_analyzer_;
 
     std::map<std::string, TrackAgg> agg_pool;
