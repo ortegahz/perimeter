@@ -227,6 +227,7 @@ struct AlarmTriggerInfo {
     cv::Rect2d face_bbox;           // 当前帧中该GID关联的人脸框 (如果找到)
     cv::Mat latest_body_patch;      // GID库中最新的（或最具代表性的）行人图块
     cv::Mat latest_face_patch;      // GID库中最新的（或最具代表性的）人脸图块
+    int n = 0;                      // n（识别次数）
 };
 
 struct TrackAgg {

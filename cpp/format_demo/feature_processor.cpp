@@ -1142,6 +1142,8 @@ void FeatureProcessor::_check_and_process_alarm(
                     break;
                 }
             }
+            // 新增：将识别次数 n 赋值给告警信息
+            alarm_info.n = n;
 
             if (alarm_info.person_bbox.area() > 0) {
                 triggered_alarms_this_frame.emplace_back(gid_to_alarm, timestamp, was_newly_saved);
