@@ -664,21 +664,18 @@ void FeatureProcessor::_io_worker() {
                     std::filesystem::create_directories(seq_face_dir);
                     std::filesystem::create_directories(seq_body_dir);
 
-                    for (size_t i = 0; i < task.face_patches_backup.size(); ++i) {
-                        char fname[16];
-                        sprintf(fname, "%03zu.jpg", i);
-                        // 新增: patch 是 RGB 格式, imwrite 需要 BGR 格式
-                        cv::Mat bgr_patch;
-                        cv::cvtColor(task.face_patches_backup[i], bgr_patch, cv::COLOR_RGB2BGR);
-                        cv::imwrite((seq_face_dir / fname).string(), bgr_patch);
+                    // WORKAROUND: 不再保存实时轨迹的agg_sequence，而是直接从已备份到告警目录的原型中复制一份，
+                    // 以确保告警文件夹内的 bodies, faces, agg_sequence 三者图片绝对一致。
+                    // 这个改动会丢失 agg_sequence 作为“现场轨迹快照”的原始意义，但能快速解决图片不匹配的问题。
+                    std::filesystem::path proto_face_dir_in_alarm = dst_dir / "faces";
+                    if (std::filesystem::exists(proto_face_dir_in_alarm)) {
+                        std::filesystem::copy(proto_face_dir_in_alarm, seq_face_dir,
+                                              std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
                     }
-                    for (size_t i = 0; i < task.body_patches_backup.size(); ++i) {
-                        char fname[16];
-                        sprintf(fname, "%03zu.jpg", i);
-                        // 新增: patch 是 RGB 格式, imwrite 需要 BGR 格式
-                        cv::Mat bgr_patch;
-                        cv::cvtColor(task.body_patches_backup[i], bgr_patch, cv::COLOR_RGB2BGR);
-                        cv::imwrite((seq_body_dir / fname).string(), bgr_patch);
+                    std::filesystem::path proto_body_dir_in_alarm = dst_dir / "bodies";
+                    if (std::filesystem::exists(proto_body_dir_in_alarm)) {
+                        std::filesystem::copy(proto_body_dir_in_alarm, seq_body_dir,
+                                              std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
                     }
 
                     // --- 数据库备份 ---
