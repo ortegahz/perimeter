@@ -55,7 +55,7 @@ constexpr double MAX_TID_IDLE_SEC = MAX_TID_IDLE_FRAMES / FPS_ESTIMATE;
 constexpr double GID_MAX_IDLE_SEC = GID_MAX_IDLE_FRAMES / FPS_ESTIMATE;
 
 constexpr int ALARM_CNT_TH = 2;
-constexpr float ALARM_DUP_THR = 0.4f;
+constexpr float ALARM_DUP_THR = 1.0f;  // set 1.0 to disable
 constexpr float FUSE_W_FACE = 0.6f;
 constexpr float FUSE_W_BODY = 0.4f;
 constexpr int EMB_FACE_DIM = 512;
