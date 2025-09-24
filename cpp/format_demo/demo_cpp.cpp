@@ -315,9 +315,8 @@ int main(int argc, char **argv) {
                     std::cout << "\n\n*** ALARM TRIGGERED! Frame: " << fid << " ***\n";
                     for (const auto &alarm: proc_output.alarms) {
                         std::cout << "  - GID: " << alarm.gid << "\n";
-                        // 新增：打印 GID 首次出现的时间戳
-                        GstClockTime first_seen_gst_ts = static_cast<GstClockTime>(alarm.first_seen_timestamp * 1e9);
-                        std::cout << "  - First Seen Time: " << format_ntp_timestamp(first_seen_gst_ts) << "\n";
+                        // 新增：打印 GID 首次出现的时间戳 (已是GstClockTime格式)
+                        std::cout << "  - First Seen Time: " << format_ntp_timestamp(alarm.first_seen_timestamp) << "\n";
 
                         std::string base_path = "/mnt/nfs/alarm_" + alarm.gid + "_fid" + std::to_string(fid);
 

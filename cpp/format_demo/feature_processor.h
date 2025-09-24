@@ -222,7 +222,7 @@ private:
  */
 struct AlarmTriggerInfo {
     std::string gid;                // 触发告警的GID
-    double first_seen_timestamp = 0.0; // 新增：GID首次识别的时间戳(秒)
+    GstClockTime first_seen_timestamp = 0; // 新增：GID首次识别的时间戳(GstClockTime)
     cv::Rect2f person_bbox;         // 当前帧中该GID关联的行人框
     cv::Rect2d face_bbox;           // 当前帧中该GID关联的人脸框 (如果找到)
     cv::Mat latest_body_patch;      // GID库中最新的（或最具代表性的）行人图块
@@ -253,8 +253,8 @@ struct GlobalID {
 
     int can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f);
 
-    void bind(const std::string &gid, const std::string &tid, double current_ts, const TrackAgg &agg,
-              class FeatureProcessor *fp);
+    void bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst,
+              const TrackAgg &agg, class FeatureProcessor *fp);
 
     std::pair<std::string, float> probe(const std::vector<float> &face_f, const std::vector<float> &body_f,
                                         float w_face, float w_body);
@@ -264,7 +264,7 @@ struct GlobalID {
     std::map<std::string, std::vector<std::vector<float>>> bank_bodies;
     std::map<std::string, std::vector<std::string>> tid_hist;
     std::map<std::string, double> last_update;
-    std::map<std::string, double> first_seen_ts; // 新增：记录每个 GID 首次出现的时间戳
+    std::map<std::string, GstClockTime> first_seen_ts; // 新增：记录每个 GID 首次出现的时间戳
 };
 
 struct CandidateState {
@@ -411,6 +411,7 @@ private:
             const std::string &gid,
             const TrackAgg &agg,
             double now_stamp,
+            GstClockTime now_stamp_gst,
             const std::vector<Detection> &dets,
             const std::string &stream_id,
             const cv::Mat &body_p,

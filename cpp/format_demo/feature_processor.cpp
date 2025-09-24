@@ -328,7 +328,7 @@ GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &fac
     return 0;
 }
 
-void GlobalID::bind(const std::string &gid, const std::string &tid, double current_ts,
+void GlobalID::bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst,
                     const TrackAgg &agg, FeatureProcessor *fp) {
     auto [face_f, face_p] = agg.main_face_feat_and_patch();
     auto [body_f, body_p] = agg.main_body_feat_and_patch();
@@ -342,7 +342,7 @@ void GlobalID::bind(const std::string &gid, const std::string &tid, double curre
 
     // 新增：如果这是第一次绑定该 GID，记录其首次出现的时间戳
     if (first_seen_ts.find(gid) == first_seen_ts.end()) {
-        first_seen_ts[gid] = current_ts;
+        first_seen_ts[gid] = current_ts_gst;
     }
 }
 
@@ -1118,6 +1118,7 @@ void FeatureProcessor::_check_and_process_alarm(
         const std::string &gid,
         const TrackAgg &agg,
         double now_stamp,
+        GstClockTime now_stamp_gst,
         const std::vector<Detection> &dets,
         const std::string &stream_id,
         const cv::Mat &body_p,
@@ -1134,7 +1135,7 @@ void FeatureProcessor::_check_and_process_alarm(
             alarm_info.gid = gid_to_alarm;
             alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(gid_to_alarm)
                                               ? gid_mgr.first_seen_ts.at(gid_to_alarm)
-                                              : now_stamp;
+                                              : now_stamp_gst;
             for (const auto &det: dets) {
                 if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                     alarm_info.person_bbox = det.tlwh;
@@ -1216,15 +1217,19 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
     // --- 核心修改：超时逻辑 ---
     double now_stamp; // 内部统一使用 double 秒级时间戳
+    GstClockTime now_stamp_gst; // GStreamer 时间戳 (ns), 用于精确存储
     double max_tid_idle, gid_max_idle;
     if (use_fid_time_) {
         // 如果是基于帧号计时（例如 'load' 模式），则 fid 是时间源
         now_stamp = static_cast<double>(fid);
+        // 在 'load' 模式下没有真实的 GstClockTime，用0作为无效值
+        now_stamp_gst = 0;
         max_tid_idle = MAX_TID_IDLE_FRAMES;
         gid_max_idle = GID_MAX_IDLE_FRAMES;
     } else {
         // 如果是实时模式，将传入的 GstClockTime (纳秒) 转换为 double (秒)
         now_stamp = static_cast<double>(input.timestamp) / 1000000000.0;
+        now_stamp_gst = input.timestamp;
         max_tid_idle = MAX_TID_IDLE_SEC;
         gid_max_idle = GID_MAX_IDLE_SEC;
     }
@@ -1426,11 +1431,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             state.cand_gid = cand_gid;
             int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f);
             if (state.count >= CANDIDATE_FRAMES && flag_code == 0) {
-                gid_mgr.bind(cand_gid, tid_str, now_stamp, agg, this);
+                gid_mgr.bind(cand_gid, tid_str, now_stamp, now_stamp_gst, agg, this);
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
-                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, dets, stream_id, body_p,
+                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst, dets, stream_id, body_p,
                                          face_p, triggered_alarms_this_frame);
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
@@ -1440,12 +1445,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             }
         } else if (gid_mgr.bank_faces.empty()) {
             std::string new_gid = gid_mgr.new_gid();
-            gid_mgr.bind(new_gid, tid_str, now_stamp, agg, this);
+            gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this);
             tid2gid[tid_str] = new_gid;
             candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
             new_gid_state[tid_str].last_new_fid = fid;
             int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-            _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, dets, stream_id, body_p,
+            _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets, stream_id, body_p,
                                      face_p, triggered_alarms_this_frame);
 
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
@@ -1453,12 +1458,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 std::string new_gid = gid_mgr.new_gid();
-                gid_mgr.bind(new_gid, tid_str, now_stamp, agg, this);
+                gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this);
                 tid2gid[tid_str] = new_gid;
                 candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                 new_gid_state[tid_str] = {0, fid, 0};
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, dets, stream_id, body_p,
+                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets, stream_id, body_p,
                                          face_p, triggered_alarms_this_frame);
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
@@ -1471,12 +1476,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 ng_state.count++;
                 if (ng_state.count >= NEW_GID_MIN_FRAMES) {
                     std::string new_gid = gid_mgr.new_gid();
-                    gid_mgr.bind(new_gid, tid_str, now_stamp, agg, this);
+                    gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this);
                     tid2gid[tid_str] = new_gid;
                     candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                     new_gid_state[tid_str] = {0, fid, 0};
                     int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, dets, stream_id, body_p,
+                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets, stream_id, body_p,
                                              face_p, triggered_alarms_this_frame);
 
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
