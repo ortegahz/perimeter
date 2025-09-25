@@ -1333,7 +1333,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             output.mp[s_id][tid_num] = {gid_str, -1.f, 0};
             continue;
         }
-        if ((int) agg.face.size() < MIN_FACE4GID) {
+        if (face_enabled && (int) agg.face.size() < MIN_FACE4GID) {
             std::string gid_str = tid_str + "_-1_f_" + std::to_string(agg.face.size());
             output.mp[s_id][tid_num] = {gid_str, -1.f, 0};
             continue;
