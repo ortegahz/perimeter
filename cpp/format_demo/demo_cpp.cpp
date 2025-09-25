@@ -161,8 +161,10 @@ int main(int argc, char **argv) {
     std::string CAM_ID = "cam1";
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
+    // 新增：是否在实时模式下启用特征缓存写入的功能。关闭可防止内存泄漏。
+    bool ENABLE_FEATURE_CACHING = true;
 
-    std::string MODE = "realtime"; // realtime or load
+    std::string MODE = "load"; // realtime or load
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -203,7 +205,8 @@ int main(int argc, char **argv) {
                 boundary_config,          // 明确传递，覆盖默认值
                 _use_fid_time,
                 true,                     // enable_alarm_saving
-                true);                    // processing_enabled: 新增算法总开关, 设置为 false 可禁用所有处理
+                true,                     // processing_enabled: 新增算法总开关, 设置为 false 可禁用所有处理
+                ENABLE_FEATURE_CACHING);  // 新增: 是否启用特征缓存写入的开关
         // ======================= 【修改结束】 =======================
 
         // 注意：在realtime模式下，FeatureProcessor会创建自己的FaceAnalyzer实例。
