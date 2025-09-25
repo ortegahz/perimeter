@@ -363,8 +363,9 @@ public:
                               const std::string &feature_cache_path = "",
                               const nlohmann::json &boundary_config = {},
                               bool use_fid_time = false,
-                              bool enable_alarm_saving = true,
-                              bool processing_enabled = true);
+                              bool enable_alarm_saving = true, // for alarm media
+                              bool processing_enabled = true,  // for algorithm
+                              bool enable_feature_caching = false); // for the features_cache.json
     // ======================= 【修改结束】 =======================
 
     ~FeatureProcessor();
@@ -445,6 +446,7 @@ private:
     std::string m_face_rec_model_path;
     bool m_enable_alarm_saving;
     bool m_processing_enabled;
+    bool m_enable_feature_caching;
 
     // MODIFIED HERE: Changed from PersonReid to PersonReidDLA
     std::unique_ptr<PersonReidDLA> reid_model_; // Re-ID 模型，将在主线程中使用

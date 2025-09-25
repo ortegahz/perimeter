@@ -373,14 +373,16 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
                                    const nlohmann::json &boundary_config,
                                    bool use_fid_time,
                                    bool enable_alarm_saving,
-                                   bool processing_enabled)
+                                   bool processing_enabled,
+                                   bool enable_feature_caching)
         : m_reid_model_path(reid_model_path),
           m_face_det_model_path(face_det_model_path),
           m_face_rec_model_path(face_rec_model_path),
           mode_(mode), use_fid_time_(use_fid_time), device_(device),
           feature_cache_path_(feature_cache_path),
           m_enable_alarm_saving(enable_alarm_saving),
-          m_processing_enabled(processing_enabled) {
+          m_processing_enabled(processing_enabled),
+          m_enable_feature_caching(enable_feature_caching) {
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is "
               << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
 
@@ -401,10 +403,15 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
             throw;
         }
 
-        // The feature cache can optionally be written in realtime mode.
-        if (!feature_cache_path_.empty()) {
-            auto parent_path = std::filesystem::path(feature_cache_path_).parent_path();
-            if (!parent_path.empty()) std::filesystem::create_directories(parent_path);
+        // The feature cache can optionally be written in realtime mode. Check the switch.
+        if (m_enable_feature_caching) {
+            if (!feature_cache_path_.empty()) {
+                auto parent_path = std::filesystem::path(feature_cache_path_).parent_path();
+                if (!parent_path.empty()) std::filesystem::create_directories(parent_path);
+                std::cout << "Feature caching to JSON is ENABLED." << std::endl;
+            } else {
+                 std::cout << "Feature caching is requested but feature_cache_path is empty. Caching DISABLED." << std::endl;
+            }
         }
     } else if (mode_ == "load") {
         // In 'load' mode, no models are needed. We just load features from the cache.
@@ -459,6 +466,20 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
 // ======================= 【MODIFIED】 =======================
 FeatureProcessor::~FeatureProcessor() {
     // 停止IO线程，Re-ID线程已被移除
+    // 新增：在析构时，如果开启了特征缓存，则将内存中的特征缓存写入文件
+    if (m_enable_feature_caching && !feature_cache_path_.empty() && !features_to_save_.is_null()) {
+        std::cout << "\nSaving " << features_to_save_.size()
+                  << " frames of features to " << feature_cache_path_ << " ..." << std::endl;
+        try {
+            std::ofstream ofs(feature_cache_path_);
+            ofs << features_to_save_.dump(4); // 使用 dump(4) 进行格式化输出，便于阅读
+            ofs.close();
+            std::cout << "Feature cache saved successfully." << std::endl;
+        } catch (const std::exception &e) {
+            std::cerr << "Error saving feature cache: " << e.what() << std::endl;
+        }
+    }
+
     // 确保析构时，I/O线程被正确停止，数据库被安全关闭
     if (!stop_io_thread_.load()) {
         stop_io_thread_ = true;
@@ -1211,7 +1232,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             first_seen_tid.try_emplace(tid_str, now_stamp);
             agg_pool[tid_str].add_body(body_feat, det.score, patch.clone());
             last_seen[tid_str] = now_stamp;
-            if (!feature_cache_path_.empty()) extracted_features_for_this_frame[tid_str]["body_feat"] = body_feat;
+            if (m_enable_feature_caching) {
+                extracted_features_for_this_frame[tid_str]["body_feat"] = body_feat;
+            }
         }
 
         // 2. 然后在主线程中执行人脸分析 (使用 DLA Core 0)
@@ -1264,14 +1287,16 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         agg_pool[tid_str].add_face(f_emb, face_patch.clone());
                         // ======================= 【修改结束】 =======================
                         last_seen[tid_str] = now_stamp;
-                        if (!feature_cache_path_.empty()) extracted_features_for_this_frame[tid_str]["face_feat"] = f_emb;
+                        if (m_enable_feature_caching) {
+                            extracted_features_for_this_frame[tid_str]["face_feat"] = f_emb;
+                        }
                     } catch (const std::exception &) { continue; }
                 }
             }
         }
 
         // 3. 保存所有本帧提取的特征到缓存文件
-        if (!feature_cache_path_.empty() && !extracted_features_for_this_frame.is_null()) {
+        if (m_enable_feature_caching && !extracted_features_for_this_frame.is_null()) {
             features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
         }
 
