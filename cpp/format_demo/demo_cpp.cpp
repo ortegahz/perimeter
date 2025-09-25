@@ -11,7 +11,6 @@
 
 // ======================= 【新增】 =======================
 // GStreamer 相关的时间戳类型和处理函数
-// 我们需要在这里定义它，以便创建要传递的变量
 #ifndef GST_CLOCK_TIME_NONE
 using GstClockTime = uint64_t;
 #define GST_CLOCK_TIME_NONE ((GstClockTime)-1)
@@ -161,6 +160,7 @@ int main(int argc, char **argv) {
     std::string CAM_ID = "cam1";
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
+    bool RUN_IN_LOOP = false; // 【修改】控制视频是否循环播放。true: 循环, false: 播放一次
     // 新增：是否在实时模式下启用特征缓存写入的功能。关闭可防止内存泄漏。
     bool ENABLE_FEATURE_CACHING = true;
 
@@ -209,18 +209,15 @@ int main(int argc, char **argv) {
                 ENABLE_FEATURE_CACHING);  // 新增: 是否启用特征缓存写入的开关
         // ======================= 【修改结束】 =======================
 
-        // 注意：在realtime模式下，FeatureProcessor会创建自己的FaceAnalyzer实例。
-        // 此处的face_analyzer仅用于演示，实际处理在processor内部完成。
-
         cv::VideoCapture cap(VIDEO_PATH, cv::CAP_FFMPEG);
         if (!cap.isOpened()) {
             std::cerr << "Cannot open video for reading: " << VIDEO_PATH << std::endl;
             return -1;
         }
-        int total_frames = cap.get(cv::CAP_PROP_FRAME_COUNT);
+        int total_frames = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
         double fps = cap.get(cv::CAP_PROP_FPS);
-        int ori_W = cap.get(cv::CAP_PROP_FRAME_WIDTH);
-        int ori_H = cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+        int ori_W = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
+        int ori_H = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
         cv::Size vis_size(static_cast<int>(ori_W * SHOW_SCALE), static_cast<int>(ori_H * SHOW_SCALE));
 
         cv::VideoWriter writer;
@@ -234,23 +231,39 @@ int main(int argc, char **argv) {
         fout << "frame_id,cam_id,tid,gid,score,n_tid\n";
         fout << std::fixed << std::setprecision(4);
 
-        uint64_t fid = 0;
+        uint64_t fid = 0;          // 全局递增帧号（无限循环或单次）
         cv::Mat frame;
         cv::cuda::GpuMat gpu_frame;
 
         double total_proc_time = 0.0;
         int proc_count = 0;
 
-        while (cap.read(frame)) {
+        // ------------- 【修改】无限循环或单次运行 -------------
+        while (true) {
+            if (!cap.read(frame)) { // 读到结尾或异常
+                if (RUN_IN_LOOP) {
+                    std::cout << "\nVideo ended. Resetting to the beginning." << std::endl;
+                    cap.set(cv::CAP_PROP_POS_FRAMES, 0); // 重置到首帧
+                    if (!cap.read(frame)) {             // 复位后依旧失败，直接退出
+                        std::cerr << "Failed to read frame even after reset. Exiting.\n";
+                        break;
+                    }
+                } else {
+                    // 非循环模式，视频播放完毕，退出循环
+                    break;
+                }
+            }
+
             fid++;
             if (fid % SKIP != 0) {
                 continue;
             }
 
-            int processed_frames_count = fid / SKIP;
-            int total_to_process = total_frames / SKIP;
-            std::cout << "\rProcessing frame " << fid << "/" << total_frames
-                      << " (" << processed_frames_count << "/" << total_to_process << ")";
+            // 在循环内使用 cache_fid 对应首轮帧号，保证缓存目录存在
+            uint64_t cache_fid = ((fid - 1) % total_frames) + 1;
+
+            std::cout << "\rProcessing global_fid=" << fid
+                      << " (cache_fid=" << cache_fid << '/' << total_frames << ")" << std::flush;
 
             try {
                 gpu_frame.upload(frame);
@@ -258,28 +271,18 @@ int main(int argc, char **argv) {
                 cv::cuda::GpuMat gpu_frame_rgb;
                 cv::cuda::cvtColor(gpu_frame, gpu_frame_rgb, cv::COLOR_BGR2RGB);
                 // 修改：统一从缓存加载基础检测信息 (dets) 和可视化信息 (face_info)
-                LoadedData loaded_data = load_packet_from_cache(CAM_ID, fid, RAW_DIR);
+                LoadedData loaded_data = load_packet_from_cache(CAM_ID, cache_fid, RAW_DIR);
 
                 // --- 新增：定义本次处理的配置参数 ---
                 ProcessConfig proc_config;
                 proc_config.alarm_cnt_th = 2;  // 示例：将全局告警计数阈值改为2
-                //proc_config.match_thr_by_cam[CAM_ID] = 0.5f; // 示例：为当前相机"cam1"设置特定的浮点数匹配阈值，会覆盖下面的灵敏度设置
-                // 新增：设置相机 "cam1" 的匹配灵敏度
-                // 灵敏度级别: 1 (低), 2 (中), 3 (高)。
-                // 高灵敏度意味着使用较低的匹配分数阈值，更容易匹配上 (例如_ 阈值=0.4)。
                 proc_config.sensitivity_by_cam[CAM_ID] = 2; // 示例: 设置为高灵敏度
 
                 // 新增：人脸/ReID权重配置
-                // 为 "cam1" 启用人脸处理，并设置权重为 70% 人脸 + 30% ReID。
                 proc_config.face_switch_by_cam[CAM_ID] = true;
                 proc_config.face_weight_by_cam[CAM_ID] = 0.6f;
                 proc_config.reid_weight_by_cam[CAM_ID] = 0.4f;
-                //【修改】为 "cam1" 设置3秒的徘徊时间
                 proc_config.alarmDuration_ms_by_cam[CAM_ID] = 0;
-                // 示例：若有另一路 "cam2"，可禁用人脸处理 (权重将自动变为 0% 人脸 + 100% ReID)。
-                // proc_config.face_switch_by_cam["cam2"] = false;
-                // 示例：可以为 "cam2" 设置不同的徘徊时间，或者不设置（默认为0，即禁用）
-                // proc_config.alarmDuration_ms_by_cam["cam2"] = 5000; // 5秒
 
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();
@@ -287,24 +290,20 @@ int main(int argc, char **argv) {
                 // 创建新的输入结构体并调用修改后的 process_packet 接口
                 GstClockTime timestamp;
                 if (_use_fid_time) {
-                    // 在 'load' 模式下，时间戳由内部基于 fid 生成，此处传入的值会被忽略。
-                    // 传入 0 作为占位符。
-                    timestamp = 0;
+                    timestamp = 0; // load 模式占位
                 } else {
-                    // 在 'realtime' 模式下，获取原始的 GstClockTime 时间戳。
                     timestamp = get_current_frame_ntp_timestamp(fid, fps);
                 }
 
                 ProcessInput proc_input = {
                         CAM_ID,
                         fid,
-                        timestamp, // 直接传入原始的 GstClockTime
+                        timestamp,
                         gpu_frame_rgb,
                         loaded_data.packet.dets,
                         proc_config
                 };
                 auto proc_output = processor.process_packet(proc_input);
-                // ======================= 【修改结束】 =======================
                 auto t2 = std::chrono::high_resolution_clock::now();
                 std::chrono::duration<double, std::milli> proc_time = t2 - t1;
                 std::cout << "  [proc_packet took " << proc_time.count() << " ms]" << std::endl;
@@ -319,14 +318,13 @@ int main(int argc, char **argv) {
                     for (const auto &alarm: proc_output.alarms) {
                         std::cout << "  - GID: " << alarm.gid << "\n";
                         std::cout << "  - Recognition Count (n): " << alarm.n << "\n";
-                        // 新增：打印 GID 首次出现的时间戳 (已是GstClockTime格式)
-                        std::cout << "  - First Seen Time: " << format_ntp_timestamp(alarm.first_seen_timestamp) << "\n";
+                        std::cout << "  - First Seen Time: " << format_ntp_timestamp(alarm.first_seen_timestamp)
+                                  << "\n";
 
                         std::string base_path = "/mnt/nfs/alarm_" + alarm.gid + "_fid" + std::to_string(fid);
 
                         // 保存告警帧、最新的行人/人脸图块以供查验
                         cv::imwrite(base_path + "_frame.jpg", frame);
-                        // 新增：由于 patch 是 RGB 格式，保存前需转换为 BGR
                         if (!alarm.latest_body_patch.empty()) {
                             cv::Mat bgr_patch;
                             cv::cvtColor(alarm.latest_body_patch, bgr_patch, cv::COLOR_RGB2BGR);
@@ -380,7 +378,6 @@ int main(int argc, char **argv) {
                         size_t g_pos = full_gid_str.find("_G");
                         if (g_pos != std::string::npos) {
                             std::string gid_part = full_gid_str.substr(g_pos + 1);
-                            // GID 后面可能跟着告警信息, 例如 G00001_AA
                             size_t next_underscore = gid_part.find('_');
                             if (next_underscore != std::string::npos) {
                                 gid_part = gid_part.substr(0, next_underscore);
@@ -400,9 +397,7 @@ int main(int argc, char **argv) {
                         } else if (full_gid_str.find("_AL") != std::string::npos) {
                             display_status = (gid_found ? display_status + " " : "") + "Crossing!";
                             color_override = cv::Scalar(0, 0, 255); // 红色
-                        }
-                            // 如果没找到 GID 且没有告警，则说明是调试状态
-                        else if (!gid_found) {
+                        } else if (!gid_found) {
                             if (full_gid_str.find("_-1_b_") != std::string::npos) {
                                 size_t pos = full_gid_str.find("_-1_b_");
                                 display_status =
@@ -514,7 +509,7 @@ int main(int argc, char **argv) {
                 cv::resize(frame, vis, vis_size);
                 writer.write(vis);
             }
-        }
+        } // while(true)
 
         if (proc_count > 0) {
             std::cout << "\nAverage process_packet time = "
@@ -529,8 +524,6 @@ int main(int argc, char **argv) {
 
         // ======================= 【MODIFIED】 =======================
         // 新增：在程序结束前，保存内存状态以供验证。
-        // processor的析构函数将在此代码块结束时被调用，它会等待所有I/O完成并关闭数据库。
-        std::cout << "\n--- Final State Verification ---" << std::endl;
         processor.save_final_state_to_file("/mnt/nfs/state_before_shutdown.txt");
         // ======================= 【修改结束】 =======================
 
