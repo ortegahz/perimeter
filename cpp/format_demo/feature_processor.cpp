@@ -452,6 +452,11 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     if (m_clear_db_on_startup && std::filesystem::exists(DB_PATH)) {
         std::cout << "Switch 'clear_db_on_startup' is ON. Removing existing database: " << DB_PATH << std::endl;
         std::filesystem::remove(DB_PATH);
+        // 在从数据库加载状态前，先清空并重建文件系统缓存，以确保两者同步
+        if (std::filesystem::exists(SAVE_DIR)) {
+            std::filesystem::remove_all(SAVE_DIR);
+        }
+        std::filesystem::create_directories(SAVE_DIR);
     }
 
     bool db_existed_before_init = std::filesystem::exists(DB_PATH);
