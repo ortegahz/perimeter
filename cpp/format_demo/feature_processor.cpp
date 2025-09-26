@@ -1145,21 +1145,18 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
     // --- 确定当前帧的匹配阈值 ---
     // 1. 根据灵敏度设置一个基础阈值
-    int sensitivity = 2; // 默认中等灵敏度
+    // 默认灵敏度为 5 (中等)，对应阈值 0.5f
+    int sensitivity = 5;
     if (config.sensitivity_by_cam.count(stream_id)) {
         sensitivity = config.sensitivity_by_cam.at(stream_id);
     }
-    float base_match_thr;
-    switch (sensitivity) {
-        case 1: // 低灵敏度 -> 高阈值，更难匹配
-            base_match_thr = 0.6f;
-            break;
-        case 3: // 高灵敏度 -> 低阈值，更容易匹配
-            base_match_thr = 0.4f;
-            break;
-        default: // case 2 或其他值
-            base_match_thr = MATCH_THR; // 中等灵敏度，使用默认阈值 0.5f
-    }
+    // 确保灵敏度在 1 到 10 的范围内
+    sensitivity = std::max(1, std::min(10, sensitivity));
+
+    // 10级灵敏度映射：1(最高) -> 0.1, ..., 10(最低) -> 1.0
+    // 公式: T = 0.1f + (S - 1) * 0.1f
+    float base_match_thr = 0.1f + static_cast<float>(sensitivity - 1) * 0.1f;
+
     // 2. 允许使用具体的浮点数值覆盖基于灵敏度的设置，提供更精细的控制
     float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id)
                                                                        : base_match_thr;

@@ -91,8 +91,8 @@ struct ProcessConfig {
     std::map<std::string, float> reid_weight_by_cam;
     //【修改】Key: cam_id, Value: 徘徊报警时间 (毫秒)。如果未设置，则默认为0 (禁用)。
     std::map<std::string, long long> alarmDuration_ms_by_cam;
-    // 新增: Key: cam_id, Value: 匹配灵敏度 (例如 1=低, 2=中, 3=高)。
-    // 这会影响匹配阈值，高灵敏度对应低阈值。
+    // 新增: Key: cam_id, Value: 匹配灵敏度 (1-10级, 1为最高灵敏度, 10为最低)。
+    // 1(最高) -> 0.1阈值, ..., 10(最低) -> 1.0阈值。
     std::map<std::string, int> sensitivity_by_cam;
 };
 
