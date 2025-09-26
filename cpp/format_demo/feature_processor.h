@@ -365,7 +365,8 @@ public:
                               bool use_fid_time = false,
                               bool enable_alarm_saving = true, // for alarm media
                               bool processing_enabled = true,  // for algorithm
-                              bool enable_feature_caching = false); // for the features_cache.json
+                              bool enable_feature_caching = false, // for the features_cache.json
+                              bool clear_db_on_startup = true);
     // ======================= 【修改结束】 =======================
 
     ~FeatureProcessor();
@@ -447,6 +448,7 @@ private:
     bool m_enable_alarm_saving;
     bool m_processing_enabled;
     bool m_enable_feature_caching;
+    bool m_clear_db_on_startup;
 
     // MODIFIED HERE: Changed from PersonReid to PersonReidDLA
     std::unique_ptr<PersonReidDLA> reid_model_; // Re-ID 模型，将在主线程中使用

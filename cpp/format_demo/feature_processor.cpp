@@ -374,7 +374,8 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
                                    bool use_fid_time,
                                    bool enable_alarm_saving,
                                    bool processing_enabled,
-                                   bool enable_feature_caching)
+                                   bool enable_feature_caching,
+                                   bool clear_db_on_startup)
         : m_reid_model_path(reid_model_path),
           m_face_det_model_path(face_det_model_path),
           m_face_rec_model_path(face_rec_model_path),
@@ -382,7 +383,8 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
           feature_cache_path_(feature_cache_path),
           m_enable_alarm_saving(enable_alarm_saving),
           m_processing_enabled(processing_enabled),
-          m_enable_feature_caching(enable_feature_caching) {
+          m_enable_feature_caching(enable_feature_caching),
+          m_clear_db_on_startup(clear_db_on_startup) {
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is "
               << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
 
@@ -447,6 +449,11 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     }
 
     // ======================= 【MODIFIED: 初始化逻辑变更】 =======================
+    if (m_clear_db_on_startup && std::filesystem::exists(DB_PATH)) {
+        std::cout << "Switch 'clear_db_on_startup' is ON. Removing existing database: " << DB_PATH << std::endl;
+        std::filesystem::remove(DB_PATH);
+    }
+
     bool db_existed_before_init = std::filesystem::exists(DB_PATH);
     _init_or_load_db();
 

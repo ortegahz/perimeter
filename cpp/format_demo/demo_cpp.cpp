@@ -163,6 +163,8 @@ int main(int argc, char **argv) {
     bool RUN_IN_LOOP = false; // 【修改】控制视频是否循环播放。true: 循环, false: 播放一次
     // 新增：是否在实时模式下启用特征缓存写入的功能。关闭可防止内存泄漏。
     bool ENABLE_FEATURE_CACHING = true;
+    // 新增：是否在启动时清除现有的数据库。true: 清除, false: 加载
+    bool CLEAR_DB_ON_STARTUP = true;
 
     std::string MODE = "load"; // realtime or load
     if (argc > 1) {
@@ -206,7 +208,8 @@ int main(int argc, char **argv) {
                 _use_fid_time,
                 true,                     // enable_alarm_saving
                 true,                     // processing_enabled: 新增算法总开关, 设置为 false 可禁用所有处理
-                ENABLE_FEATURE_CACHING);  // 新增: 是否启用特征缓存写入的开关
+                ENABLE_FEATURE_CACHING,   // 新增: 是否启用特征缓存写入的开关
+                CLEAR_DB_ON_STARTUP);     // 新增: 是否在启动时清除数据库
         // ======================= 【修改结束】 =======================
 
         cv::VideoCapture cap(VIDEO_PATH, cv::CAP_FFMPEG);
