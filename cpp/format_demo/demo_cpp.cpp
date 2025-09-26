@@ -323,28 +323,6 @@ int main(int argc, char **argv) {
                         std::cout << "  - Recognition Count (n): " << alarm.n << "\n";
                         std::cout << "  - First Seen Time: " << format_ntp_timestamp(alarm.first_seen_timestamp)
                                   << "\n";
-
-                        std::string base_path = "/mnt/nfs/alarm_" + alarm.gid + "_fid" + std::to_string(fid);
-
-                        // 保存告警帧、最新的行人/人脸图块以供查验
-                        cv::imwrite(base_path + "_frame.jpg", frame);
-                        if (!alarm.latest_body_patch.empty()) {
-                            cv::Mat bgr_patch;
-                            cv::cvtColor(alarm.latest_body_patch, bgr_patch, cv::COLOR_RGB2BGR);
-                            cv::imwrite(base_path + "_body_patch.jpg", bgr_patch);
-                        }
-                        if (!alarm.latest_face_patch.empty()) {
-                            cv::Mat bgr_patch;
-                            cv::cvtColor(alarm.latest_face_patch, bgr_patch, cv::COLOR_RGB2BGR);
-                            cv::imwrite(base_path + "_face_patch.jpg", bgr_patch);
-                        }
-
-                        // 在告警帧上绘制边界框并保存
-                        cv::Mat alarm_vis = frame.clone();
-                        cv::rectangle(alarm_vis, alarm.person_bbox, cv::Scalar(0, 0, 255), 3); // 红色粗框标出行人
-                        if (alarm.face_bbox.area() > 0)
-                            cv::rectangle(alarm_vis, alarm.face_bbox, cv::Scalar(0, 255, 255), 2); // 黄色框标出人脸
-                        cv::imwrite(base_path + "_annotated.jpg", alarm_vis);
                     }
                 }
                 // ======================= 【修改结束】 =======================
