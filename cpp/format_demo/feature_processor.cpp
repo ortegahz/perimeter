@@ -1106,8 +1106,10 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
 
     // 检查当前 GID 是否与已有的“原始报警GID”相似
     for (const auto &[ogid, rep]: alarm_reprs) {
-        if (sim_vec(cur_rep, rep) >= m_alarm_dup_thr) {
-            // 如果相似，则说明该 GID 或其相似 GID 已经报过警，直接抑制本次报警。
+        // 关键修改：仅当 GID 不同但特征相似时，才抑制报警。
+        // 这允许同一个 GID 在不同时间点被多次识别并触发报警。
+        if (gid != ogid && sim_vec(cur_rep, rep) >= m_alarm_dup_thr) {
+            // 如果是不同的 GID 但特征相似，则抑制本次报警。
             std::cout << "\n[ALARM SUPPRESSED] GID " << gid << " is similar to already alarmed GID "
                       << ogid << " (Similarity threshold: " << m_alarm_dup_thr << "). Suppressing this alarm." << std::endl;
             return std::nullopt; // 返回空 optional 来抑制报警
