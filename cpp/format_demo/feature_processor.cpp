@@ -424,8 +424,14 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
           m_processing_enabled(processing_enabled),
           m_enable_feature_caching(enable_feature_caching),
           m_clear_db_on_startup(clear_db_on_startup) {
+
+    // 新增：从配置中读取重复报警过滤阈值, 如果未提供，默认为 1.0 (禁用)
+    m_alarm_dup_thr = boundary_config.value("alarm_dup_thr", 1.0f);
+
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is "
               << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
+    std::cout << ">>> Alarm duplication filter threshold (alarm_dup_thr) set to: " << m_alarm_dup_thr << std::endl;
+
 
     if (mode_ == "realtime") {
         std::cout << "Loading ReID and Face models for feature extraction..." << std::endl;
@@ -1062,31 +1068,21 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
     auto cur_rep = _gid_fused_rep(gid);
     if (cur_rep.empty()) return std::nullopt;
 
-    std::string gid_to_report = gid;
-    bool is_new_alarm_gid = true;
-
     // 检查当前 GID 是否与已有的“原始报警GID”相似
     for (const auto &[ogid, rep]: alarm_reprs) {
-        if (sim_vec(cur_rep, rep) >= ALARM_DUP_THR) {
-            gid_to_report = ogid;
-            is_new_alarm_gid = false;
-            // 如果相似，则无论当前 gid 是谁，都将此次报警归属于原始的 ogid
-            if (gid != ogid) {
-                std::cout << "[ALARM] GID " << gid << " is similar to original alarmer " << ogid << ". Reporting as "
-                          << ogid << "." << std::endl;
-            } else {
-                std::cout << "[ALARM] Re-triggering for original GID " << gid << "." << std::endl;
-            }
-            break; // 找到匹配项，中断循环
+        if (sim_vec(cur_rep, rep) >= m_alarm_dup_thr) {
+            // 如果相似，则说明该 GID 或其相似 GID 已经报过警，直接抑制本次报警。
+            std::cout << "\n[ALARM SUPPRESSED] GID " << gid << " is similar to already alarmed GID "
+                      << ogid << " (Similarity threshold: " << m_alarm_dup_thr << "). Suppressing this alarm." << std::endl;
+            return std::nullopt; // 返回空 optional 来抑制报警
         }
     }
 
-    // 如果遍历完所有原始报警者都不相似，则此 gid 成为一个新的“原始报警GID”
-    if (is_new_alarm_gid) {
-        std::cout << "[ALARM] New original alarmer: " << gid << "." << std::endl;
-        alarmed.insert(gid);
-        alarm_reprs[gid] = cur_rep;
-    }
+    // 如果程序执行到这里，说明这是一个全新的、不重复的报警 GID。
+    // 将其注册为新的“原始报警 GID”。
+    std::cout << "\n[ALARM] New original alarmer: " << gid << "." << std::endl;
+    alarmed.insert(gid);
+    alarm_reprs[gid] = cur_rep;
 
     // --- 新增：检查此TID是否已保存过报警 ---
     bool was_newly_saved = false;
@@ -1103,7 +1099,7 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
 
         IoTask task;
         task.type = IoTaskType::BACKUP_ALARM;
-        task.gid = gid_to_report;
+        task.gid = gid; // 既然是新报警，上报的 GID 就是当前 GID
         task.tid_str = tid_str;
         task.n = n;
         task.timestamp = std::string(buf_for_task);
@@ -1120,7 +1116,7 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
     strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &broken_down_time);
     std::string timestamp_str(buf);
 
-    return std::make_tuple(gid_to_report, timestamp_str, was_newly_saved);
+    return std::make_tuple(gid, timestamp_str, was_newly_saved);
 }
 // ======================= 【修改结束】 =======================
 
@@ -1294,7 +1290,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             cv::Mat patch;
             gpu_patch.download(patch);
 
-            if (!is_long_patch(patch)) continue;
+//            if (!is_long_patch(patch)) continue;
 
             // --- HANG FIX: Wrap Re-ID DLA call with a timeout ---
             cv::cuda::GpuMat feat_mat_gpu;

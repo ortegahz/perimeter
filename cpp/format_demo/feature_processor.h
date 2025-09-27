@@ -55,7 +55,6 @@ constexpr double MAX_TID_IDLE_SEC = MAX_TID_IDLE_FRAMES / FPS_ESTIMATE;
 constexpr double GID_MAX_IDLE_SEC = GID_MAX_IDLE_FRAMES / FPS_ESTIMATE;
 
 constexpr int ALARM_CNT_TH = 2;
-constexpr float ALARM_DUP_THR = 1.0f;  // set 1.0 to disable
 constexpr float FUSE_W_FACE = 0.6f;
 constexpr float FUSE_W_BODY = 0.4f;
 constexpr int EMB_FACE_DIM = 512;
@@ -72,10 +71,12 @@ constexpr float FACE_DET_MIN_SCORE = 0.60f;
 #define SAVE_DIR "/mnt/nfs/perimeter_cpp"
 #define ALARM_DIR "/mnt/nfs/perimeter_alarm_cpp"
 #define DB_PATH "/mnt/nfs/perimeter_data.db"
+#define CONFIG_FILE_PATH "/mnt/nfs/config.json"
 
 //#define SAVE_DIR "/home/nvidia/perimeter_cpp"
 //#define ALARM_DIR "/home/nvidia/perimeter_alarm_cpp"
 //#define DB_PATH "/home/nvidia/perimeter_data.db"
+//#define CONFIG_FILE_PATH "/home/nvidia/config.json"
 
 /* ---------- 可调参数结构体 ---------- */
 struct ProcessConfig {
@@ -453,6 +454,7 @@ private:
     bool m_processing_enabled;
     bool m_enable_feature_caching;
     bool m_clear_db_on_startup;
+    float m_alarm_dup_thr;             // 新增：重复报警过滤阈值
 
     // MODIFIED HERE: Changed from PersonReid to PersonReidDLA
     std::unique_ptr<PersonReidDLA> reid_model_; // Re-ID 模型，将在主线程中使用
