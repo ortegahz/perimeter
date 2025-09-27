@@ -402,6 +402,42 @@ std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, 
     return {best_gid, best_score};
 }
 
+nlohmann::json FeatureProcessor::_load_or_create_config() {
+    nlohmann::json config;
+
+    if (std::filesystem::exists(CONFIG_FILE_PATH)) {
+        try {
+            std::ifstream ifs(CONFIG_FILE_PATH);
+            ifs >> config;
+            std::cout << "Successfully loaded configuration from: " << CONFIG_FILE_PATH << std::endl;
+        } catch (const nlohmann::json::parse_error& e) {
+            std::cerr << "Warning: Failed to parse config file '" << CONFIG_FILE_PATH << "'. Error: " << e.what()
+                      << ". Using default values." << std::endl;
+            config = nlohmann::json{}; // Reset to empty json on parse error
+        }
+    } else {
+        std::cout << "Info: Configuration file '" << CONFIG_FILE_PATH
+                  << "' not found. Creating a default config file with default values." << std::endl;
+
+        // 创建一个包含默认参数的JSON对象
+        nlohmann::json default_config;
+        default_config["alarm_dup_thr"] = 1.0f;
+
+        // 将默认配置写入文件
+        try {
+            std::ofstream ofs(CONFIG_FILE_PATH);
+            ofs << default_config.dump(4); // 使用4个空格缩进，使其更易读
+            ofs.close();
+            std::cout << "Successfully created a default config file at '" << CONFIG_FILE_PATH << "'." << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "Error: Failed to create default config file. Reason: " << e.what() << std::endl;
+        }
+        // 无论文件是否创建成功，都为本次运行加载默认配置，以防止传入一个空的（null）JSON对象。
+        config = default_config;
+    }
+    return config;
+}
+
 // 修改: 更新构造函数以匹配新的签名，并使用成员变量存储路径
 FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
                                    const std::string &face_det_model_path,
@@ -409,7 +445,6 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
                                    const std::string &mode,
                                    const std::string &device,
                                    const std::string &feature_cache_path,
-                                   const nlohmann::json &boundary_config,
                                    bool use_fid_time,
                                    bool enable_alarm_saving,
                                    bool processing_enabled,
@@ -425,6 +460,7 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
           m_enable_feature_caching(enable_feature_caching),
           m_clear_db_on_startup(clear_db_on_startup) {
 
+    nlohmann::json boundary_config = _load_or_create_config();
     // 新增：从配置中读取重复报警过滤阈值, 如果未提供，默认为 1.0 (禁用)
     m_alarm_dup_thr = boundary_config.value("alarm_dup_thr", 1.0f);
 

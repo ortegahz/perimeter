@@ -363,7 +363,6 @@ public:
                               const std::string &mode = "realtime",
                               const std::string &device = "dla",
                               const std::string &feature_cache_path = "",
-                              const nlohmann::json &boundary_config = {},
                               bool use_fid_time = false,
                               bool enable_alarm_saving = true, // for alarm media
                               bool processing_enabled = true,  // for algorithm
@@ -427,6 +426,8 @@ private:
 
     void _load_state_from_db();
     // ======================= 【修改结束】 =======================
+
+    nlohmann::json _load_or_create_config();
 
     void _close_db();
 

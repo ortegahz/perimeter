@@ -191,40 +191,6 @@ int main(int argc, char **argv) {
         OUTPUT_VIDEO_PATH = "/mnt/nfs/output_video_cpp_realtime.mp4";
     }
 
-    // --- 修改：从JSON配置文件加载配置 ---
-    nlohmann::json boundary_config;
-
-    if (std::filesystem::exists(CONFIG_FILE_PATH)) {
-        try {
-            std::ifstream ifs(CONFIG_FILE_PATH);
-            ifs >> boundary_config;
-            std::cout << "Successfully loaded configuration from: " << CONFIG_FILE_PATH << std::endl;
-        } catch (const nlohmann::json::parse_error& e) {
-            std::cerr << "Warning: Failed to parse config file '" << CONFIG_FILE_PATH << "'. Error: " << e.what()
-                      << ". Using default values." << std::endl;
-            boundary_config = nlohmann::json{}; // Reset to empty json on parse error
-        }
-    } else {
-        std::cout << "Info: Configuration file '" << CONFIG_FILE_PATH
-                  << "' not found. Creating a default config file with default values." << std::endl;
-
-        // 创建一个包含默认参数的JSON对象
-        nlohmann::json default_config;
-        default_config["alarm_dup_thr"] = 1.0f;
-
-        // 将默认配置写入文件
-        try {
-            std::ofstream ofs(CONFIG_FILE_PATH);
-            ofs << default_config.dump(4); // 使用4个空格缩进，使其更易读
-            ofs.close();
-            std::cout << "Successfully created a default config file at '" << CONFIG_FILE_PATH << "'." << std::endl;
-        } catch (const std::exception& e) {
-            std::cerr << "Error: Failed to create default config file. Reason: " << e.what() << std::endl;
-        }
-        // 无论文件是否创建成功，都为本次运行加载默认配置，以防止传入一个空的（null）JSON对象。
-        boundary_config = default_config;
-    }
-
     try {
         bool _use_fid_time = (MODE == "load");
         // ======================= 【MODIFIED】 =======================
@@ -236,7 +202,6 @@ int main(int argc, char **argv) {
                 MODE,                     // 明确传递，覆盖默认值
                 "dla",                    // 明确传递
                 FEATURE_CACHE_JSON,       // 明确传递，覆盖默认值
-                boundary_config,          // 明确传递，覆盖默认值
                 _use_fid_time,
                 true,                     // enable_alarm_saving
                 true,                     // processing_enabled: 新增算法总开关, 设置为 false 可禁用所有处理
