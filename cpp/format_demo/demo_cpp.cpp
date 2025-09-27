@@ -166,7 +166,7 @@ int main(int argc, char **argv) {
     // 新增：是否在启动时清除现有的数据库。true: 清除, false: 加载
     bool CLEAR_DB_ON_STARTUP = true;
 
-    std::string MODE = "load"; // realtime or load
+    std::string MODE = "realtime"; // realtime or load
     if (argc > 1) {
         MODE = argv[1];
     }

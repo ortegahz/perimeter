@@ -394,7 +394,8 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
         try {
             // 初始化将在主线程中使用的 ReID 模型，分配给 DLA Core 1
             reid_model_ = std::make_unique<PersonReidDLA>(m_reid_model_path, REID_INPUT_WIDTH, REID_INPUT_HEIGHT,
-                                                          1, "/home/nvidia/VSCodeProject/smartboxcore/models/reid_model.dla.engine");
+                                                          1,
+                                                          "/home/nvidia/VSCodeProject/smartboxcore/models/reid_model.dla.engine");
             std::cout << "Initialized Re-ID model on DLA 1 for main thread." << std::endl;
             face_analyzer_ = std::make_unique<FaceAnalyzer>(m_face_det_model_path, m_face_rec_model_path);
             std::string provider = use_gpu ? "GPU" : "DLA";
@@ -412,7 +413,8 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
                 if (!parent_path.empty()) std::filesystem::create_directories(parent_path);
                 std::cout << "Feature caching to JSON is ENABLED." << std::endl;
             } else {
-                 std::cout << "Feature caching is requested but feature_cache_path is empty. Caching DISABLED." << std::endl;
+                std::cout << "Feature caching is requested but feature_cache_path is empty. Caching DISABLED."
+                          << std::endl;
             }
         }
     } else if (mode_ == "load") {
@@ -684,7 +686,8 @@ void FeatureProcessor::_io_worker() {
                 }
                 case IoTaskType::BACKUP_ALARM: {
                     // --- 文件系统备份 ---
-                    std::string dir_name = task.gid + "_" + task.tid_str + "_n" + std::to_string(task.n) + "_" + task.timestamp;
+                    std::string dir_name =
+                            task.gid + "_" + task.tid_str + "_n" + std::to_string(task.n) + "_" + task.timestamp;
                     std::filesystem::path dst_dir = std::filesystem::path(ALARM_DIR) / dir_name;
 
                     std::filesystem::path src_dir = std::filesystem::path(SAVE_DIR) / task.gid;
@@ -703,12 +706,14 @@ void FeatureProcessor::_io_worker() {
                     std::filesystem::path proto_face_dir_in_alarm = dst_dir / "faces";
                     if (std::filesystem::exists(proto_face_dir_in_alarm)) {
                         std::filesystem::copy(proto_face_dir_in_alarm, seq_face_dir,
-                                              std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+                                              std::filesystem::copy_options::recursive |
+                                              std::filesystem::copy_options::overwrite_existing);
                     }
                     std::filesystem::path proto_body_dir_in_alarm = dst_dir / "bodies";
                     if (std::filesystem::exists(proto_body_dir_in_alarm)) {
                         std::filesystem::copy(proto_body_dir_in_alarm, seq_body_dir,
-                                              std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing);
+                                              std::filesystem::copy_options::recursive |
+                                              std::filesystem::copy_options::overwrite_existing);
                     }
 
                     // --- 数据库备份 ---
@@ -781,7 +786,8 @@ void FeatureProcessor::_io_worker() {
                     break;
                 }
                 case IoTaskType::SAVE_ALARM_INFO: {
-                    std::string dir_name = task.gid + "_" + task.tid_str + "_n" + std::to_string(task.n) + "_" + task.timestamp;
+                    std::string dir_name =
+                            task.gid + "_" + task.tid_str + "_n" + std::to_string(task.n) + "_" + task.timestamp;
                     auto dst_path = std::filesystem::path(ALARM_DIR) / dir_name / "frame_info.txt";
 
                     // BACKUP_ALARM 任务会创建目录，但为了安全起见，这里也确保一下
@@ -798,7 +804,8 @@ void FeatureProcessor::_io_worker() {
                     break;
                 }
                 case IoTaskType::SAVE_ALARM_CONTEXT_IMAGES: {
-                    std::string dir_name = task.gid + "_" + task.tid_str + "_n" + std::to_string(task.n) + "_" + task.timestamp;
+                    std::string dir_name =
+                            task.gid + "_" + task.tid_str + "_n" + std::to_string(task.n) + "_" + task.timestamp;
                     auto base_path = std::filesystem::path(ALARM_DIR) / dir_name;
 
                     std::filesystem::create_directories(base_path);
@@ -1210,8 +1217,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         }
     }
 
-    // ======================= 【MODIFIED】 =======================
-    // Reworked feature extraction pipeline for parallelism
     if (mode_ == "realtime") {
         nlohmann::json extracted_features_for_this_frame;
         const int H = full_frame.rows;
@@ -1219,7 +1224,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
         // --- DEADLOCK FIX: 串行执行DLA任务 ---
         // 1. 首先在主线程中执行Re-ID特征提取 (使用DLA Core 1)
-        for (const auto &det : dets) {
+        for (const auto &det: dets) {
             if (det.class_id != 0) continue;
 
             cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
@@ -1231,7 +1236,18 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
             if (!is_long_patch(patch)) continue;
 
-            cv::cuda::GpuMat feat_mat_gpu = reid_model_->extract_feat(gpu_patch);
+            // --- HANG FIX: Wrap Re-ID DLA call with a timeout ---
+            cv::cuda::GpuMat feat_mat_gpu;
+            auto fut_reid = std::async(std::launch::async, [&]() {
+                return reid_model_->extract_feat(gpu_patch);
+            });
+
+            if (fut_reid.wait_for(std::chrono::milliseconds(300)) == std::future_status::ready) {
+                feat_mat_gpu = fut_reid.get();
+            } else {
+                std::cerr << "Re-ID DLA inference timeout for TID " << det.id << ", cam_id: " << stream_id << std::endl;
+                continue; // Skip this detection if DLA hangs
+            }
             if (feat_mat_gpu.empty()) continue;
 
             cv::Mat feat_mat_cpu;
@@ -1249,7 +1265,17 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         // 2. 然后在主线程中执行人脸分析 (使用 DLA Core 0)
         std::vector<Face> internal_face_info;
         if (face_enabled && face_analyzer_) {
-            internal_face_info = face_analyzer_->detect(full_frame);
+            // --- HANG FIX: Wrap Face Detection DLA call with a timeout ---
+            auto fut_detect = std::async(std::launch::async, [&]() {
+                return face_analyzer_->detect(full_frame);
+            });
+            if (fut_detect.wait_for(std::chrono::milliseconds(300)) == std::future_status::ready) {
+                internal_face_info = fut_detect.get();
+            } else {
+                std::cerr << "Face detection DLA timeout for cam_id: " << stream_id << std::endl;
+                // Timeout: internal_face_info will remain empty, gracefully skipping subsequent logic.
+            }
+
             if (!internal_face_info.empty()) {
                 const int H = full_frame.rows;
                 const int W = full_frame.cols;
@@ -1276,7 +1302,20 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     if (face_roi.width < 32 || face_roi.height < 32) continue;
 
                     try {
-                        face_analyzer_->get_embedding(full_frame, face_global_coords);
+                        // --- HANG FIX: Wrap Face Embedding DLA call with a timeout ---
+                        auto fut_face_emb = std::async(std::launch::async, [&]() {
+                            // This lambda modifies the captured reference face_global_coords
+                            face_analyzer_->get_embedding(full_frame, face_global_coords);
+                        });
+
+                        if (fut_face_emb.wait_for(std::chrono::milliseconds(300)) != std::future_status::ready) {
+                            std::cerr << "Face Embedding DLA inference timeout for TID " << det.id << ", cam_id: "
+                                      << stream_id << std::endl;
+                            continue; // Skip this face if DLA hangs
+                        }
+                        // call get() to ensure completion and propagate exceptions if any
+                        fut_face_emb.get();
+
                         if (face_global_coords.embedding.empty()) continue;
                         used_face_indices.insert(unique_face_idx);
 
@@ -1299,7 +1338,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         if (m_enable_feature_caching) {
                             extracted_features_for_this_frame[tid_str]["face_feat"] = f_emb;
                         }
-                    } catch (const std::exception &) { continue; }
+                    } catch (const std::exception &e) {
+                        std::cerr << "Exception during face processing for TID " << det.id << ": " << e.what()
+                                  << std::endl;
+                        continue;
+                    }
                 }
             }
         }
@@ -1312,7 +1355,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     } else if (mode_ == "load") { // 注意：这里的 now_stamp 是基于 fid 的
         _load_features_from_cache(cam_id, fid, full_frame, dets, now_stamp);
     }
-    // ======================= 【修改结束】=======================
 
     // ======================= 【FIXED】 =======================
     // 关键修复：在主循环入口处增加过滤器，确保只处理属于当前摄像头(stream_id)的轨迹。
@@ -1402,7 +1444,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
-                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst, dets, stream_id, body_p,
+                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst, dets,
+                                         stream_id, body_p,
                                          face_p, triggered_alarms_this_frame);
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
@@ -1417,7 +1460,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
             new_gid_state[tid_str].last_new_fid = fid;
             int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-            _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets, stream_id, body_p,
+            _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets, stream_id,
+                                     body_p,
                                      face_p, triggered_alarms_this_frame);
 
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
@@ -1430,7 +1474,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                 new_gid_state[tid_str] = {0, fid, 0};
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets, stream_id, body_p,
+                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets,
+                                         stream_id, body_p,
                                          face_p, triggered_alarms_this_frame);
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
@@ -1448,7 +1493,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                     new_gid_state[tid_str] = {0, fid, 0};
                     int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets, stream_id, body_p,
+                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets,
+                                             stream_id, body_p,
                                              face_p, triggered_alarms_this_frame);
 
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
