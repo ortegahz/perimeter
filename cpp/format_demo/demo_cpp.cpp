@@ -323,6 +323,8 @@ int main(int argc, char **argv) {
                         std::cout << "  - Recognition Count (n): " << alarm.n << "\n";
                         std::cout << "  - First Seen Time: " << format_ntp_timestamp(alarm.first_seen_timestamp)
                                   << "\n";
+                        std::cout << "  - Face Clarity: " << std::fixed << std::setprecision(1) << alarm.face_clarity_score << "/100\n"
+                                  << "\n";
                     }
                 }
                 // ======================= 【修改结束】 =======================

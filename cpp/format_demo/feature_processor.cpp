@@ -19,6 +19,34 @@
 //#define ENABLE_DISK_IO
 // ======================= 【修改结束】 =======================
 
+// ======================= 【NEW: 人脸清晰度估计算法】 =======================
+/**
+ * @brief 使用拉普拉斯算子的方差来估计图像清晰度，并将其映射到 0-100 的范围。
+ * @param face_patch RGB格式的人脸图像块。
+ * @return 0.0f (非常模糊) 到 100.0f (非常清晰) 的浮点数分数。
+ */
+static float calculate_clarity_score(const cv::Mat& face_patch) {
+    if (face_patch.empty()) {
+        return 0.0f;
+    }
+
+    cv::Mat gray;
+    cv::cvtColor(face_patch, gray, cv::COLOR_RGB2GRAY); // 输入是RGB，转为灰度
+    cv::Mat laplacian;
+    cv::Laplacian(gray, laplacian, CV_64F);
+
+    cv::Scalar mean, stddev;
+    cv::meanStdDev(laplacian, mean, stddev);
+    double variance = stddev.val[0] * stddev.val[0];
+
+    // 将方差非线性地映射到 0-100 分。阈值是经验值，可根据实际效果调整。
+    const float min_var = 20.0f;  // 方差低于此值，清晰度视为0
+    const float max_var = 500.0f; // 方差高于此值，清晰度视为100
+    float score = ((variance - min_var) / (max_var - min_var)) * 100.0f;
+    return std::max(0.0f, std::min(100.0f, score));
+}
+// ======================= 【修改结束】 =======================
+
 const int REID_INPUT_WIDTH = 128;
 const int REID_INPUT_HEIGHT = 256;
 
@@ -1092,7 +1120,8 @@ void FeatureProcessor::_check_and_process_alarm(
         const cv::Mat &face_p,
         std::vector<std::tuple<std::string, std::string, std::string, int, bool>> &triggered_alarms_this_frame,
         float w_face,
-        float face_det_score) {
+        float face_det_score,
+        float face_clarity) {
 
     // 新增逻辑：当人脸权重为 1.0 且人脸检测置信度 ≤ 0.95 时，不触发报警
     if (w_face >= 0.999f && face_det_score <= 0.95f) {
@@ -1118,6 +1147,8 @@ void FeatureProcessor::_check_and_process_alarm(
                 }
             }
             // 新增：将识别次数 n 赋值给告警信息
+            alarm_info.n = n;
+            alarm_info.face_clarity_score = face_clarity; // 新增：赋值人脸清晰度分数
             alarm_info.n = n;
 
             if (alarm_info.person_bbox.area() > 0) {
@@ -1160,6 +1191,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     std::vector<std::tuple<std::string, std::string, std::string, int, bool>> triggered_alarms_this_frame; // <gid, tid_str, timestamp, n, was_newly_saved>
     current_frame_face_boxes_.clear(); // 每帧开始时清空
     current_frame_face_scores_.clear(); // 清空人脸置信度表
+    current_frame_face_clarity_.clear(); // 新增：清空人脸清晰度表
 
     const auto &stream_id = cam_id;
 
@@ -1340,6 +1372,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         first_seen_tid.try_emplace(tid_str, now_stamp);
                         current_frame_face_boxes_[tid_str] = face_global_coords.bbox;
                         current_frame_face_scores_[tid_str] = face_global_coords.det_score; // 记录置信度
+                        // 新增：计算并记录人脸清晰度
+                        float clarity = calculate_clarity_score(face_patch);
+                        current_frame_face_clarity_[tid_str] = clarity;
                         gpu_face_patch.download(face_patch);
                         agg_pool[tid_str].add_face(f_emb, face_patch.clone());
                         // ======================= 【修改结束】 =======================
@@ -1456,8 +1491,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst,
                                          dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                          w_face,
-                                         current_frame_face_scores_.count(tid_str)
-                                             ? current_frame_face_scores_.at(tid_str) : 0.f);
+                                         current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
+                                         current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
+                                         );
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
             } else {
@@ -1474,8 +1510,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
                                      dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                      w_face,
-                                     current_frame_face_scores_.count(tid_str)
-                                         ? current_frame_face_scores_.at(tid_str) : 0.f);
+                                     current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
+                                     current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
+                                     );
 
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
         } else if (!cand_gid.empty() && score >= THR_NEW_GID) {
@@ -1490,8 +1527,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
                                          dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                          w_face,
-                                         current_frame_face_scores_.count(tid_str)
-                                             ? current_frame_face_scores_.at(tid_str) : 0.f);
+                                         current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
+                                         current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
+                                         );
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
             } else {
@@ -1511,8 +1549,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
                                              dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                              w_face,
-                                             current_frame_face_scores_.count(tid_str)
-                                                 ? current_frame_face_scores_.at(tid_str) : 0.f);
+                                             current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
+                                             current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
+                                             );
 
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
                 } else {

@@ -228,6 +228,7 @@ struct AlarmTriggerInfo {
     cv::Rect2d face_bbox;           // 当前帧中该GID关联的人脸框 (如果找到)
     cv::Mat latest_body_patch;      // GID库中最新的（或最具代表性的）行人图块
     cv::Mat latest_face_patch;      // GID库中最新的（或最具代表性的）人脸图块
+    float face_clarity_score = 0.0f; // 新增：人脸清晰度分数 (0-100)
     int n = 0;                      // n（识别次数）
 };
 
@@ -411,7 +412,8 @@ private:
             const cv::Mat &face_p,
             std::vector<std::tuple<std::string, std::string, std::string, int, bool>> &triggered_alarms_this_frame,
             float w_face,
-            float face_det_score);
+            float face_det_score,
+            float face_clarity);
     // ======================= 【修改结束】 =======================
 
     // I/O线程相关
@@ -472,4 +474,6 @@ private:
     std::map<std::string, cv::Rect2d> current_frame_face_boxes_; // 临时存储TID-FaceBbox映射
     // 新增：临时存储本帧每个 TID 对应的人脸检测置信度
     std::map<std::string, float> current_frame_face_scores_;
+    // 新增：临时存储本帧每个 TID 对应的人脸清晰度分数
+    std::map<std::string, float> current_frame_face_clarity_;
 };
