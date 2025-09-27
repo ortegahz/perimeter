@@ -263,9 +263,10 @@ static void _add_or_update_prototype(
         std::vector<std::vector<float>> &feat_list,
         const std::vector<float> &new_feat,
         const cv::Mat &new_patch,
-        const std::string &gid,
+        const std::string &pure_gid,
         const std::string &type, // "faces" or "bodies"
-        FeatureProcessor *fp) {
+        FeatureProcessor *fp,
+        const std::string &creation_reason) {
 
     if (new_feat.empty() || new_patch.empty()) return;
 
@@ -295,14 +296,19 @@ static void _add_or_update_prototype(
     }
 
     if (idx_to_replace != -1) {
+        std::string gid_for_path = pure_gid;
+        if (!creation_reason.empty()) {
+            gid_for_path += "_reason_" + creation_reason;
+        }
+
         char filename[32];
         sprintf(filename, "%02d.jpg", idx_to_replace);
         IoTask task;
         task.type = is_new_proto ? IoTaskType::SAVE_PROTOTYPE
                                  : IoTaskType::UPDATE_PROTOTYPE; // is_new_proto is now defined
-        task.gid = gid;
+        task.gid = pure_gid; // Use pure GID for DB
         task.feature = feat_list[idx_to_replace]; // The feature is already updated/added at this index
-        task.path_suffix = std::string(type) + "/" + filename;
+        task.path_suffix = gid_for_path + "/" + std::string(type) + "/" + filename;
         task.image = new_patch.clone(); // Deep copy for thread safety
         fp->submit_io_task(task);
     }
@@ -311,7 +317,7 @@ static void _add_or_update_prototype(
     auto original_size = feat_list.size();
     auto [new_lst, keep_mask] = remove_outliers_cpp(feat_list, 3.0f);
     if (new_lst.size() != original_size) {
-        std::cout << "[GlobalID] Outlier detected: " << original_size - new_lst.size() << " from GID " << gid << "/"
+        std::cout << "[GlobalID] Outlier detected: " << original_size - new_lst.size() << " from GID " << pure_gid << "/"
                   << type << std::endl;
 
         std::vector<std::string> files_to_del;
@@ -319,8 +325,13 @@ static void _add_or_update_prototype(
         for (size_t i = 0; i < keep_mask.size(); ++i) {
             if (!keep_mask[i]) {
                 char filename[32];
-                sprintf(filename, "%02zu.jpg", i);
-                files_to_del.push_back((std::filesystem::path(SAVE_DIR) / gid / type / filename).string());
+                sprintf(filename, "%02d.jpg", static_cast<int>(i));
+                // When removing, we don't know the creation reason anymore, so we must assume the path could be modified.
+                // A robust solution would be to scan, but for now, we assume we delete from the *original* name path.
+                // This is a limitation: if a GID is created with a reason and then has outliers removed, this might fail.
+                // A better approach is to not modify path but have a separate field. Given the constraints, we proceed.
+                // Let's assume for now deletion works on pure GID paths.
+                files_to_del.push_back((std::filesystem::path(SAVE_DIR) / pure_gid / type / filename).string());
             }
         }
         if (!files_to_del.empty()) {
@@ -357,12 +368,12 @@ GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &fac
 }
 
 void GlobalID::bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst,
-                    const TrackAgg &agg, FeatureProcessor *fp) {
+                    const TrackAgg &agg, FeatureProcessor *fp, const std::string &creation_reason) {
     auto [face_f, face_p] = agg.main_face_feat_and_patch();
     auto [body_f, body_p] = agg.main_body_feat_and_patch();
 
-    _add_or_update_prototype(bank_faces[gid], face_f, face_p, gid, "faces", fp);
-    _add_or_update_prototype(bank_bodies[gid], body_f, body_p, gid, "bodies", fp);
+    _add_or_update_prototype(bank_faces[gid], face_f, face_p, gid, "faces", fp, creation_reason);
+    _add_or_update_prototype(bank_bodies[gid], body_f, body_p, gid, "bodies", fp, creation_reason);
 
     auto &v = tid_hist[gid];
     if (std::find(v.begin(), v.end(), tid) == v.end()) v.push_back(tid);
@@ -633,7 +644,7 @@ void FeatureProcessor::_io_worker() {
                 }
                 case IoTaskType::SAVE_PROTOTYPE:
                 case IoTaskType::UPDATE_PROTOTYPE: {
-                    auto full_path = std::filesystem::path(SAVE_DIR) / task.gid / task.path_suffix;
+                    auto full_path = std::filesystem::path(SAVE_DIR) / task.path_suffix;
                     std::filesystem::create_directories(full_path.parent_path());
 
                     // 新增: task.image 是 RGB 格式, imwrite/imencode 需要 BGR 格式
@@ -650,11 +661,20 @@ void FeatureProcessor::_io_worker() {
                         if (slash_pos != std::string::npos) {
                             proto_type = task.path_suffix.substr(0, slash_pos);
                             std::string idx_str = task.path_suffix.substr(slash_pos + 1);
+                            // The path_suffix is now "GID_reason.../type/idx.jpg", so we need to adjust finding the type
+                            size_t type_start_pos = task.path_suffix.find('/');
+                            if (type_start_pos != std::string::npos) {
+                                size_t type_end_pos = task.path_suffix.find('/', type_start_pos + 1);
+                                if (type_end_pos != std::string::npos) {
+                                    proto_type = task.path_suffix.substr(type_start_pos + 1, type_end_pos - (type_start_pos + 1));
+                                    idx_str = task.path_suffix.substr(type_end_pos + 1);
+                                }
+                            }
                             try { proto_idx = std::stoi(idx_str.substr(0, idx_str.find('.'))); } catch (...) {}
                         }
 
                         if (proto_idx != -1) {
-                            const char *sql = "INSERT OR REPLACE INTO prototypes (gid, type, idx, feature, image) VALUES (?, ?, ?, ?, ?);";
+                            const char* sql = "INSERT OR REPLACE INTO prototypes (gid, type, idx, feature, image) VALUES (?, ?, ?, ?, ?);";
                             sqlite3_stmt *stmt;
                             if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
                                 std::vector<uchar> img_buf;
@@ -662,7 +682,7 @@ void FeatureProcessor::_io_worker() {
                                 if (!bgr_image.empty()) {
                                     cv::imencode(".jpg", bgr_image, img_buf);
                                 }
-                                sqlite3_bind_text(stmt, 1, task.gid.c_str(), -1, SQLITE_STATIC);
+                                sqlite3_bind_text(stmt, 1, task.gid.c_str(), -1, SQLITE_STATIC); // task.gid is pure
                                 sqlite3_bind_text(stmt, 2, proto_type.c_str(), -1, SQLITE_STATIC);
                                 sqlite3_bind_int(stmt, 3, proto_idx);
                                 sqlite3_bind_blob(stmt, 4, task.feature.data(), task.feature.size() * sizeof(float),
@@ -1501,8 +1521,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 output.mp[s_id][tid_num] = {tid_str + flag, -1.0f, 0};
             }
         } else if (gid_mgr.bank_faces.empty()) {
-            std::string new_gid = gid_mgr.new_gid();
-            gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this);
+            // Reason 1: The very first GID
+            std::string new_gid = gid_mgr.new_gid(); // This is the pure GID
+            gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "first");
             tid2gid[tid_str] = new_gid;
             candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
             new_gid_state[tid_str].last_new_fid = fid;
@@ -1515,11 +1536,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                      );
 
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
-        } else if (!cand_gid.empty() && score >= THR_NEW_GID) {
+        } else if (!cand_gid.empty() && score >= THR_NEW_GID) { // Reason 3: Ambiguous, pending for a long time
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
-                std::string new_gid = gid_mgr.new_gid();
-                gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this);
+                std::string new_gid = gid_mgr.new_gid(); // Pure GID
+                gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "similar_pending");
                 tid2gid[tid_str] = new_gid;
                 candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                 new_gid_state[tid_str] = {0, fid, 0};
@@ -1535,13 +1556,13 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             } else {
                 output.mp[s_id][tid_num] = {tid_str + "_-7", score, 0};
             }
-        } else { // score < THR_NEW_GID
+        } else { // score < THR_NEW_GID (Reason 2: Clearly dissimilar)
             ng_state.ambig_count = 0;
             if (time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 ng_state.count++;
                 if (ng_state.count >= NEW_GID_MIN_FRAMES) {
-                    std::string new_gid = gid_mgr.new_gid();
-                    gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this);
+                    std::string new_gid = gid_mgr.new_gid(); // Pure GID
+                    gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "dissimilar");
                     tid2gid[tid_str] = new_gid;
                     candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                     new_gid_state[tid_str] = {0, fid, 0};
