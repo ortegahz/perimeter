@@ -409,7 +409,9 @@ private:
             const std::string &stream_id,
             const cv::Mat &body_p,
             const cv::Mat &face_p,
-            std::vector<std::tuple<std::string, std::string, std::string, int, bool>> &triggered_alarms_this_frame);
+            std::vector<std::tuple<std::string, std::string, std::string, int, bool>> &triggered_alarms_this_frame,
+            float w_face,
+            float face_det_score);
     // ======================= 【修改结束】 =======================
 
     // I/O线程相关
@@ -468,4 +470,6 @@ private:
     std::map<std::string, std::unique_ptr<IntrusionDetector>> intrusion_detectors;
     std::map<std::string, std::unique_ptr<LineCrossingDetector>> line_crossing_detectors;
     std::map<std::string, cv::Rect2d> current_frame_face_boxes_; // 临时存储TID-FaceBbox映射
+    // 新增：临时存储本帧每个 TID 对应的人脸检测置信度
+    std::map<std::string, float> current_frame_face_scores_;
 };

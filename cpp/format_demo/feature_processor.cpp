@@ -1090,7 +1090,14 @@ void FeatureProcessor::_check_and_process_alarm(
         const std::string &stream_id,
         const cv::Mat &body_p,
         const cv::Mat &face_p,
-        std::vector<std::tuple<std::string, std::string, std::string, int, bool>> &triggered_alarms_this_frame) {
+        std::vector<std::tuple<std::string, std::string, std::string, int, bool>> &triggered_alarms_this_frame,
+        float w_face,
+        float face_det_score) {
+
+    // 新增逻辑：当人脸权重为 1.0 且人脸检测置信度 ≤ 0.95 时，不触发报警
+    if (w_face >= 0.999f && face_det_score <= 0.95f) {
+        return;
+    }
 
     int n = gid_mgr.tid_hist.count(gid) ? (int) gid_mgr.tid_hist.at(gid).size() : 0;
 
@@ -1152,6 +1159,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     ProcessOutput output;
     std::vector<std::tuple<std::string, std::string, std::string, int, bool>> triggered_alarms_this_frame; // <gid, tid_str, timestamp, n, was_newly_saved>
     current_frame_face_boxes_.clear(); // 每帧开始时清空
+    current_frame_face_scores_.clear(); // 清空人脸置信度表
 
     const auto &stream_id = cam_id;
 
@@ -1331,6 +1339,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         // 新增：如果TID首次出现，记录其时间戳
                         first_seen_tid.try_emplace(tid_str, now_stamp);
                         current_frame_face_boxes_[tid_str] = face_global_coords.bbox;
+                        current_frame_face_scores_[tid_str] = face_global_coords.det_score; // 记录置信度
                         gpu_face_patch.download(face_patch);
                         agg_pool[tid_str].add_face(f_emb, face_patch.clone());
                         // ======================= 【修改结束】 =======================
@@ -1444,9 +1453,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
-                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst, dets,
-                                         stream_id, body_p,
-                                         face_p, triggered_alarms_this_frame);
+                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst,
+                                         dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                                         w_face,
+                                         current_frame_face_scores_.count(tid_str)
+                                             ? current_frame_face_scores_.at(tid_str) : 0.f);
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
             } else {
@@ -1460,9 +1471,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
             new_gid_state[tid_str].last_new_fid = fid;
             int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-            _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets, stream_id,
-                                     body_p,
-                                     face_p, triggered_alarms_this_frame);
+            _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
+                                     dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                                     w_face,
+                                     current_frame_face_scores_.count(tid_str)
+                                         ? current_frame_face_scores_.at(tid_str) : 0.f);
 
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
         } else if (!cand_gid.empty() && score >= THR_NEW_GID) {
@@ -1474,9 +1487,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                 new_gid_state[tid_str] = {0, fid, 0};
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets,
-                                         stream_id, body_p,
-                                         face_p, triggered_alarms_this_frame);
+                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
+                                         dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                                         w_face,
+                                         current_frame_face_scores_.count(tid_str)
+                                             ? current_frame_face_scores_.at(tid_str) : 0.f);
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
             } else {
@@ -1493,9 +1508,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                     new_gid_state[tid_str] = {0, fid, 0};
                     int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, dets,
-                                             stream_id, body_p,
-                                             face_p, triggered_alarms_this_frame);
+                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
+                                             dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                                             w_face,
+                                             current_frame_face_scores_.count(tid_str)
+                                                 ? current_frame_face_scores_.at(tid_str) : 0.f);
 
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
                 } else {
