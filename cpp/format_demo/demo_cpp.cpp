@@ -285,6 +285,8 @@ int main(int argc, char **argv) {
                 proc_config.reid_weight_by_cam[CAM_ID] = 0.4f;
                 proc_config.alarmDuration_ms_by_cam[CAM_ID] = 0;
 
+                proc_config.new_gid_time_window = 50;
+
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();
                 // ======================= 【MODIFIED】 =======================

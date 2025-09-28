@@ -95,6 +95,8 @@ struct ProcessConfig {
     // 新增: Key: cam_id, Value: 匹配灵敏度 (1-10级, 1为最高灵敏度, 10为最低)。
     // 1(最高) -> 0.1阈值, ..., 10(最低) -> 1.0阈值。
     std::map<std::string, int> sensitivity_by_cam;
+    // 新增: 同一TID两次创建新GID之间的最小帧数间隔，默认值非常大以避免频繁创建
+    int new_gid_time_window = 25 * 60 * 60 * 24;
     // 新增: 只有当 n > alarm_record_thresh 时，才将 GID 记录用于去重。
     int alarm_record_thresh = 3;
 };
