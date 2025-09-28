@@ -19,9 +19,15 @@ import queue
 import signal
 import subprocess
 
+import cv2
+import numpy as np
+
 # --- 常量定义 ---
 SENTINEL = None
 SHOW_SCALE = 0.5
+
+cv2.imshow("__init__", np.zeros((1, 1, 3), np.uint8))
+cv2.waitKey(1)
 
 # ------------ 内部模块 ------------
 from cores.byteTrackPipeline import ByteTrackPipeline
@@ -296,7 +302,7 @@ def main():
     pa.add_argument("--video1", default="rtsp://admin:1qaz2wsx@172.20.20.64")
     pa.add_argument("--video2", default="rtsp://admin:1qaz2wsx@172.20.20.150")
     pa.add_argument("--skip", type=int, default=2)
-    pa.add_argument("--display_mode", default="gst", choices=["gst", "local"],
+    pa.add_argument("--display_mode", default="local", choices=["gst", "local"],
                     help="显示模式: 'gst' 推流 或 'local' 本地窗口")
     args = pa.parse_args()
 
