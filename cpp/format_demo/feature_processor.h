@@ -95,6 +95,8 @@ struct ProcessConfig {
     // 新增: Key: cam_id, Value: 匹配灵敏度 (1-10级, 1为最高灵敏度, 10为最低)。
     // 1(最高) -> 0.1阈值, ..., 10(最低) -> 1.0阈值。
     std::map<std::string, int> sensitivity_by_cam;
+    // 新增: 只有当 n > alarm_record_thresh 时，才将 GID 记录用于去重。
+    int alarm_record_thresh = 3;
 };
 
 /* ---------- 数据结构定义 ---------- */
@@ -393,7 +395,7 @@ private:
 
     // ======================= 【MODIFIED: 函数签名变更】 =======================
     std::optional<std::tuple<std::string, std::string, bool>>
-    trigger_alarm(const std::string &tid_str, const std::string &gid, int n, const TrackAgg &agg, double frame_timestamp);
+    trigger_alarm(const std::string &tid_str, const std::string &gid, int n, const TrackAgg &agg, double frame_timestamp, int alarm_record_thresh);
     // ======================= 【修改结束】 =======================
 
     // ======================= 【NEW】 =======================

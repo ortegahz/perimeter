@@ -1100,7 +1100,7 @@ std::vector<float> FeatureProcessor::_gid_fused_rep(const std::string &gid) {
 // ======================= 【MODIFIED: 函数逻辑和签名变更】 =======================
 std::optional<std::tuple<std::string, std::string, bool>>
 FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &gid, int n, const TrackAgg &agg,
-                                double frame_timestamp) {
+                                double frame_timestamp, int alarm_record_thresh) {
     auto cur_rep = _gid_fused_rep(gid);
     if (cur_rep.empty()) return std::nullopt;
 
@@ -1116,11 +1116,17 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
         }
     }
 
-    // 如果程序执行到这里，说明这是一个全新的、不重复的报警 GID。
-    // 将其注册为新的“原始报警 GID”。
-    std::cout << "\n[ALARM] New original alarmer: " << gid << "." << std::endl;
-    alarmed.insert(gid);
-    alarm_reprs[gid] = cur_rep;
+    // 如果程序执行到这里，说明这是一个全新的、不重复的报警 GID (或者重复了一个未被记录的GID)。
+    // 根据 N 值决定是否将其注册为新的“原始报警 GID”以用于未来的去重。
+    if (n > alarm_record_thresh) {
+        std::cout << "\n[ALARM] New original alarmer registered for deduplication: " << gid
+                  << " (n=" << n << " > threshold=" << alarm_record_thresh << ")." << std::endl;
+        alarmed.insert(gid);
+        alarm_reprs[gid] = cur_rep;
+    } else {
+        std::cout << "\n[ALARM] GID " << gid << " triggered, but not registered for deduplication (n=" << n
+                  << " <= threshold=" << alarm_record_thresh << ")." << std::endl;
+    }
 
     // --- 新增：检查此TID是否已保存过报警 ---
     bool was_newly_saved = false;
@@ -1185,7 +1191,7 @@ void FeatureProcessor::_check_and_process_alarm(
     int n = gid_mgr.tid_hist.count(gid) ? (int) gid_mgr.tid_hist.at(gid).size() : 0;
 
     if (n >= config.alarm_cnt_th) {
-        if (auto alarm_data_opt = trigger_alarm(tid_str, gid, n, agg, now_stamp)) {
+        if (auto alarm_data_opt = trigger_alarm(tid_str, gid, n, agg, now_stamp, config.alarm_record_thresh)) {
             auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
 
             AlarmTriggerInfo alarm_info;

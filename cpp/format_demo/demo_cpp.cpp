@@ -277,6 +277,7 @@ int main(int argc, char **argv) {
                 ProcessConfig proc_config;
                 proc_config.alarm_cnt_th = 2;  // 示例：将全局告警计数阈值改为2
                 proc_config.sensitivity_by_cam[CAM_ID] = 5; // 示例: 设置为较高灵敏度 (1-10级, 1为最高, 对应阈值0.3)
+                proc_config.alarm_record_thresh = 3; // 新增：设置报警记录阈值, n>3时才记录GID用于去重
 
                 // 新增：人脸/ReID权重配置
                 proc_config.face_switch_by_cam[CAM_ID] = true;
