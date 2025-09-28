@@ -231,7 +231,7 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
 def main():
     mp.set_start_method("spawn", force=True)
     pa = argparse.ArgumentParser()
-    pa.add_argument("--video1", default="rtsp://admin:1QAZ2wsx@172.20.20.64")
+    pa.add_argument("--video1", default="rtsp://admin:1qaz2wsx@172.20.20.64")
     pa.add_argument("--video2", default="rtsp://admin:1qaz2wsx@172.20.20.150")
     pa.add_argument("--skip", type=int, default=2)
     args = pa.parse_args()
