@@ -1104,6 +1104,18 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
     auto cur_rep = _gid_fused_rep(gid);
     if (cur_rep.empty()) return std::nullopt;
 
+    // 如果程序执行到这里，说明这是一个全新的、不重复的报警 GID (或者重复了一个未被记录的GID)。
+    // 根据 N 值决定是否将其注册为新的“原始报警 GID”以用于未来的去重。
+    if (n >= alarm_record_thresh) {
+        std::cout << "\n[ALARM] New original alarmer registered for deduplication: " << gid
+                  << " (n=" << n << " > threshold=" << alarm_record_thresh << ")." << std::endl;
+        alarmed.insert(gid);
+        alarm_reprs[gid] = cur_rep;
+    } else {
+        std::cout << "\n[ALARM] GID " << gid << " triggered, but not registered for deduplication (n=" << n
+                  << " <= threshold=" << alarm_record_thresh << ")." << std::endl;
+    }
+
     // 检查当前 GID 是否与已有的“原始报警GID”相似
     for (const auto &[ogid, rep]: alarm_reprs) {
         // 关键修改：仅当 GID 不同但特征相似时，才抑制报警。
@@ -1114,18 +1126,6 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
                       << ogid << " (Similarity threshold: " << m_alarm_dup_thr << "). Suppressing this alarm." << std::endl;
             return std::nullopt; // 返回空 optional 来抑制报警
         }
-    }
-
-    // 如果程序执行到这里，说明这是一个全新的、不重复的报警 GID (或者重复了一个未被记录的GID)。
-    // 根据 N 值决定是否将其注册为新的“原始报警 GID”以用于未来的去重。
-    if (n > alarm_record_thresh) {
-        std::cout << "\n[ALARM] New original alarmer registered for deduplication: " << gid
-                  << " (n=" << n << " > threshold=" << alarm_record_thresh << ")." << std::endl;
-        alarmed.insert(gid);
-        alarm_reprs[gid] = cur_rep;
-    } else {
-        std::cout << "\n[ALARM] GID " << gid << " triggered, but not registered for deduplication (n=" << n
-                  << " <= threshold=" << alarm_record_thresh << ")." << std::endl;
     }
 
     // --- 新增：检查此TID是否已保存过报警 ---
