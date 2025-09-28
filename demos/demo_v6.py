@@ -19,17 +19,14 @@ import queue
 import signal
 import subprocess
 
-# --- 假装导入了这些模块，以使得代码能独立运行 ---
+# --- 常量定义 ---
 SENTINEL = None
 SHOW_SCALE = 0.5
-# ---------------------------------------------
 
 # ------------ 内部模块 ------------
 from cores.byteTrackPipeline import ByteTrackPipeline
 from cores.featureProcessor import *
 
-
-# ---------------------------------
 
 class LatestQueue(mpq.Queue):
     def __init__(self, maxsize=1, *, ctx=None):
@@ -229,25 +226,97 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
     logger.info(f"[Display-{my_stream_id}] finished")
 
 
+def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt):
+    """使用 cv2.imshow 在本地窗口中显示结果"""
+    tid2info = {}
+    window_name = f"Display - {my_stream_id}"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+    cv2.resizeWindow(window_name, 960, 540)  # 设置一个默认窗口大小
+
+    while not stop_evt.is_set():
+        try:
+            m = q_map2disp.get_nowait()
+            if m is SENTINEL:
+                q_det2disp.put(SENTINEL)
+                break
+            tid2info = m.get(my_stream_id, {})
+        except queue.Empty:
+            pass
+
+        pkt = q_det2disp.get()
+        if pkt is SENTINEL: break
+        stream_id, fid, frame, dets, all_faces = pkt
+
+        draw_boundaries(frame, my_stream_id)
+
+        for d in dets:
+            x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
+            tid, class_name = d['id'], d.get('class_name', 'UNK')
+            if d.get('class_id') == 0:
+                info_str, score, n_tid = tid2info.get(tid, (f"{my_stream_id}_{tid}_-1", -1.0, 0))
+
+                # Color logic for alarms and matches
+                if info_str.endswith("_AA") or info_str.endswith("_AL"):
+                    color = (0, 255, 255)  # Yellow for behavior alarm
+                elif n_tid >= 2:
+                    color = (0, 0, 255)  # Red for multi-cam match
+                else:
+                    color = (0, 255, 0)  # Green for normal
+
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(frame, f"{info_str} [{class_name}]", (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                            color, 2)
+                cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 40)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                            color, 1)
+            else:
+                color = (255, 182, 0)
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(frame, f"ID:{tid} [{class_name}]", (x, max(y - 5, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                            color, 1)
+
+        for face in all_faces:
+            x1, y1, x2, y2 = [int(v * SHOW_SCALE) for v in face["bbox"]]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            if "kps" in face and face["kps"]:
+                for kx, ky in face['kps']:
+                    cv2.circle(frame, (int(kx * SHOW_SCALE), int(ky * SHOW_SCALE)), 1, (0, 0, 255), 2)
+
+        cv2.imshow(window_name, frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            stop_evt.set()
+            break
+
+    cv2.destroyWindow(window_name)
+    logger.info(f"[Display-{my_stream_id}] finished")
+
+
 def main():
     mp.set_start_method("spawn", force=True)
     pa = argparse.ArgumentParser()
     pa.add_argument("--video1", default="rtsp://admin:1qaz2wsx@172.20.20.64")
     pa.add_argument("--video2", default="rtsp://admin:1qaz2wsx@172.20.20.150")
     pa.add_argument("--skip", type=int, default=2)
+    pa.add_argument("--display_mode", default="gst", choices=["gst", "local"],
+                    help="显示模式: 'gst' 推流 或 'local' 本地窗口")
     args = pa.parse_args()
 
     stop_evt = mp.Event()
     q_det2feat, q_map2disp = LatestQueue(1), LatestQueue(1)
     q_det2disp1, q_det2disp2 = LatestQueue(1), LatestQueue(1)
 
+    if args.display_mode == 'local':
+        display_target = local_display_proc
+        kwargs1, kwargs2 = {}, {}
+    else:  # gst
+        display_target = display_proc
+        kwargs1 = {"host": "127.0.0.1", "port": 5000, "fps_exp": 25}
+        kwargs2 = {"host": "127.0.0.1", "port": 5001, "fps_exp": 25}
+
     procs = [
         mp.Process(target=dec_det_proc, args=("cam1", args.video1, q_det2feat, q_det2disp1, stop_evt, args.skip)),
-        mp.Process(target=display_proc, args=("cam1", q_det2disp1, q_map2disp, stop_evt),
-                   kwargs={"host": "127.0.0.1", "port": 5000, "fps_exp": 25}),
+        mp.Process(target=display_target, args=("cam1", q_det2disp1, q_map2disp, stop_evt), kwargs=kwargs1),
         mp.Process(target=dec_det_proc, args=("cam2", args.video2, q_det2feat, q_det2disp2, stop_evt, args.skip)),
-        mp.Process(target=display_proc, args=("cam2", q_det2disp2, q_map2disp, stop_evt),
-                   kwargs={"host": "127.0.0.1", "port": 5001, "fps_exp": 25}),
+        mp.Process(target=display_target, args=("cam2", q_det2disp2, q_map2disp, stop_evt), kwargs=kwargs2),
         mp.Process(target=feature_proc, args=(q_det2feat, q_map2disp, stop_evt, BOUNDARY_CONFIG))
     ]
     [p.start() for p in procs]
