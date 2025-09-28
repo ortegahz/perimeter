@@ -11,7 +11,7 @@ except ImportError:
     sys.exit(1)
 
 
-def create_identity_model(onnx_path="identity.onnx"):
+def create_identity_model(onnx_path="/home/manu/tmp/identity.onnx"):
     """
     生成一个最简单的 y = x 的 ONNX 模型，方便做推理验证
     """
@@ -25,6 +25,14 @@ def create_identity_model(onnx_path="identity.onnx"):
 
     graph = helper.make_graph([node], "identity_graph", [X], [Y])
     model = helper.make_model(graph)
+
+    # ---- 兼容旧版 onnxruntime：降级 IR 与 opset ------------
+    model.ir_version = 9  # ORT ≤1.16 只识别到 IR 9
+    for opset in model.opset_import:
+        if opset.domain in ("", "ai.onnx"):
+            opset.version = 20  # 您的 ORT 最高支持 opset 20
+    # --------------------------------------------------------
+
     onnx.save(model, onnx_path)
     return onnx_path
 

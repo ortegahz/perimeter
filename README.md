@@ -1,6 +1,10 @@
 # perimeter
 perimeter security algorithm
 
+# install
+pip install onnxruntime-gpu==1.19.0
+export LD_LIBRARY_PATH=/home/manu/anaconda3/envs/yolo/lib/python3.8/site-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
+
 # dla
 /usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/w600k_r50_simplified.onnx --saveEngine=w600k_r50_simplified.dla.engine --useDLACore=0 --allowGPUFallback --verbose
 /usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/model.onnx --saveEngine=/mnt/nfs/w600k_r50_simplified.dla.engine --useDLACore=0 --allowGPUFallback --verbose
