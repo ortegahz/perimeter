@@ -84,8 +84,9 @@ def dec_det_proc(stream_id, src, q_det2feat, q_det2disp, stop_evt, skip):
             q_det2disp.put((stream_id, fid, small, dets, face_info))
             # === 修改这里：把 face_info 和 full_frame 一起传给 feature_proc ===
             q_det2feat.put({
-                "packet": (stream_id, fid, patches, dets),
-                "face_info": face_info,
+                "cam_id": stream_id,
+                "fid": fid,
+                "dets": dets,
                 "full_frame": frm
             })
     finally:
