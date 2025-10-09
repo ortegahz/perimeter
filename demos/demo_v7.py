@@ -233,11 +233,11 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
 
 
 def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt):
-    """使用 cv2.imshow 在本地窗口中显示结果"""
+    """使用 cv2.imshow 在本地窗口中显示结果，并自动全屏"""
     tid2info = {}
     window_name = f"Display - {my_stream_id}"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
-    cv2.resizeWindow(window_name, 960, 540)  # 设置一个默认窗口大小
+    is_fullscreen = False
 
     while not stop_evt.is_set():
         try:
@@ -287,6 +287,10 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt):
                 for kx, ky in face['kps']:
                     cv2.circle(frame, (int(kx * SHOW_SCALE), int(ky * SHOW_SCALE)), 1, (0, 0, 255), 2)
 
+        if not is_fullscreen:
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            is_fullscreen = True
+
         cv2.imshow(window_name, frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             stop_evt.set()
@@ -320,14 +324,17 @@ def main():
 
     # Always open video1
     q_det2disp1 = LatestQueue(1)
-    procs.append(mp.Process(target=dec_det_proc, args=("cam1", args.video1, q_det2feat, q_det2disp1, stop_evt, args.skip)))
+    procs.append(
+        mp.Process(target=dec_det_proc, args=("cam1", args.video1, q_det2feat, q_det2disp1, stop_evt, args.skip)))
     procs.append(mp.Process(target=display_target, args=("cam1", q_det2disp1, q_map2disp, stop_evt), kwargs=kwargs1))
 
     # Only open video2 if it's not an empty string
     if args.video2:
         q_det2disp2 = LatestQueue(1)
-        procs.append(mp.Process(target=dec_det_proc, args=("cam2", args.video2, q_det2feat, q_det2disp2, stop_evt, args.skip)))
-        procs.append(mp.Process(target=display_target, args=("cam2", q_det2disp2, q_map2disp, stop_evt), kwargs=kwargs2))
+        procs.append(
+            mp.Process(target=dec_det_proc, args=("cam2", args.video2, q_det2feat, q_det2disp2, stop_evt, args.skip)))
+        procs.append(
+            mp.Process(target=display_target, args=("cam2", q_det2disp2, q_map2disp, stop_evt), kwargs=kwargs2))
 
     procs.append(mp.Process(target=feature_proc, args=(q_det2feat, q_map2disp, stop_evt, BOUNDARY_CONFIG)))
     [p.start() for p in procs]
