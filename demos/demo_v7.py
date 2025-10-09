@@ -169,7 +169,7 @@ def draw_boundaries(frame, stream_id):
         cv2.putText(frame, "Crossing Line", label_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
 
-def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps_exp):
+def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps_exp, simple_display=False):
     gst, first = None, True
     tid2info = {}
     while not stop_evt.is_set():
@@ -200,15 +200,31 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
                 else:
                     color = (0, 255, 0)  # Green for normal
 
+                # --- Text display logic ---
+                gid_part = None
+                display_text = ""
+                parts = info_str.split('_')
+                for part in parts:
+                    if part.startswith('G') and part[1:].isdigit():
+                        gid_part = part
+                        break
+
+                if simple_display:
+                    if gid_part:
+                        display_text = f"{gid_part}"
+                else:
+                    display_text = f"{info_str}"
+
                 cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-                cv2.putText(frame, f"{info_str} [{class_name}]", (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                            color, 2)
-                cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 40)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            color, 1)
+                if display_text:
+                    cv2.putText(frame, display_text, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                if (simple_display and gid_part) or not simple_display:
+                    cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 40)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                color, 1)
             else:
                 color = (255, 182, 0)
                 cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-                cv2.putText(frame, f"ID:{tid} [{class_name}]", (x, max(y - 5, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                cv2.putText(frame, f"ID:{tid}", (x, max(y - 5, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                             color, 1)
 
         for face in all_faces:
@@ -232,7 +248,7 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
     logger.info(f"[Display-{my_stream_id}] finished")
 
 
-def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt):
+def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_display=False):
     """使用 cv2.imshow 在本地窗口中显示结果，并自动全屏"""
     tid2info = {}
     window_name = f"Display - {my_stream_id}"
@@ -269,15 +285,31 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt):
                 else:
                     color = (0, 255, 0)  # Green for normal
 
+                # --- Text display logic ---
+                gid_part = None
+                display_text = ""
+                parts = info_str.split('_')
+                for part in parts:
+                    if part.startswith('G') and part[1:].isdigit():
+                        gid_part = part
+                        break
+
+                if simple_display:
+                    if gid_part:
+                        display_text = f"{gid_part}"
+                else:
+                    display_text = f"{info_str}"
+
                 cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-                cv2.putText(frame, f"{info_str} [{class_name}]", (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                            color, 2)
-                cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 40)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                            color, 1)
+                if display_text:
+                    cv2.putText(frame, display_text, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                if (simple_display and gid_part) or not simple_display:
+                    cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 40)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                color, 1)
             else:
                 color = (255, 182, 0)
                 cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-                cv2.putText(frame, f"ID:{tid} [{class_name}]", (x, max(y - 5, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                cv2.putText(frame, f"ID:{tid}", (x, max(y - 5, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                             color, 1)
 
         for face in all_faces:
@@ -308,6 +340,7 @@ def main():
     pa.add_argument("--skip", type=int, default=2)
     pa.add_argument("--display_mode", default="local", choices=["gst", "local"],
                     help="显示模式: 'gst' 推流 或 'local' 本地窗口")
+    pa.add_argument("--simple_display", default=True)
     args = pa.parse_args()
 
     stop_evt = mp.Event()
@@ -316,11 +349,11 @@ def main():
 
     if args.display_mode == 'local':
         display_target = local_display_proc
-        kwargs1, kwargs2 = {}, {}
+        kwargs1, kwargs2 = {"simple_display": args.simple_display}, {"simple_display": args.simple_display}
     else:  # gst
         display_target = display_proc
-        kwargs1 = {"host": "127.0.0.1", "port": 5000, "fps_exp": 25}
-        kwargs2 = {"host": "127.0.0.1", "port": 5001, "fps_exp": 25}
+        kwargs1 = {"host": "127.0.0.1", "port": 5000, "fps_exp": 25, "simple_display": args.simple_display}
+        kwargs2 = {"host": "127.0.0.1", "port": 5001, "fps_exp": 25, "simple_display": args.simple_display}
 
     # Always open video1
     q_det2disp1 = LatestQueue(1)
