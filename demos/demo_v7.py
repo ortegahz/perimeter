@@ -300,7 +300,7 @@ def main():
     mp.set_start_method("spawn", force=True)
     pa = argparse.ArgumentParser()
     pa.add_argument("--video1", default="rtsp://admin:1qaz2wsx@172.20.20.64")
-    pa.add_argument("--video2", default="rtsp://admin:1qaz2wsx@172.20.20.150")
+    pa.add_argument("--video2", default="")
     pa.add_argument("--skip", type=int, default=2)
     pa.add_argument("--display_mode", default="local", choices=["gst", "local"],
                     help="显示模式: 'gst' 推流 或 'local' 本地窗口")
@@ -308,7 +308,7 @@ def main():
 
     stop_evt = mp.Event()
     q_det2feat, q_map2disp = LatestQueue(1), LatestQueue(1)
-    q_det2disp1, q_det2disp2 = LatestQueue(1), LatestQueue(1)
+    procs = []
 
     if args.display_mode == 'local':
         display_target = local_display_proc
@@ -318,13 +318,18 @@ def main():
         kwargs1 = {"host": "127.0.0.1", "port": 5000, "fps_exp": 25}
         kwargs2 = {"host": "127.0.0.1", "port": 5001, "fps_exp": 25}
 
-    procs = [
-        mp.Process(target=dec_det_proc, args=("cam1", args.video1, q_det2feat, q_det2disp1, stop_evt, args.skip)),
-        mp.Process(target=display_target, args=("cam1", q_det2disp1, q_map2disp, stop_evt), kwargs=kwargs1),
-        mp.Process(target=dec_det_proc, args=("cam2", args.video2, q_det2feat, q_det2disp2, stop_evt, args.skip)),
-        mp.Process(target=display_target, args=("cam2", q_det2disp2, q_map2disp, stop_evt), kwargs=kwargs2),
-        mp.Process(target=feature_proc, args=(q_det2feat, q_map2disp, stop_evt, BOUNDARY_CONFIG))
-    ]
+    # Always open video1
+    q_det2disp1 = LatestQueue(1)
+    procs.append(mp.Process(target=dec_det_proc, args=("cam1", args.video1, q_det2feat, q_det2disp1, stop_evt, args.skip)))
+    procs.append(mp.Process(target=display_target, args=("cam1", q_det2disp1, q_map2disp, stop_evt), kwargs=kwargs1))
+
+    # Only open video2 if it's not an empty string
+    if args.video2:
+        q_det2disp2 = LatestQueue(1)
+        procs.append(mp.Process(target=dec_det_proc, args=("cam2", args.video2, q_det2feat, q_det2disp2, stop_evt, args.skip)))
+        procs.append(mp.Process(target=display_target, args=("cam2", q_det2disp2, q_map2disp, stop_evt), kwargs=kwargs2))
+
+    procs.append(mp.Process(target=feature_proc, args=(q_det2feat, q_map2disp, stop_evt, BOUNDARY_CONFIG)))
     [p.start() for p in procs]
 
     signal.signal(signal.SIGINT, lambda s, f: stop_evt.set())
@@ -336,6 +341,7 @@ def main():
     finally:
         if not stop_evt.is_set():
             stop_evt.set()
+        import time
         time.sleep(1)
         for p in procs:
             if p.is_alive():
