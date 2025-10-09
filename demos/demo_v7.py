@@ -146,9 +146,10 @@ BOUNDARY_CONFIG = {
     }
 }
 
-
-def draw_boundaries(frame, stream_id):
+def draw_boundaries(frame, stream_id, simple_display=False):
     """Helper function to draw the pre-defined boundaries on the frame for debugging."""
+    if simple_display:
+        return
     config = BOUNDARY_CONFIG.get(stream_id)
     if not config:
         return
@@ -183,8 +184,7 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
         pkt = q_det2disp.get()
         if pkt is SENTINEL: break
         stream_id, fid, frame, dets, all_faces = pkt
-
-        draw_boundaries(frame, my_stream_id)
+        draw_boundaries(frame, my_stream_id, simple_display=simple_display)
 
         for d in dets:
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
@@ -193,9 +193,9 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
                 info_str, score, n_tid = tid2info.get(tid, (f"{my_stream_id}_{tid}_-1", -1.0, 0))
 
                 # Color logic for alarms and matches
-                if info_str.endswith("_AA") or info_str.endswith("_AL"):
-                    color = (0, 255, 255)  # Yellow for behavior alarm
-                elif n_tid >= 2:
+                # if info_str.endswith("_AA") or info_str.endswith("_AL"):
+                #     color = (0, 255, 255)  # Yellow for behavior alarm
+                if n_tid >= 2:
                     color = (0, 0, 255)  # Red for multi-cam match
                 else:
                     color = (0, 255, 0)  # Green for normal
@@ -268,8 +268,7 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
         pkt = q_det2disp.get()
         if pkt is SENTINEL: break
         stream_id, fid, frame, dets, all_faces = pkt
-
-        draw_boundaries(frame, my_stream_id)
+        draw_boundaries(frame, my_stream_id, simple_display=simple_display)
 
         for d in dets:
             x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
@@ -278,9 +277,9 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
                 info_str, score, n_tid = tid2info.get(tid, (f"{my_stream_id}_{tid}_-1", -1.0, 0))
 
                 # Color logic for alarms and matches
-                if info_str.endswith("_AA") or info_str.endswith("_AL"):
-                    color = (0, 255, 255)  # Yellow for behavior alarm
-                elif n_tid >= 2:
+                # if info_str.endswith("_AA") or info_str.endswith("_AL"):
+                #     color = (0, 255, 255)  # Yellow for behavior alarm
+                if n_tid >= 2:
                     color = (0, 0, 255)  # Red for multi-cam match
                 else:
                     color = (0, 255, 0)  # Green for normal
