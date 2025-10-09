@@ -54,7 +54,7 @@ def dec_det_proc(stream_id, src, q_det2feat, q_det2disp, stop_evt, skip):
             logger.error(f"[{stream_id}] open failed: {src}")
             return
         bt = ByteTrackPipeline(device="cuda")
-        face_app = FaceSearcher(provider="CUDAExecutionProvider").app
+        # face_app = FaceSearcher(provider="CUDAExecutionProvider").app
         logger.info(f"[{stream_id}] ready")
         fid = 0
         while not stop_evt.is_set():
@@ -72,17 +72,17 @@ def dec_det_proc(stream_id, src, q_det2feat, q_det2disp, stop_evt, skip):
                 max(int(x), 0):min(int(x + w), W)].copy()
                 for x, y, w, h in (d["tlwh"] for d in dets)
             ]
-            faces_bboxes, faces_kpss = face_app.det_model.detect(small, max_num=0, metric='default')
+            # faces_bboxes, faces_kpss = face_app.det_model.detect(small, max_num=0, metric='default')
             face_info = []
-            if faces_bboxes is not None and faces_bboxes.shape[0] > 0:
-                for i in range(faces_bboxes.shape[0]):
-                    bi = faces_bboxes[i, :4].astype(int)
-                    x1, y1, x2, y2 = [int(b / SHOW_SCALE) for b in bi]
-                    score = float(faces_bboxes[i, 4])
-                    kps = faces_kpss[i].astype(int).tolist() if faces_kpss is not None else None
-                    if kps is not None:
-                        kps = [[int(kp[0] / SHOW_SCALE), int(kp[1] / SHOW_SCALE)] for kp in kps]
-                    face_info.append({"bbox": [x1, y1, x2, y2], "score": score, "kps": kps})
+            # if faces_bboxes is not None and faces_bboxes.shape[0] > 0:
+            #     for i in range(faces_bboxes.shape[0]):
+            #         bi = faces_bboxes[i, :4].astype(int)
+            #         x1, y1, x2, y2 = [int(b / SHOW_SCALE) for b in bi]
+            #         score = float(faces_bboxes[i, 4])
+            #         kps = faces_kpss[i].astype(int).tolist() if faces_kpss is not None else None
+            #         if kps is not None:
+            #             kps = [[int(kp[0] / SHOW_SCALE), int(kp[1] / SHOW_SCALE)] for kp in kps]
+            #         face_info.append({"bbox": [x1, y1, x2, y2], "score": score, "kps": kps})
             # === 这里保持原 q_det2disp 数据结构不变 ===
             q_det2disp.put((stream_id, fid, small, dets, face_info))
             # === 修改这里：把 face_info 和 full_frame 一起传给 feature_proc ===
