@@ -318,9 +318,9 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
                 for kx, ky in face['kps']:
                     cv2.circle(frame, (int(kx * SHOW_SCALE), int(ky * SHOW_SCALE)), 1, (0, 0, 255), 2)
 
-        if not is_fullscreen:
-            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-            is_fullscreen = True
+        # if not is_fullscreen:
+        #     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        #     is_fullscreen = True
 
         cv2.imshow(window_name, frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -339,7 +339,7 @@ def main():
     pa.add_argument("--skip", type=int, default=2)
     pa.add_argument("--display_mode", default="local", choices=["gst", "local"],
                     help="显示模式: 'gst' 推流 或 'local' 本地窗口")
-    pa.add_argument("--simple_display", default=True)
+    pa.add_argument("--simple_display", default=False)
     args = pa.parse_args()
 
     stop_evt = mp.Event()
