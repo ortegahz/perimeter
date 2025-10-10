@@ -101,7 +101,7 @@ def dec_det_proc(stream_id, src, q_det2feat, q_det2disp, stop_evt, skip):
 
 
 def feature_proc(q_det2feat, q_map2disp, stop_evt, boundary_config):
-    processor = FeatureProcessor(device="cuda", boundary_config=boundary_config)
+    processor = FeatureProcessor(device="cuda", boundary_config=boundary_config, use_fid_time=False)
     while not stop_evt.is_set():
         pkt = q_det2feat.get()
         if pkt is SENTINEL:
