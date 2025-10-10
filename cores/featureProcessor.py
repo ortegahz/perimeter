@@ -33,7 +33,7 @@ SENTINEL = None
 W_FACE, W_BODY = 0.6, 0.4
 MATCH_THR = 0.5
 THR_NEW_GID = 0.3
-FACE_DET_MIN_SCORE = 0.60
+FACE_DET_MIN_SCORE = 0.90
 
 SAVE_DIR = "/home/manu/tmp/perimeter"
 ALARM_DIR = "/home/manu/tmp/perimeter_alarm"
@@ -277,7 +277,7 @@ def normv(v):
 class GlobalID:
     """管理全局身份库"""
 
-    def __init__(self, max_proto=8, w_face=0.6, w_body=0.4, thr=0.5, outlier_thresh=3.0):
+    def __init__(self, max_proto=8, w_face=1.0, w_body=0.0, thr=0.5, outlier_thresh=3.0):
         self.max_proto, self.w_face, self.w_body, self.thr, self.outlier_thresh = max_proto, w_face, w_body, thr, outlier_thresh
         self.bank: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self.tid_hist: Dict[str, List[str]] = {}
@@ -613,7 +613,7 @@ class FeatureProcessor:
                 x, y, w, h = det['tlwh']
                 patch = full_frame[max(int(y), 0):min(int(y + h), H), max(int(x), 0):min(int(x + w), W)].copy()
 
-                if not is_long_patch(patch): continue
+                # if not is_long_patch(patch): continue
 
                 tensors.append(prep_patch(patch))
                 metas.append((f"{stream_id}_{det['id']}", det.get("score", 0.0)))
