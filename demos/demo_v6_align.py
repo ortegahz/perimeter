@@ -49,6 +49,10 @@ VIDEO_PATH = "/home/manu/tmp/64.mp4"
 OUTPUT_MP4 = "/home/manu/tmp/output_result.mp4"
 OUTPUT_TXT = "/home/manu/tmp/output_result_py.txt"
 
+# ---- GID 人脸/人体特征融合权重 ----
+W_FACE = 0.6
+W_BODY = 0.4
+
 SKIP = 2
 SHOW_SCALE = 0.5
 DEVICE = "cpu"
@@ -291,6 +295,8 @@ def main():
                 "full_frame": frame,
                 "dets": dets,  # dets 已经过排序
                 "face_info": face_info,
+                "w_face": W_FACE,
+                "w_body": W_BODY,
             }
 
             # ------------- 特征处理 -------------

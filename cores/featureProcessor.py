@@ -30,7 +30,6 @@ MIN_FACE4GID = 8
 
 SENTINEL = None
 
-W_FACE, W_BODY = 0.6, 0.4
 MATCH_THR = 0.5
 THR_NEW_GID = 0.3
 FACE_DET_MIN_SCORE = 0.90
@@ -65,7 +64,6 @@ GID_MAX_IDLE_FRAMES = int(GID_MAX_IDLE)
 # -------- 报警去重相关参数 -----------------
 ALARM_CNT_TH = 8
 ALARM_DUP_THR = 0.4
-FUSE_W_FACE, FUSE_W_BODY = 0.6, 0.4
 EMB_FACE_DIM, EMB_BODY_DIM = 512, 2048
 BEHAVIOR_ALARM_DURATION_FRAMES = 256
 
@@ -277,7 +275,7 @@ def normv(v):
 class GlobalID:
     """管理全局身份库"""
 
-    def __init__(self, max_proto=8, w_face=1.0, w_body=0.0, thr=0.5, outlier_thresh=3.0):
+    def __init__(self, max_proto=8, w_face=0.6, w_body=0.4, thr=0.5, outlier_thresh=3.0):
         self.max_proto, self.w_face, self.w_body, self.thr, self.outlier_thresh = max_proto, w_face, w_body, thr, outlier_thresh
         self.bank: Dict[str, Dict[str, List[np.ndarray]]] = {}
         self.tid_hist: Dict[str, List[str]] = {}
@@ -377,10 +375,10 @@ class FeatureProcessor:
     """
 
     @staticmethod
-    def _fuse_feat(face_f: np.ndarray | None, body_f: np.ndarray | None) -> np.ndarray:
+    def _fuse_feat(face_f: np.ndarray | None, body_f: np.ndarray | None, w_face: float, w_body: float) -> np.ndarray:
         if face_f is None and body_f is None: raise RuntimeError("Both face and body feature are None")
-        face_f = np.zeros(EMB_FACE_DIM, np.float32) if face_f is None else face_f * FUSE_W_FACE
-        body_f = np.zeros(EMB_BODY_DIM, np.float32) if body_f is None else body_f * FUSE_W_BODY
+        face_f = np.zeros(EMB_FACE_DIM, np.float32) if face_f is None else face_f * w_face
+        body_f = np.zeros(EMB_BODY_DIM, np.float32) if body_f is None else body_f * w_body
         combo = np.concatenate([face_f, body_f]).astype(np.float32)
         return combo / (np.linalg.norm(combo) + 1e-9)
 
@@ -404,11 +402,11 @@ class FeatureProcessor:
 
         return intersection_area / (face_area + 1e-6)
 
-    def _gid_fused_rep(self, gid: str) -> np.ndarray:
+    def _gid_fused_rep(self, gid: str, w_face: float, w_body: float) -> np.ndarray:
         pool = self.gid_mgr.bank.get(gid, {})
         face_f = self.gid_mgr._avg(pool['faces']) if pool.get('faces') else None
         body_f = self.gid_mgr._avg(pool['bodies']) if pool.get('bodies') else None
-        return self._fuse_feat(face_f, body_f)
+        return self._fuse_feat(face_f, body_f, w_face, w_body)
 
     def __init__(self,
                  device="cuda",
@@ -505,9 +503,9 @@ class FeatureProcessor:
             except Exception as e:
                 logger.error(f"Failed to save features to '{self.cache_path}': {e}")
 
-    def trigger_alarm(self, gid: str, agg: TrackAgg):
+    def trigger_alarm(self, gid: str, agg: TrackAgg, w_face: float, w_body: float):
         try:
-            cur_rep = self._gid_fused_rep(gid)
+            cur_rep = self._gid_fused_rep(gid, w_face, w_body)
         except Exception as e:
             logger.warning(f"[ALARM] 生成 {gid} 特征失败: {e}")
             return
@@ -539,6 +537,12 @@ class FeatureProcessor:
         fid = pkt["fid"]
         full_frame = pkt["full_frame"]
         dets = pkt["dets"]
+        w_face = pkt.get("w_face", 0.6)
+        w_body = pkt.get("w_body", 0.4)
+
+        # 更新 GID 管理器的权重
+        self.gid_mgr.w_face = w_face
+        self.gid_mgr.w_body = w_body
 
         H, W = full_frame.shape[:2]
 
@@ -728,7 +732,7 @@ class FeatureProcessor:
                     self.tid2gid[tid] = cand_gid
                     state["last_bind_fid"] = fid
                     n_tid = len(self.gid_mgr.tid_hist.get(cand_gid, []))
-                    if n_tid >= ALARM_CNT_TH: self.trigger_alarm(cand_gid, agg)
+                    if n_tid >= ALARM_CNT_TH: self.trigger_alarm(cand_gid, agg, w_face, w_body)
                     realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{cand_gid}", cand_score, n_tid)
                 else:
                     flag = self.gid_mgr.can_update_proto(cand_gid, face_feat, body_feat)
@@ -743,22 +747,22 @@ class FeatureProcessor:
                 state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid)
                 ng_state["last_new_fid"] = fid
                 n_tid = len(self.gid_mgr.tid_hist[new_gid])
-                if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
+                if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg, w_face, w_body)
                 realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
 
-            # elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR:
-            #     ng_state["ambig_count"] += 1
-            #     if ng_state["ambig_count"] >= WAIT_FRAMES_AMBIGUOUS and time_since_last_new >= NEW_GID_TIME_WINDOW:
-            #         new_gid = self.gid_mgr.new_gid()
-            #         self.gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_ts=now_stamp)
-            #         self.tid2gid[tid] = new_gid
-            #         state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid)
-            #         ng_state.update(last_new_fid=fid, count=0, ambig_count=0)
-            #         n_tid = len(self.gid_mgr.tid_hist[new_gid])
-            #         if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
-            #         realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
-            #     else:
-            #         realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-7", cand_score, 0)
+            elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR:
+                ng_state["ambig_count"] += 1
+                if ng_state["ambig_count"] >= WAIT_FRAMES_AMBIGUOUS and time_since_last_new >= NEW_GID_TIME_WINDOW:
+                    new_gid = self.gid_mgr.new_gid()
+                    self.gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_ts=now_stamp)
+                    self.tid2gid[tid] = new_gid
+                    state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid)
+                    ng_state.update(last_new_fid=fid, count=0, ambig_count=0)
+                    n_tid = len(self.gid_mgr.tid_hist[new_gid])
+                    if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg, w_face, w_body)
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
+                else:
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-7", cand_score, 0)
 
             elif cand_score < THR_NEW_GID:  # cand_score < THR_NEW_GID
                 ng_state["ambig_count"] = 0
@@ -771,7 +775,7 @@ class FeatureProcessor:
                         state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid)
                         ng_state.update(last_new_fid=fid, count=0)
                         n_tid = len(self.gid_mgr.tid_hist[new_gid])
-                        if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
+                        if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg, w_face, w_body)
                         realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
                     else:
                         realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-5", -1.0, 0)
