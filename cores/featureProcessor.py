@@ -746,21 +746,21 @@ class FeatureProcessor:
                 if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
                 realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
 
-            elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR:
-                ng_state["ambig_count"] += 1
-                if ng_state["ambig_count"] >= WAIT_FRAMES_AMBIGUOUS and time_since_last_new >= NEW_GID_TIME_WINDOW:
-                    new_gid = self.gid_mgr.new_gid()
-                    self.gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_ts=now_stamp)
-                    self.tid2gid[tid] = new_gid
-                    state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid)
-                    ng_state.update(last_new_fid=fid, count=0, ambig_count=0)
-                    n_tid = len(self.gid_mgr.tid_hist[new_gid])
-                    if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
-                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
-                else:
-                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-7", cand_score, 0)
+            # elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR:
+            #     ng_state["ambig_count"] += 1
+            #     if ng_state["ambig_count"] >= WAIT_FRAMES_AMBIGUOUS and time_since_last_new >= NEW_GID_TIME_WINDOW:
+            #         new_gid = self.gid_mgr.new_gid()
+            #         self.gid_mgr.bind(new_gid, face_feat, body_feat, agg, tid=tid, current_ts=now_stamp)
+            #         self.tid2gid[tid] = new_gid
+            #         state.update(cand_gid=new_gid, count=CANDIDATE_FRAMES, last_bind_fid=fid)
+            #         ng_state.update(last_new_fid=fid, count=0, ambig_count=0)
+            #         n_tid = len(self.gid_mgr.tid_hist[new_gid])
+            #         if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg)
+            #         realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
+            #     else:
+            #         realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-7", cand_score, 0)
 
-            else:  # cand_score < THR_NEW_GID
+            elif cand_score < THR_NEW_GID:  # cand_score < THR_NEW_GID
                 ng_state["ambig_count"] = 0
                 if time_since_last_new >= NEW_GID_TIME_WINDOW:
                     ng_state["count"] += 1
