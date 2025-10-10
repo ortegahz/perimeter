@@ -1553,7 +1553,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                          w_face,
                                          current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                          current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
-                                         );
+                );
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
             } else {
@@ -1573,12 +1573,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                      w_face,
                                      current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                      current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
-                                     );
+            );
 
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
         } else if (!cand_gid.empty() && score >= THR_NEW_GID) { // Reason 3: Ambiguous, pending for a long time
             ng_state.ambig_count++;
-            if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= config.new_gid_time_window) {
+            if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 std::string new_gid = gid_mgr.new_gid(); // Pure GID
                 gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "similar_pending");
                 tid2gid[tid_str] = new_gid;
@@ -1590,7 +1590,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                          w_face,
                                          current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                          current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
-                                         );
+                );
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
             } else {
@@ -1598,7 +1598,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             }
         } else { // score < THR_NEW_GID (Reason 2: Clearly dissimilar)
             ng_state.ambig_count = 0;
-            if (time_since_last_new >= config.new_gid_time_window) {
+            if (time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 ng_state.count++;
                 if (ng_state.count >= NEW_GID_MIN_FRAMES) {
                     std::string new_gid = gid_mgr.new_gid(); // Pure GID
@@ -1612,7 +1612,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                              w_face,
                                              current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                              current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
-                                             );
+                    );
 
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
                 } else {

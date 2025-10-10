@@ -105,7 +105,7 @@ struct ProcessConfig {
 struct Detection {
     cv::Rect2f tlwh;
     float score;
-    int id;
+    uint64 id;
     int class_id = 0;
 };
 
@@ -129,10 +129,10 @@ public:
         }
     }
 
-    std::set<int> check(const std::vector<Detection> &dets, const std::string &stream_id) {
+    std::set<uint64> check(const std::vector<Detection> &dets, const std::string &stream_id) {
         if (boundary_.empty()) return {};
-        std::set<int> newly_alarmed_tids;
-        std::set<int> current_tids;
+        std::set<uint64> newly_alarmed_tids;
+        std::set<uint64> current_tids;
         for (const auto &d: dets) {
             current_tids.insert(d.id);
             if (alarmed_tids_.count(d.id)) continue;
@@ -163,8 +163,8 @@ public:
 
 private:
     std::vector<cv::Point> boundary_;
-    std::map<int, cv::Point2f> track_history_;
-    std::set<int> alarmed_tids_;
+    std::map<uint64, cv::Point2f> track_history_;
+    std::set<uint64> alarmed_tids_;
 };
 
 static int get_point_side(const cv::Point2f &p, const cv::Point2f &a, const cv::Point2f &b) {
@@ -179,9 +179,9 @@ public:
     LineCrossingDetector(const cv::Point &start, const cv::Point &end, const std::string &direction = "any")
             : line_start_(start), line_end_(end), direction_(direction) {}
 
-    std::set<int> check(const std::vector<Detection> &dets, const std::string &stream_id) {
-        std::set<int> newly_alarmed_tids;
-        std::set<int> current_tids;
+    std::set<uint64> check(const std::vector<Detection> &dets, const std::string &stream_id) {
+        std::set<uint64> newly_alarmed_tids;
+        std::set<uint64> current_tids;
         for (const auto &d: dets) {
             current_tids.insert(d.id);
             if (alarmed_tids_.count(d.id)) continue;
@@ -218,8 +218,8 @@ public:
 private:
     cv::Point2f line_start_, line_end_;
     std::string direction_;
-    std::map<int, int> track_side_history_;
-    std::set<int> alarmed_tids_;
+    std::map<uint64, int> track_side_history_;
+    std::set<uint64> alarmed_tids_;
 };
 
 /**
