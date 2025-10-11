@@ -390,9 +390,14 @@ std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, 
     std::string best_gid;
     float best_score = -1.f;
     for (auto const &[gid, face_pool]: bank_faces) {
-        if (!bank_bodies.count(gid) || face_pool.empty() || bank_bodies.at(gid).empty()) continue;
+        // 如果需要人脸特征进行比对(w_face > 0)，但当前GID的人脸库为空，则跳过
+        if (w_face > 1e-6f && face_pool.empty()) continue;
+        // 如果需要人体特征进行比对(w_body > 0)，但当前GID的人体库为空，则跳过
+        if (w_body > 1e-6f && (!bank_bodies.count(gid) || bank_bodies.at(gid).empty())) continue;
+
         float face_sim = face_f.empty() ? 0.f : sim_vec(face_f, avg_feats(face_pool));
-        float body_sim = body_f.empty() ? 0.f : sim_vec(body_f, avg_feats(bank_bodies.at(gid)));
+        // 仅在需要时计算body相似度
+        float body_sim = (body_f.empty() || w_body < 1e-6f) ? 0.f : sim_vec(body_f, avg_feats(bank_bodies.at(gid)));
         float sc = w_face * face_sim + w_body * body_sim;
         if (sc > best_score) {
             best_score = sc;
@@ -1247,6 +1252,25 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         face_enabled = config.face_switch_by_cam.at(cam_id);
     }
 
+    // 根据配置确定用于探测的融合权重
+    float w_face = W_FACE;
+    float w_body = W_BODY;
+    if (!face_enabled) {
+        w_face = 0.0f;
+        w_body = 1.0f;
+    } else {
+        if (config.face_weight_by_cam.count(cam_id)) {
+            w_face = config.face_weight_by_cam.at(cam_id);
+        }
+        if (config.reid_weight_by_cam.count(cam_id)) {
+            w_body = config.reid_weight_by_cam.at(cam_id);
+        }
+    }
+
+    // 新增: 当仅使用人脸比对时(w_face=1.0)，提高人脸检测的置信度阈值
+    const bool is_face_only_mode = (w_face >= 0.999f); // 使用小公差进行浮点数比较
+    float current_face_det_min_score = is_face_only_mode ? 0.9f : FACE_DET_MIN_SCORE;
+
     ProcessOutput output;
     std::vector<std::tuple<std::string, std::string, std::string, int, bool>> triggered_alarms_this_frame; // <gid, tid_str, timestamp, n, was_newly_saved>
     current_frame_face_boxes_.clear(); // 每帧开始时清空
@@ -1326,47 +1350,50 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         cv::Mat cpu_frame;
         full_frame.download(cpu_frame);
 
-        // --- DEADLOCK FIX: 串行执行DLA任务 ---
-        // 1. 首先在主线程中执行Re-ID特征提取 (使用DLA Core 1)
-        for (const auto &det: dets) {
-            if (det.class_id != 0) continue;
+        // 1. Re-ID特征提取
+        // 仅当需要进行人体特征比对时才执行 (w_body > 0, 即 w_face < 1.0)
+        if (!is_face_only_mode) {
+            // 首先在主线程中执行Re-ID特征提取 (使用DLA Core 1)
+            for (const auto &det: dets) {
+                if (det.class_id != 0) continue;
 
-            cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
-            if (roi.width <= 0 || roi.height <= 0) continue;
+                cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
+                if (roi.width <= 0 || roi.height <= 0) continue;
 
-            cv::cuda::GpuMat gpu_patch = full_frame(roi);
-            cv::Mat patch;
-            gpu_patch.download(patch);
+                cv::cuda::GpuMat gpu_patch = full_frame(roi);
+                cv::Mat patch;
+                gpu_patch.download(patch);
 
-            if (!is_long_patch(patch)) continue;
+                if (!is_long_patch(patch)) continue;
 
-            // --- HANG FIX: Wrap Re-ID DLA call with a timeout ---
-            cv::cuda::GpuMat feat_mat_gpu;
-            auto fut_reid = std::async(std::launch::async, [&]() {
-                return reid_model_->extract_feat(gpu_patch);
-            });
+                // --- HANG FIX: Wrap Re-ID DLA call with a timeout ---
+                cv::cuda::GpuMat feat_mat_gpu;
+                auto fut_reid = std::async(std::launch::async, [&]() {
+                    return reid_model_->extract_feat(gpu_patch);
+                });
 
-            if (fut_reid.wait_for(std::chrono::milliseconds(300)) == std::future_status::ready) {
-                feat_mat_gpu = fut_reid.get();
-            } else {
-                std::cerr << "Re-ID DLA inference timeout for TID " << det.id << ", cam_id: " << stream_id << std::endl;
-                continue; // Skip this detection if DLA hangs
-            }
-            if (feat_mat_gpu.empty()) continue;
+                if (fut_reid.wait_for(std::chrono::milliseconds(300)) == std::future_status::ready) {
+                    feat_mat_gpu = fut_reid.get();
+                } else {
+                    std::cerr << "Re-ID DLA inference timeout for TID " << det.id << ", cam_id: " << stream_id << std::endl;
+                    continue; // Skip this detection if DLA hangs
+                }
+                if (feat_mat_gpu.empty()) continue;
 
-            cv::Mat feat_mat_cpu;
-            feat_mat_gpu.download(feat_mat_cpu);
-            std::vector<float> body_feat(feat_mat_cpu.begin<float>(), feat_mat_cpu.end<float>());
-            std::string tid_str = stream_id + "_" + std::to_string(det.id);
-            first_seen_tid.try_emplace(tid_str, now_stamp);
-            agg_pool[tid_str].add_body(body_feat, det.score, patch.clone());
-            last_seen[tid_str] = now_stamp;
-            if (m_enable_feature_caching) {
-                extracted_features_for_this_frame[tid_str]["body_feat"] = body_feat;
+                cv::Mat feat_mat_cpu;
+                feat_mat_gpu.download(feat_mat_cpu);
+                std::vector<float> body_feat(feat_mat_cpu.begin<float>(), feat_mat_cpu.end<float>());
+                std::string tid_str = stream_id + "_" + std::to_string(det.id);
+                first_seen_tid.try_emplace(tid_str, now_stamp);
+                agg_pool[tid_str].add_body(body_feat, det.score, patch.clone());
+                last_seen[tid_str] = now_stamp;
+                if (m_enable_feature_caching) {
+                    extracted_features_for_this_frame[tid_str]["body_feat"] = body_feat;
+                }
             }
         }
 
-        // 2. 然后在主线程中执行人脸分析 (使用 DLA Core 0)
+        // 2. 人脸分析 (使用 DLA Core 0)
         std::vector<Face> internal_face_info;
         if (face_enabled && face_analyzer_) {
             // --- Wrap Face Detection call with a timeout ---
@@ -1399,7 +1426,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
                     size_t unique_face_idx = matching_face_indices[0];
                     Face &face_global_coords = internal_face_info[unique_face_idx]; // Use reference to update
-                    if (face_global_coords.det_score < FACE_DET_MIN_SCORE) continue;
+                    // 使用动态调整后的阈值进行判断
+                    if (face_global_coords.det_score < current_face_det_min_score) continue;
 
                     cv::Rect face_roi(face_global_coords.bbox);
                     face_roi &= cv::Rect(0, 0, W, H);
@@ -1487,7 +1515,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             continue;
         }
 
-        if ((int) agg.body.size() < MIN_BODY4GID) {
+        // 如果不是纯人脸模式，则检查body特征数量
+        if (!is_face_only_mode && (int) agg.body.size() < MIN_BODY4GID) {
             std::string gid_str = tid_str + "_-1_b_" + std::to_string(agg.body.size());
             output.mp[s_id][tid_num] = {gid_str, -1.f, 0};
             continue;
@@ -1505,25 +1534,10 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             output.mp[s_id][tid_num] = {tid_str + "_-2_f", -1.f, 0};
             continue;
         }
-        // ReID特征是必须的
-        if (body_f.empty()) {
+        // 如果不是纯人脸模式，则ReID特征是必须的
+        if (!is_face_only_mode && body_f.empty()) {
             output.mp[s_id][tid_num] = {tid_str + "_-2_b", -1.f, 0};
             continue;
-        }
-
-        // 根据配置确定用于探测的融合权重
-        float w_face = W_FACE;
-        float w_body = W_BODY;
-        if (!face_enabled) {
-            w_face = 0.0f;
-            w_body = 1.0f;
-        } else {
-            if (config.face_weight_by_cam.count(stream_id)) {
-                w_face = config.face_weight_by_cam.at(stream_id);
-            }
-            if (config.reid_weight_by_cam.count(stream_id)) {
-                w_body = config.reid_weight_by_cam.at(stream_id);
-            }
         }
 
         auto [cand_gid, score] = gid_mgr.probe(face_f, body_f, w_face, w_body);
