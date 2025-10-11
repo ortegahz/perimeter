@@ -1322,6 +1322,10 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         const int H = full_frame.rows;
         const int W = full_frame.cols;
 
+        // 新增：将GpuMat下载到CpuMat，因为FaceAnalyzer现在使用OpenCV DNN，需要cv::Mat
+        cv::Mat cpu_frame;
+        full_frame.download(cpu_frame);
+
         // --- DEADLOCK FIX: 串行执行DLA任务 ---
         // 1. 首先在主线程中执行Re-ID特征提取 (使用DLA Core 1)
         for (const auto &det: dets) {
@@ -1365,14 +1369,14 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         // 2. 然后在主线程中执行人脸分析 (使用 DLA Core 0)
         std::vector<Face> internal_face_info;
         if (face_enabled && face_analyzer_) {
-            // --- HANG FIX: Wrap Face Detection DLA call with a timeout ---
+            // --- Wrap Face Detection call with a timeout ---
             auto fut_detect = std::async(std::launch::async, [&]() {
-                return face_analyzer_->detect(full_frame);
+                return face_analyzer_->detect(cpu_frame); // 使用CPU Mat
             });
             if (fut_detect.wait_for(std::chrono::milliseconds(300)) == std::future_status::ready) {
                 internal_face_info = fut_detect.get();
             } else {
-                std::cerr << "Face detection DLA timeout for cam_id: " << stream_id << std::endl;
+                std::cerr << "Face detection timeout for cam_id: " << stream_id << std::endl;
                 // Timeout: internal_face_info will remain empty, gracefully skipping subsequent logic.
             }
 
@@ -1402,14 +1406,14 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     if (face_roi.width < 32 || face_roi.height < 32) continue;
 
                     try {
-                        // --- HANG FIX: Wrap Face Embedding DLA call with a timeout ---
+                        // --- Wrap Face Embedding call with a timeout ---
                         auto fut_face_emb = std::async(std::launch::async, [&]() {
                             // This lambda modifies the captured reference face_global_coords
-                            face_analyzer_->get_embedding(full_frame, face_global_coords);
+                            face_analyzer_->get_embedding(cpu_frame, face_global_coords); // 使用CPU Mat
                         });
 
                         if (fut_face_emb.wait_for(std::chrono::milliseconds(300)) != std::future_status::ready) {
-                            std::cerr << "Face Embedding DLA inference timeout for TID " << det.id << ", cam_id: "
+                            std::cerr << "Face Embedding inference timeout for TID " << det.id << ", cam_id: "
                                       << stream_id << std::endl;
                             continue; // Skip this face if DLA hangs
                         }

@@ -17,7 +17,7 @@ FaceAnalyzer::FaceAnalyzer(const std::string &det_model_path, const std::string 
 }
 
 void FaceAnalyzer::prepare(const std::string &provider, float det_thresh, cv::Size det_size) {
-    if (provider == "CUDAExecutionProvider") {
+    if (provider == "CUDAExecutionProvider" || provider == "GPU") {
         std::cout << "[INFO] Attempting to use CUDA backend for FaceAnalyzer." << std::endl;
         det_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
         det_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);

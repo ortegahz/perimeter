@@ -28,7 +28,7 @@
 // 定义 `GstClockTime` 类型别名，使其在模块内自包含
 using GstClockTime = uint64_t;
 // ======================= 【修改结束】 =======================
-#include "cores/face/FaceAnalyzer_dla.hpp"
+#include "cores/face/FaceAnalyzer.hpp"
 
 /* ---------- 常量定义 ---------- */
 constexpr int MIN_BODY4GID = 8;
@@ -62,7 +62,7 @@ constexpr int EMB_BODY_DIM = 2048;
 constexpr int BEHAVIOR_ALARM_DURATION_FRAMES = 256;
 
 constexpr float MIN_HW_RATIO = 1.5f;
-constexpr float FACE_DET_MIN_SCORE = 0.9;  // 0.60f
+constexpr float FACE_DET_MIN_SCORE = 0.6f;  // 0.60f
 
 //const std::string SAVE_DIR = "/mnt/nfs/perimeter_cpp";
 //const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";

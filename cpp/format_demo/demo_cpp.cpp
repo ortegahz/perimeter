@@ -58,7 +58,7 @@ GstClockTime get_current_frame_ntp_timestamp(uint64_t frame_id, double fps) {
 // ======================= 【MODIFIED】 =======================
 // 调整：将所有模型路径常量集中在此处，用于传递给构造函数
 const std::string REID_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/reid_model.onnx";
-const std::string FACE_DET_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/mobilenet0.25_Final.onnx";
+const std::string FACE_DET_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/det_10g_simplified.onnx";
 const std::string FACE_REC_MODEL_PATH = "/home/nvidia/VSCodeProject/smartboxcore/models/w600k_r50_simplified.onnx";
 // ======================= 【修改结束】 =======================
 
@@ -166,7 +166,7 @@ int main(int argc, char **argv) {
     // 新增：是否在启动时清除现有的数据库。true: 清除, false: 加载
     bool CLEAR_DB_ON_STARTUP = true;
 
-    std::string MODE = "load"; // realtime or load
+    std::string MODE = "realtime"; // realtime or load
     if (argc > 1) {
         MODE = argv[1];
     }
@@ -200,7 +200,7 @@ int main(int argc, char **argv) {
                 FACE_DET_MODEL_PATH,
                 FACE_REC_MODEL_PATH,
                 MODE,                     // 明确传递，覆盖默认值
-                "dla",                    // 明确传递
+                "cuda",                    // 明确传递
                 FEATURE_CACHE_JSON,       // 明确传递，覆盖默认值
                 _use_fid_time,
                 true,                     // enable_alarm_saving
