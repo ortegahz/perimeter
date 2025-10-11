@@ -1188,10 +1188,10 @@ void FeatureProcessor::_check_and_process_alarm(
         float face_det_score,
         float face_clarity) {
 
-    // 新增逻辑：当人脸权重为 1.0 且人脸检测置信度 ≤ 0.95 时，不触发报警
-    if (w_face >= 0.999f && face_det_score <= 0.95f) {
-        return;
-    }
+//    // 新增逻辑：当人脸权重为 1.0 且人脸检测置信度 ≤ 0.95 时，不触发报警
+//    if (w_face >= 0.999f && face_det_score <= 0.95f) {
+//        return;
+//    }
 
     int n = gid_mgr.tid_hist.count(gid) ? (int) gid_mgr.tid_hist.at(gid).size() : 0;
 
