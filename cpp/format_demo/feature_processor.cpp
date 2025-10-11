@@ -1580,7 +1580,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             );
 
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
-        } else if (!cand_gid.empty() && score >= THR_NEW_GID) { // Reason 3: Ambiguous, pending for a long time
+        } else if (!cand_gid.empty() && score >= THR_NEW_GID && mode_ == "load") { // Reason 3: Ambiguous, pending for a long time
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 std::string new_gid = gid_mgr.new_gid(); // Pure GID
@@ -1600,7 +1600,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             } else {
                 output.mp[s_id][tid_num] = {tid_str + "_-7", score, 0};
             }
-        } else { // score < THR_NEW_GID (Reason 2: Clearly dissimilar)
+        } else if (score < THR_NEW_GID) { // score < THR_NEW_GID (Reason 2: Clearly dissimilar)
             ng_state.ambig_count = 0;
             if (time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 ng_state.count++;
