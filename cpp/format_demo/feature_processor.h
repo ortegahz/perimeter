@@ -365,7 +365,7 @@ public:
                               const std::string &face_det_model_path,
                               const std::string &face_rec_model_path,
                               const std::string &mode = "realtime",
-                              const std::string &device = "dla",
+                              const std::string &device = "cuda",
                               const std::string &feature_cache_path = "",
                               bool use_fid_time = false,
                               bool enable_alarm_saving = true, // for alarm media
