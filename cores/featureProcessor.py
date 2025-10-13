@@ -32,7 +32,7 @@ SENTINEL = None
 
 MATCH_THR = 0.5
 THR_NEW_GID = 0.3
-FACE_DET_MIN_SCORE = 0.90
+FACE_DET_MIN_SCORE = 0.80  # 0.9 for face only mode && 0.8 for mix mode
 
 SAVE_DIR = "/home/manu/tmp/perimeter"
 ALARM_DIR = "/home/manu/tmp/perimeter_alarm"
@@ -750,7 +750,7 @@ class FeatureProcessor:
                 if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg, w_face, w_body)
                 realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
 
-            elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR:
+            elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR and self.mode == 'load':
                 ng_state["ambig_count"] += 1
                 if ng_state["ambig_count"] >= WAIT_FRAMES_AMBIGUOUS and time_since_last_new >= NEW_GID_TIME_WINDOW:
                     new_gid = self.gid_mgr.new_gid()

@@ -335,7 +335,7 @@ def main():
     mp.set_start_method("spawn", force=True)
     pa = argparse.ArgumentParser()
     pa.add_argument("--video1", default="rtsp://admin:1qaz2wsx@172.20.20.64")
-    pa.add_argument("--video2", default="")
+    pa.add_argument("--video2", default="rtsp://admin:1qaz2wsx@172.20.20.150")
     pa.add_argument("--skip", type=int, default=2)
     pa.add_argument("--display_mode", default="local", choices=["gst", "local"],
                     help="显示模式: 'gst' 推流 或 'local' 本地窗口")
