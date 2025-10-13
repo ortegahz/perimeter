@@ -11,6 +11,7 @@
 #include <opencv2/cudaimgproc.hpp>
 #include <iomanip> // For sprintf
 #include <optional>
+#include <cmath> // For std::atan2, std::abs
 #include <sstream>
 
 // ======================= 【MODIFIED】 =======================
@@ -44,6 +45,46 @@ static float calculate_clarity_score(const cv::Mat& face_patch) {
     const float max_var = 500.0f; // 方差高于此值，清晰度视为100
     float score = ((variance - min_var) / (max_var - min_var)) * 100.0f;
     return std::max(0.0f, std::min(100.0f, score));
+}
+// ======================= 【修改结束】 =======================
+
+// ======================= 【NEW: 正脸判断算法】 =======================
+/**
+ * @brief 使用简单的2D几何方法判断是否为正脸，不使用solvePnP。
+ * @param kps 5个关键点 (左眼, 右眼, 鼻子, 左嘴角, 右嘴角) 的 std::vector<cv::Point2f>。
+ * @param yaw_sym_threshold 偏航角对称性阈值。衡量鼻子到双眼距离的对称性，越接近1要求越严格。
+ * @param roll_angle_threshold 翻滚角（头部倾斜）角度阈值。
+ * @return 如果是正脸则返回 true，否则返回 false。
+ */
+static bool is_frontal_face_2d(const std::vector<cv::Point2f>& kps, float yaw_sym_threshold = 0.7f, float roll_angle_threshold = 25.0f) {
+    // 至少需要3个关键点（双眼和鼻子）
+    if (kps.size() < 3) {
+        return false;
+    }
+
+    try {
+        const auto& left_eye = kps[0];
+        const auto& right_eye = kps[1];
+        const auto& nose = kps[2];
+
+        // 1. 偏航角（Yaw）检测：基于鼻子与双眼的水平距离对称性
+        float dist_left = nose.x - left_eye.x;
+        float dist_right = right_eye.x - nose.x;
+
+        // 确保关键点位置合理（鼻子在双眼之间）
+        if (dist_left <= 0 || dist_right <= 0) return false;
+
+        float symmetry_ratio = std::min(dist_left, dist_right) / std::max(dist_left, dist_right);
+        if (symmetry_ratio < yaw_sym_threshold) return false; // 侧脸
+
+        // 2. 翻滚角（Roll）检测：基于双眼连线的倾斜角度
+        float dy = right_eye.y - left_eye.y;
+        float dx = right_eye.x - left_eye.x;
+        if (std::abs(dx) < 1e-6f) return false; // 避免除零
+
+        float angle = std::atan2(dy, dx) * 180.0f / M_PI;
+        return std::abs(angle) <= roll_angle_threshold;
+    } catch (const std::exception&) { return false; }
 }
 // ======================= 【修改结束】 =======================
 
@@ -1436,6 +1477,14 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     Face &face_global_coords = internal_face_info[unique_face_idx]; // Use reference to update
                     // 使用动态调整后的阈值进行判断
                     if (face_global_coords.det_score < current_face_det_min_score) continue;
+
+                    // 新增：在仅人脸模式下，进行正脸过滤
+                    // FaceAnalyzer::detect 已经填充了kps，所以可以直接使用
+                    if (is_face_only_mode) {
+                        if (!is_frontal_face_2d(face_global_coords.kps)) {
+                            continue; // 跳过非正脸
+                        }
+                    }
 
                     cv::Rect face_roi(face_global_coords.bbox);
                     face_roi &= cv::Rect(0, 0, W, H);
