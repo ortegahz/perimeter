@@ -99,6 +99,8 @@ struct ProcessConfig {
     int new_gid_time_window = 25 * 60 * 60 * 24;
     // 新增: 只有当 n > alarm_record_thresh 时，才将 GID 记录用于去重。
     int alarm_record_thresh = 3;
+    // 新增: 实时白名单，此集合中的 GID 将不会触发报警。
+    std::set<std::string> whitelist_gids;
 };
 
 /* ---------- 数据结构定义 ---------- */

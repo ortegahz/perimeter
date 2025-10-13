@@ -1188,6 +1188,13 @@ void FeatureProcessor::_check_and_process_alarm(
         float face_det_score,
         float face_clarity) {
 
+    // ======================= 【新增：白名单检查】 =======================
+    // 如果当前 GID 在本次调用传入的白名单中，则直接返回，不触发任何报警逻辑。
+    if (config.whitelist_gids.count(gid)) {
+        return;
+    }
+    // ======================= 【新增结束】 =======================
+
 //    // 新增逻辑：当人脸权重为 1.0 且人脸检测置信度 ≤ 0.95 时，不触发报警
 //    if (w_face >= 0.999f && face_det_score <= 0.95f) {
 //        return;
