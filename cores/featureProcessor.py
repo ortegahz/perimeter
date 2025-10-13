@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import time
@@ -251,6 +252,46 @@ class TrackAgg:
     def face_patches(self):
         return [p for _f, p in self.face]
 
+def is_frontal_face_2d(kps: np.ndarray, yaw_sym_threshold=0.7, roll_angle_threshold=25.0) -> bool:
+    """
+    使用简单的2D几何方法判断是否为正脸，不使用solvePnP。
+    :param kps: 5个关键点 (左眼, 右眼, 鼻子, 左嘴角, 右嘴角) 的 numpy 数组。
+    :param yaw_sym_threshold: 偏航角对称性阈值。衡量鼻子到双眼距离的对称性，越接近1要求越严格。
+    :param roll_angle_threshold: 翻滚角（头部倾斜）角度阈值。
+    :return: 如果是正脸则返回 True，否则返回 False。
+    """
+    try:
+        left_eye, right_eye, nose = kps[0], kps[1], kps[2]
+
+        # 1. 偏航角（Yaw）检测：基于鼻子与双眼的水平距离对称性
+        # 计算鼻子到左右眼的水平距离
+        dist_left = nose[0] - left_eye[0]
+        dist_right = right_eye[0] - nose[0]
+
+        # 确保关键点位置合理（例如，鼻子在双眼之间）
+        if dist_left <= 0 or dist_right <= 0:
+            return False
+
+        # 计算对称性比例
+        symmetry_ratio = min(dist_left, dist_right) / max(dist_left, dist_right)
+        if symmetry_ratio < yaw_sym_threshold:
+            return False # 侧脸
+
+        # 2. 翻滚角（Roll）检测：基于双眼连线的倾斜角度
+        dy = right_eye[1] - left_eye[1]
+        dx = right_eye[0] - left_eye[0]
+        # 避免除零错误
+        if abs(dx) < 1e-6:
+            return False
+
+        angle = math.degrees(math.atan2(dy, dx))
+        if abs(angle) > roll_angle_threshold:
+            return False # 头部倾斜过大
+
+    except Exception:
+        return False # 关键点数据异常
+
+    return True
 
 # ===============================================================
 @torch.inference_mode()
@@ -665,6 +706,9 @@ class FeatureProcessor:
                         bbox = np.array(face_det['bbox'], dtype=np.float32)
                         kps = np.array(face_det['kps'], dtype=np.float32) if face_det.get('kps') else None
                         face = Face(bbox=bbox, kps=kps, det_score=face_det.get('score', 0.99))
+
+                        if kps is None or not is_frontal_face_2d(kps):
+                            continue
 
                         x1, y1, x2, y2 = map(int, bbox)
                         if (x2 - x1) < 32 or (y2 - y1) < 32: continue
