@@ -29,6 +29,10 @@ from tools.test_frontal_face_3d import estimate_pose
 SENTINEL = None
 SHOW_SCALE = 0.5
 
+YAW_TH = 30
+PITCH_TH = 256
+ROLL_TH = 25
+
 cv2.imshow("__init__", np.zeros((1, 1, 3), np.uint8))
 cv2.waitKey(1)
 
@@ -250,9 +254,9 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
                     pose_text = f"Y:{yaw:.1f} P:{pitch:.1f} R:{roll:.1f}"
 
                     # Thresholds for frontal face detection
-                    yaw_threshold = 20
-                    pitch_threshold = 256
-                    roll_threshold = 25
+                    yaw_threshold = YAW_TH
+                    pitch_threshold = PITCH_TH
+                    roll_threshold = ROLL_TH
 
                     if abs(yaw) < yaw_threshold and abs(pitch) < pitch_threshold and abs(roll) < roll_threshold:
                         box_color = (0, 255, 0)  # Green for frontal face
@@ -368,9 +372,9 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
                     pose_text = f"Y:{yaw:.1f} P:{pitch:.1f} R:{roll:.1f}"
 
                     # Thresholds for frontal face detection
-                    yaw_threshold = 20
-                    pitch_threshold = 256
-                    roll_threshold = 25
+                    yaw_threshold = YAW_TH
+                    pitch_threshold = PITCH_TH
+                    roll_threshold = ROLL_TH
 
                     if abs(yaw) < yaw_threshold and abs(pitch) < pitch_threshold and abs(roll) < roll_threshold:
                         box_color = (0, 255, 0)  # Green for frontal face
