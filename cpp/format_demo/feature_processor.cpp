@@ -1237,12 +1237,13 @@ void FeatureProcessor::_check_and_process_alarm(
     }
     // ======================= 【新增结束】 =======================
 
-    // ======================= 【新增：纯人脸模式检查】 =======================
-    // 在纯人脸模式下，如果跟踪目标没有有效的（非空）人脸原型图，则不触发报警
-    if (is_face_only_mode && face_p.empty()) {
-        return;
+    // 在 _check_and_process_alarm 里添加当前帧检测检查
+    if (is_face_only_mode) {
+        if (face_p.empty()) return; // 历史无脸
+        if (!current_frame_face_boxes_.count(tid_str) || current_frame_face_boxes_[tid_str].area() <= 0) {
+            return; // 当前帧没检测到人脸框，不报警
+        }
     }
-    // ======================= 【新增结束】 =======================
 
 //    // 新增逻辑：当人脸权重为 1.0 且人脸检测置信度 ≤ 0.95 时，不触发报警
 //    if (w_face >= 0.999f && face_det_score <= 0.95f) {
