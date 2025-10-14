@@ -23,15 +23,11 @@ import subprocess
 import cv2
 import numpy as np
 
-from tools.test_frontal_face_3d import estimate_pose
+from tools.test_frontal_face_3d import estimate_pose, YAW_TH, PITCH_TH, ROLL_TH
 
 # --- 常量定义 ---
 SENTINEL = None
 SHOW_SCALE = 0.5
-
-YAW_TH = 30
-PITCH_TH = 256
-ROLL_TH = 25
 
 cv2.imshow("__init__", np.zeros((1, 1, 3), np.uint8))
 cv2.waitKey(1)

@@ -20,6 +20,10 @@ import numpy as np
 cv2.imshow("__init__", np.zeros((1, 1, 3), np.uint8))
 cv2.waitKey(1)
 
+YAW_TH = 30
+PITCH_TH = 256
+ROLL_TH = 25
+
 try:
     from cores.featureProcessor import FaceSearcher
 except ImportError:
@@ -112,7 +116,9 @@ def main():
     pa.add_argument("--image_dir", type=str, default="/home/manu/tmp/perimeter_cpp/G00005/bodies/")
     pa.add_argument("--provider", type=str, default="CPUExecutionProvider",
                     choices=["CPUExecutionProvider", "CUDAExecutionProvider"])
-    pa.add_argument("--show", default=True)
+    pa.add_argument("--show", default=False)
+    pa.add_argument("--output_file", type=str, default="/home/manu/tmp/pose_results_py.txt",
+                    help="用于保存姿态估计结果（yaw, pitch, roll）的文本文件路径。")
     args = pa.parse_args()
 
     if not os.path.isdir(args.image_dir):
@@ -137,62 +143,75 @@ def main():
         return
 
     print(f"找到 {len(image_paths)} 张图片，开始处理...")
+    print(f"结果将保存到: {args.output_file}")
 
-    for img_path in image_paths:
-        print(f"\n--- 处理: {img_path} ---")
-        frame = cv2.imread(img_path)
-        if frame is None:
-            print("  -> 无法读取图片。")
-            continue
+    with open(args.output_file, 'w') as f_out:
+        # 写入CSV文件头
+        f_out.write("ImagePath,FaceIndex,Yaw,Pitch,Roll\n")
 
-        faces_bboxes, faces_kpss = face_app.det_model.detect(frame, max_num=0, metric='default')
-        if faces_kpss is None or len(faces_kpss) == 0:
-            print("  -> 未检测到人脸。")
+        for img_path in image_paths:
+            print(f"\n--- 处理: {img_path} ---")
+            frame = cv2.imread(img_path)
+            if frame is None:
+                print("  -> 无法读取图片。")
+                continue
+
+            faces_bboxes, faces_kpss = face_app.det_model.detect(frame, max_num=0, metric='default')
+            if faces_kpss is None or len(faces_kpss) == 0:
+                print("  -> 未检测到人脸。")
+                if args.show:
+                    cv2.imshow("Pose", frame)
+                    if cv2.waitKey(0) & 0xFF == ord('q'):
+                        break
+                continue
+
+            h, w = frame.shape[:2]
+            print(f"  -> 检测到 {len(faces_kpss)} 张人脸")
+            for i, (bbox, kps) in enumerate(zip(faces_bboxes, faces_kpss)):
+                yaw_pitch_roll = estimate_pose((h, w), np.array(kps, dtype=np.float32))
+                if yaw_pitch_roll is None:
+                    print(f"  人脸 #{i + 1}: 姿态估计失败。")
+                    continue
+                yaw, pitch, roll = yaw_pitch_roll
+                print(f"  人脸 #{i + 1} 姿态角: Yaw={yaw:.2f}°, Pitch={pitch:.2f}°, Roll={roll:.2f}°")
+
+                # 将结果写入文件
+                output_line = f"{img_path},{i + 1},{yaw:.4f},{pitch:.4f},{roll:.4f}\n"
+                f_out.write(output_line)
+
+                if args.show:
+                    # --- 新增：根据姿态角判断是否为正脸 ---
+                    yaw_threshold = YAW_TH
+                    pitch_threshold = PITCH_TH
+                    roll_threshold = ROLL_TH
+
+                    if abs(yaw) < yaw_threshold and abs(pitch) < pitch_threshold and abs(roll) < roll_threshold:
+                        box_color = (0, 255, 0)  # 绿色 (正脸)
+                        print(f"    -> 判断为: 正脸")
+                    else:
+                        box_color = (0, 0, 255) # 黄色 (侧脸)
+                        print(f"    -> 判断为: 侧脸")
+                    # --- 结束新增 ---
+
+                    # 绘制关键点和框
+                    x1, y1, x2, y2 = bbox[:4].astype(int)
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+                    for (x, y) in kps.astype(int):
+                        cv2.circle(frame, (x, y), 2, (0, 0, 255), -1, cv2.LINE_AA)
+                    # 在框上方绘制姿态文字
+                    label = f"Y:{yaw:.1f} P:{pitch:.1f} R:{roll:.1f}"
+                    cv2.putText(frame, label, (x1, y1 - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
             if args.show:
                 cv2.imshow("Pose", frame)
-                if cv2.waitKey(0) & 0xFF == ord('q'):
+                key = cv2.waitKey(0) & 0xFF
+                if key == ord('q'):
                     break
-            continue
 
-        h, w = frame.shape[:2]
-        print(f"  -> 检测到 {len(faces_kpss)} 张人脸")
-        for i, (bbox, kps) in enumerate(zip(faces_bboxes, faces_kpss)):
-            yaw_pitch_roll = estimate_pose((h, w), np.array(kps, dtype=np.float32))
-            if yaw_pitch_roll is None:
-                print(f"  人脸 #{i + 1}: 姿态估计失败。")
-                continue
-            yaw, pitch, roll = yaw_pitch_roll
-            print(f"  人脸 #{i + 1} 姿态角: Yaw={yaw:.2f}°, Pitch={pitch:.2f}°, Roll={roll:.2f}°")
-
-            if args.show:
-                # --- 新增：根据姿态角判断是否为正脸 ---
-                yaw_threshold = 20
-                pitch_threshold = 256
-                roll_threshold = 25
-
-                if abs(yaw) < yaw_threshold and abs(pitch) < pitch_threshold and abs(roll) < roll_threshold:
-                    box_color = (0, 255, 0)  # 绿色 (正脸)
-                    print(f"    -> 判断为: 正脸")
-                else:
-                    box_color = (0, 0, 255) # 黄色 (侧脸)
-                    print(f"    -> 判断为: 侧脸")
-                # --- 结束新增 ---
-
-                # 绘制关键点和框
-                x1, y1, x2, y2 = bbox[:4].astype(int)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
-                for (x, y) in kps.astype(int):
-                    cv2.circle(frame, (x, y), 2, (0, 0, 255), -1, cv2.LINE_AA)
-                # 在框上方绘制姿态文字
-                label = f"Y:{yaw:.1f} P:{pitch:.1f} R:{roll:.1f}"
-                cv2.putText(frame, label, (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-
-        if args.show:
-            cv2.imshow("Pose", frame)
-            key = cv2.waitKey(0) & 0xFF
-            if key == ord('q'):
-                break
+            # 如果在显示模式下按下了 'q', 提前跳出外层循环
+            if 'key' in locals() and key == ord('q'):
+                 break
 
     if args.show:
         cv2.destroyAllWindows()
