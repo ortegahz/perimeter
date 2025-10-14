@@ -13,6 +13,7 @@
 #include <optional>
 #include <cmath> // For std::atan2, std::abs
 #include <sstream>
+#include "cores/face/PoseEstimator.hpp" // 新增头文件
 
 // ======================= 【MODIFIED】 =======================
 // 添加一个宏来控制所有磁盘I/O操作
@@ -48,45 +49,35 @@ static float calculate_clarity_score(const cv::Mat& face_patch) {
 }
 // ======================= 【修改结束】 =======================
 
-// ======================= 【NEW: 正脸判断算法】 =======================
+// ======================= 【MODIFIED: 正脸判断算法 (PnP法)】 =======================
 /**
- * @brief 使用简单的2D几何方法判断是否为正脸，不使用solvePnP。
+ * @brief 使用 solvePnP 估计头部姿态并判断是否为正脸。
  * @param kps 5个关键点 (左眼, 右眼, 鼻子, 左嘴角, 右嘴角) 的 std::vector<cv::Point2f>。
- * @param yaw_sym_threshold 偏航角对称性阈值。衡量鼻子到双眼距离的对称性，越接近1要求越严格。
- * @param roll_angle_threshold 翻滚角（头部倾斜）角度阈值。
+ * @param image_size 原始图像的尺寸。
  * @return 如果是正脸则返回 true，否则返回 false。
  */
-static bool is_frontal_face_2d(const std::vector<cv::Point2f>& kps, float yaw_sym_threshold = 0.7f, float roll_angle_threshold = 25.0f) {
-    // 至少需要3个关键点（双眼和鼻子）
-    if (kps.size() < 3) {
+static bool is_frontal_face_pnp(const std::vector<cv::Point2f>& kps, cv::Size image_size) {
+    // 定义姿态角阈值 (来自Python参考)
+    constexpr float YAW_TH = 30.0f;
+    // 注意：用户提供的 PITCH_TH=256 疑似笔误，根据Python代码和常识修正为 25.0f
+    constexpr float PITCH_TH = 256.0f;
+    constexpr float ROLL_TH = 25.0f;
+
+    if (kps.size() != 5) {
         return false;
     }
 
-    try {
-        const auto& left_eye = kps[0];
-        const auto& right_eye = kps[1];
-        const auto& nose = kps[2];
+    auto pose_angles = PoseEstimator::estimate_pose(image_size, kps);
 
-        // 1. 偏航角（Yaw）检测：基于鼻子与双眼的水平距离对称性
-        float dist_left = nose.x - left_eye.x;
-        float dist_right = right_eye.x - nose.x;
+    if (!pose_angles.has_value()) {
+        return false; // 姿态估计失败，保守地认为不是正脸
+    }
 
-        // 确保关键点位置合理（鼻子在双眼之间）
-        if (dist_left <= 0 || dist_right <= 0) return false;
-
-        float symmetry_ratio = std::min(dist_left, dist_right) / std::max(dist_left, dist_right);
-        if (symmetry_ratio < yaw_sym_threshold) return false; // 侧脸
-
-        // 2. 翻滚角（Roll）检测：基于双眼连线的倾斜角度
-        float dy = right_eye.y - left_eye.y;
-        float dx = right_eye.x - left_eye.x;
-        if (std::abs(dx) < 1e-6f) return false; // 避免除零
-
-        float angle = std::atan2(dy, dx) * 180.0f / M_PI;
-        return std::abs(angle) <= roll_angle_threshold;
-    } catch (const std::exception&) { return false; }
+    const auto &angles = pose_angles.value();
+    return std::abs(angles.yaw) < YAW_TH &&
+           std::abs(angles.pitch) < PITCH_TH &&
+           std::abs(angles.roll) < ROLL_TH;
 }
-// ======================= 【修改结束】 =======================
 
 const int REID_INPUT_WIDTH = 128;
 const int REID_INPUT_HEIGHT = 256;
@@ -1488,9 +1479,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     if (face_global_coords.det_score < current_face_det_min_score) continue;
 
                     // 新增：在仅人脸模式下，进行正脸过滤
-                    // FaceAnalyzer::detect 已经填充了kps，所以可以直接使用
                     if (is_face_only_mode) {
-                        if (!is_frontal_face_2d(face_global_coords.kps)) {
+                        // 使用新的基于PnP的姿态估计算法判断是否为正脸
+                        if (!is_frontal_face_pnp(face_global_coords.kps, cpu_frame.size())) {
                             continue; // 跳过非正脸
                         }
                     }

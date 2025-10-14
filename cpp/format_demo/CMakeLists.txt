@@ -75,6 +75,7 @@ add_executable(demo_cpp
         feature_processor.cpp
         cores/personReid/PersonReid_dla.cpp
         cores/face/FaceAnalyzer.cpp
+        cores/face/PoseEstimator.cpp
 )
 
 add_executable(face_extractor
