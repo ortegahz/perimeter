@@ -1227,11 +1227,19 @@ void FeatureProcessor::_check_and_process_alarm(
         std::vector<std::tuple<std::string, std::string, std::string, int, bool>> &triggered_alarms_this_frame,
         float w_face,
         float face_det_score,
-        float face_clarity) {
+        float face_clarity,
+        bool is_face_only_mode) {
 
     // ======================= 【新增：白名单检查】 =======================
     // 如果当前 GID 在本次调用传入的白名单中，则直接返回，不触发任何报警逻辑。
     if (config.whitelist_gids.count(gid)) {
+        return;
+    }
+    // ======================= 【新增结束】 =======================
+
+    // ======================= 【新增：纯人脸模式检查】 =======================
+    // 在纯人脸模式下，如果跟踪目标没有有效的（非空）人脸原型图，则不触发报警
+    if (is_face_only_mode && face_p.empty()) {
         return;
     }
     // ======================= 【新增结束】 =======================
@@ -1627,7 +1635,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                          dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                          w_face,
                                          current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
-                                         current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
+                                         current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
+                                         is_face_only_mode
                 );
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
@@ -1647,7 +1656,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                      dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                      w_face,
                                      current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
-                                     current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
+                                     current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
+                                     is_face_only_mode
             );
 
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
@@ -1664,7 +1674,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                          dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                          w_face,
                                          current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
-                                         current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
+                                         current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
+                                         is_face_only_mode
                 );
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
@@ -1686,7 +1697,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                              dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                              w_face,
                                              current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
-                                             current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f
+                                             current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
+                                             is_face_only_mode
                     );
 
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};

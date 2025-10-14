@@ -420,7 +420,8 @@ private:
             std::vector<std::tuple<std::string, std::string, std::string, int, bool>> &triggered_alarms_this_frame,
             float w_face,
             float face_det_score,
-            float face_clarity);
+            float face_clarity,
+            bool is_face_only_mode);
     // ======================= 【修改结束】 =======================
 
     // I/O线程相关
