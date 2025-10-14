@@ -115,6 +115,12 @@ add_executable(reid_demo_dla
 )
 # ======================= 【修改结束】 =======================
 
+# ======================= 【新增: 人脸姿态估计测试程序】 =======================
+add_executable(pose_estimator_pnp
+        test_pose_pnp.cpp
+        cores/face/FaceAnalyzer.cpp
+)
+
 add_executable(db_test_loader
         db_test_loader.cpp
 )
@@ -187,6 +193,15 @@ target_link_libraries(reid_demo_dla PRIVATE
 )
 # ======================= 【修改结束】 =======================
 
+# ======================= 【新增: 链接姿态估计程序的库】 =======================
+target_link_libraries(pose_estimator_pnp PRIVATE
+        ${OpenCV_LIBS}
+        nlohmann_json
+        ${TRT_LIBS}
+        ${CUDA_LIBRARIES}
+        ${CUDA_EXTRA_LIBS}
+)
+
 target_link_libraries(db_test_loader PRIVATE
         ${OpenCV_LIBS}
         sqlite3
@@ -194,7 +209,7 @@ target_link_libraries(db_test_loader PRIVATE
 
 # ----------------- 文件系统库 -----------------
 # 为所有目标统一处理 C++17 filesystem 链接问题
-foreach (TARGET demo_cpp face_extractor face_extractor_dla face_extractor_dla_v1 face_recognizer face_recognizer_dla reid_demo reid_demo_dla db_test_loader)
+foreach (TARGET demo_cpp face_extractor face_extractor_dla face_extractor_dla_v1 face_recognizer face_recognizer_dla reid_demo reid_demo_dla db_test_loader pose_estimator_pnp)
     if (CMAKE_COMPILER_IS_GNUCXX AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
         target_link_libraries(${TARGET} PRIVATE stdc++fs)
     endif ()
