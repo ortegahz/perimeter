@@ -117,7 +117,7 @@ def main():
     pa.add_argument("--provider", type=str, default="CPUExecutionProvider",
                     choices=["CPUExecutionProvider", "CUDAExecutionProvider"])
     pa.add_argument("--show", default=False)
-    pa.add_argument("--output_file", type=str, default="/home/manu/tmp/pose_results_py.txt",
+    pa.add_argument("--output_file", type=str, default="/home/manu/nfs/pose_results_py.txt",
                     help="用于保存姿态估计结果（yaw, pitch, roll）的文本文件路径。")
     args = pa.parse_args()
 
@@ -137,6 +137,9 @@ def main():
     image_paths = []
     for ext in image_exts:
         image_paths.extend(glob.glob(os.path.join(args.image_dir, "**", ext), recursive=True))
+
+    # 按文件名排序，确保处理顺序一致
+    image_paths.sort()
 
     if not image_paths:
         print(f"在 {args.image_dir} 中未找到任何图片。")
@@ -176,7 +179,7 @@ def main():
                 print(f"  人脸 #{i + 1} 姿态角: Yaw={yaw:.2f}°, Pitch={pitch:.2f}°, Roll={roll:.2f}°")
 
                 # 将结果写入文件
-                output_line = f"{img_path},{i + 1},{yaw:.4f},{pitch:.4f},{roll:.4f}\n"
+                output_line = f"{os.path.basename(img_path)},{i + 1},{pitch:.4f},{yaw:.4f},{roll:.4f}\n"
                 f_out.write(output_line)
 
                 if args.show:

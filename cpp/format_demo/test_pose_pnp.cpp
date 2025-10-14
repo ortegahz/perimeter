@@ -62,7 +62,7 @@ PoseAngles rotationMatrixToEulerAngles(const cv::Mat &R) {
     if (!singular) {
         x = std::atan2(R.at<double>(2, 1), R.at<double>(2, 2));
         y = std::atan2(-R.at<double>(2, 0), sy);
-        z = std.atan2(R.at<double>(1, 0), R.at<double>(0, 0));
+        z = std::atan2(R.at<double>(1, 0), R.at<double>(0, 0));
     } else {
         x = std::atan2(-R.at<double>(1, 2), R.at<double>(1, 1));
         y = std::atan2(-R.at<double>(2, 0), sy);
@@ -123,30 +123,13 @@ std::optional<PoseAngles> estimate_pose(cv::Size image_size, const std::vector<c
 }
 
 int main(int argc, char *argv[]) {
-    // Use OpenCV's command line parser for argument handling
-    cv::String keys =
-            "{help h usage ? |      | print this message                 }"
-            "{image_dir      | /home/manu/tmp/perimeter_cpp/G00005/bodies/ | path to image directory }"
-            "{det_model      | ../models/det.onnx | path to face detection ONNX model }"
-            "{rec_model      | ../models/rec.onnx | path to face recognition ONNX model (needed for FaceAnalyzer init) }"
-            "{provider       | CPUExecutionProvider | execution provider: CPUExecutionProvider or CUDAExecutionProvider }"
-            "{show           | false | show image with results                 }"
-            "{output_file    | /home/manu/tmp/pose_results_cpp.txt | path to output text file }";
-
-    cv::CommandLineParser parser(argc, argv, keys);
-    parser.about("C++ Face Pose Estimation using FaceAnalyzer and solvePnP.");
-
-    if (parser.has("help")) {
-        parser.printMessage();
-        return 0;
-    }
-
-    std::string image_dir = parser.get<std::string>("image_dir");
-    std::string det_model = parser.get<std::string>("det_model");
-    std::string rec_model = parser.get<std::string>("rec_model");
-    std::string provider = parser.get<std::string>("provider");
-    bool show = parser.get<bool>("show");
-    std::string output_file = parser.get<std::string>("output_file");
+    // 参数设置 (输入已修改为固定值)
+    std::string image_dir      = "/mnt/nfs/perimeter_cpp_v0/G00005/bodies/";
+    std::string det_model      = "/mnt/nfs/det_10g_simplified.onnx";
+    std::string rec_model      = "/mnt/nfs/w600k_r50_simplified.onnx";
+    std::string provider       = "CUDAExecutionProvider";
+    bool        show           = false;
+    std::string output_file    = "/mnt/nfs/pose_results_cpp.txt";
 
     if (!fs::is_directory(image_dir)) {
         std::cerr << "错误：找不到目录 " << image_dir << std::endl;
@@ -230,7 +213,7 @@ int main(int argc, char *argv[]) {
                           << "°, Pitch=" << pitch << "°, Roll=" << roll << "°" << std::endl;
 
                 // Write to file with 4 decimal places for direct comparison
-                f_out << img_path << "," << i + 1 << ","
+                f_out << fs::path(img_path).filename().string() << "," << i + 1 << ","
                       << std::fixed << std::setprecision(4) << yaw << ","
                       << pitch << "," << roll << "\n";
 
