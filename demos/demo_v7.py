@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing as mp
+import math
 import multiprocessing.queues as mpq
 import queue
 import signal
@@ -21,6 +22,8 @@ import subprocess
 
 import cv2
 import numpy as np
+
+from tools.test_frontal_face_3d import estimate_pose
 
 # --- 常量定义 ---
 SENTINEL = None
@@ -230,8 +233,40 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
         for face in all_faces:
             x1, y1, x2, y2 = [int(v * SHOW_SCALE) for v in face["bbox"]]
             score = face.get("score", 0.0)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-            cv2.putText(frame, f"S:{score:.2f}", (x1, max(y1 - 5, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+
+            # --- Pose Estimation Logic ---
+            box_color = (255, 0, 0)  # Default blue
+            pose_text = None
+            if "kps" in face and face["kps"] and len(face["kps"]) == 5:
+                # Original frame dimensions are needed for camera matrix
+                h_orig = int(frame.shape[0] / SHOW_SCALE)
+                w_orig = int(frame.shape[1] / SHOW_SCALE)
+
+                image_pts = np.array(face["kps"], dtype=np.float32)
+                yaw_pitch_roll = estimate_pose((h_orig, w_orig), image_pts)
+
+                if yaw_pitch_roll is not None:
+                    yaw, pitch, roll = yaw_pitch_roll
+                    pose_text = f"Y:{yaw:.1f} P:{pitch:.1f} R:{roll:.1f}"
+
+                    # Thresholds for frontal face detection
+                    yaw_threshold = 20
+                    pitch_threshold = 256
+                    roll_threshold = 25
+
+                    if abs(yaw) < yaw_threshold and abs(pitch) < pitch_threshold and abs(roll) < roll_threshold:
+                        box_color = (0, 255, 0)  # Green for frontal face
+                    else:
+                        box_color = (0, 0, 255)  # Red for side face
+
+            # --- Drawing ---
+            cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+            # Display pose text if available, otherwise display score
+            if pose_text:
+                cv2.putText(frame, pose_text, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
+            else:
+                cv2.putText(frame, f"S:{score:.2f}", (x1, max(y1 - 5, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
+
             if "kps" in face and face["kps"]:
                 for kx, ky in face['kps']:
                     cv2.circle(frame, (int(kx * SHOW_SCALE), int(ky * SHOW_SCALE)), 1, (0, 0, 255), 2)
@@ -316,8 +351,39 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
         for face in all_faces:
             x1, y1, x2, y2 = [int(v * SHOW_SCALE) for v in face["bbox"]]
             score = face.get("score", 0.0)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-            cv2.putText(frame, f"S:{score:.2f}", (x1, max(y1 - 5, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+
+            # --- Pose Estimation Logic ---
+            box_color = (255, 0, 0)  # Default blue
+            pose_text = None
+            if "kps" in face and face["kps"] and len(face["kps"]) == 5:
+                # Original frame dimensions are needed for camera matrix
+                h_orig = int(frame.shape[0] / SHOW_SCALE)
+                w_orig = int(frame.shape[1] / SHOW_SCALE)
+
+                image_pts = np.array(face["kps"], dtype=np.float32)
+                yaw_pitch_roll = estimate_pose((h_orig, w_orig), image_pts)
+
+                if yaw_pitch_roll is not None:
+                    yaw, pitch, roll = yaw_pitch_roll
+                    pose_text = f"Y:{yaw:.1f} P:{pitch:.1f} R:{roll:.1f}"
+
+                    # Thresholds for frontal face detection
+                    yaw_threshold = 20
+                    pitch_threshold = 256
+                    roll_threshold = 25
+
+                    if abs(yaw) < yaw_threshold and abs(pitch) < pitch_threshold and abs(roll) < roll_threshold:
+                        box_color = (0, 255, 0)  # Green for frontal face
+                    else:
+                        box_color = (0, 0, 255)  # Red for side face
+
+            # --- Drawing ---
+            cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+            if pose_text:
+                cv2.putText(frame, pose_text, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
+            else:
+                cv2.putText(frame, f"S:{score:.2f}", (x1, max(y1 - 5, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
+
             if "kps" in face and face["kps"]:
                 for kx, ky in face['kps']:
                     cv2.circle(frame, (int(kx * SHOW_SCALE), int(ky * SHOW_SCALE)), 1, (0, 0, 255), 2)
