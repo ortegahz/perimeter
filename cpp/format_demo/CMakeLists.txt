@@ -119,6 +119,7 @@ add_executable(reid_demo_dla
 add_executable(pose_estimator_pnp
         test_pose_pnp.cpp
         cores/face/FaceAnalyzer.cpp
+        cores/face/PoseEstimator.cpp
 )
 
 add_executable(db_test_loader

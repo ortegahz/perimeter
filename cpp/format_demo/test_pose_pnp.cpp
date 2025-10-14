@@ -26,6 +26,8 @@
 
 // Include the project's existing FaceAnalyzer header
 #include "cores/face/FaceAnalyzer.hpp"
+// Include the new PoseEstimator header for pose calculation
+#include "cores/face/PoseEstimator.hpp"
 
 namespace fs = std::filesystem;
 
@@ -33,94 +35,6 @@ namespace fs = std::filesystem;
 constexpr int YAW_TH = 30;
 constexpr int PITCH_TH = 25;
 constexpr int ROLL_TH = 25;
-
-// 3D model points corresponding to ArcFace 5-point landmarks:
-// [left_eye, right_eye, nose_tip, left_mouth_corner, right_mouth_corner]
-const std::vector<cv::Point3f> OBJECT_POINTS_3D = {
-        {-30.0f, 40.0f,  0.0f},   // Left eye
-        {30.0f,  40.0f,  0.0f},    // Right eye
-        {0.0f,   20.0f,  30.0f},    // Nose tip
-        {-25.0f, -20.0f, 0.0f},  // Left mouth corner
-        {25.0f,  -20.0f, 0.0f}    // Right mouth corner
-};
-
-// Structure to hold calculated pose angles
-struct PoseAngles {
-    double pitch, yaw, roll;
-};
-
-/**
- * @brief Converts a rotation matrix to Euler angles.
- * @param R The rotation matrix.
- * @return A PoseAngles struct containing pitch, yaw, and roll in degrees.
- */
-PoseAngles rotationMatrixToEulerAngles(const cv::Mat &R) {
-    double sy = std::sqrt(R.at<double>(0, 0) * R.at<double>(0, 0) + R.at<double>(1, 0) * R.at<double>(1, 0));
-    bool singular = sy < 1e-6;
-
-    double x, y, z;
-    if (!singular) {
-        x = std::atan2(R.at<double>(2, 1), R.at<double>(2, 2));
-        y = std::atan2(-R.at<double>(2, 0), sy);
-        z = std::atan2(R.at<double>(1, 0), R.at<double>(0, 0));
-    } else {
-        x = std::atan2(-R.at<double>(1, 2), R.at<double>(1, 1));
-        y = std::atan2(-R.at<double>(2, 0), sy);
-        z = 0;
-    }
-
-    // Return pitch, yaw, roll in degrees
-    return {x * 180.0 / CV_PI, y * 180.0 / CV_PI, z * 180.0 / CV_PI};
-}
-
-/**
- * @brief Estimates head pose using solvePnP.
- * @param image_size The size of the input image.
- * @param image_pts A vector of 5 2D keypoints.
- * @return An optional containing PoseAngles. Returns std::nullopt on failure.
- */
-std::optional<PoseAngles> estimate_pose(cv::Size image_size, const std::vector<cv::Point2f> &image_pts) {
-    size_t n_points = image_pts.size();
-    if (n_points < 4) {
-        return std::nullopt;
-    }
-
-    double focal_length = image_size.width;
-    cv::Point2d center(image_size.width / 2.0, image_size.height / 2.0);
-
-    cv::Mat camera_matrix = (cv::Mat_<double>(3, 3) << focal_length, 0, center.x,
-            0, focal_length, center.y,
-            0, 0, 1);
-    cv::Mat dist_coeffs = cv::Mat::zeros(4, 1, CV_64F); // Assume no lens distortion
-
-    cv::Mat rvec, tvec;
-    bool success = false;
-
-    // Select PnP algorithm based on point count, matching the Python script's logic
-    if (n_points >= 6) {
-        success = cv::solvePnP(OBJECT_POINTS_3D, image_pts, camera_matrix, dist_coeffs, rvec, tvec, false,
-                               cv::SOLVEPNP_ITERATIVE);
-    } else { // 4-5 points
-        success = cv::solvePnP(OBJECT_POINTS_3D, image_pts, camera_matrix, dist_coeffs, rvec, tvec, false,
-                               cv::SOLVEPNP_EPNP);
-    }
-
-    if (!success) {
-        return std::nullopt;
-    }
-
-    // Refine with Levenberg-Marquardt if we used an approximate method for few points
-    if (n_points < 6) {
-        cv::solvePnPRefineLM(OBJECT_POINTS_3D, image_pts, camera_matrix, dist_coeffs, rvec, tvec);
-    }
-
-    cv::Mat rot_mat;
-    cv::Rodrigues(rvec, rot_mat);
-
-    PoseAngles angles = rotationMatrixToEulerAngles(rot_mat);
-    // Return as yaw, pitch, roll to match Python script's tuple order
-    return PoseAngles{angles.yaw, angles.pitch, angles.roll};
-}
 
 int main(int argc, char *argv[]) {
     // 参数设置 (输入已修改为固定值)
@@ -200,22 +114,24 @@ int main(int argc, char *argv[]) {
             for (size_t i = 0; i < faces.size(); ++i) {
                 auto &face = faces[i];
 
-                auto yaw_pitch_roll = estimate_pose(frame.size(), face.kps);
-                if (!yaw_pitch_roll.has_value()) {
+                // Use the new static method from the PoseEstimator class
+                auto pose_angles = PoseEstimator::estimate_pose(frame.size(), face.kps);
+                if (!pose_angles.has_value()) {
                     std::cout << "  人脸 #" << i + 1 << ": 姿态估计失败。" << std::endl;
                     continue;
                 }
 
-                double yaw = yaw_pitch_roll.value().yaw;
-                double pitch = yaw_pitch_roll.value().pitch;
-                double roll = yaw_pitch_roll.value().roll;
+                // The new PoseEstimator correctly assigns pitch and yaw.
+                double pitch = pose_angles.value().pitch;
+                double yaw = pose_angles.value().yaw;
+                double roll  = pose_angles.value().roll;
                 std::cout << "  人脸 #" << i + 1 << " 姿态角: Yaw=" << std::fixed << std::setprecision(2) << yaw
                           << "°, Pitch=" << pitch << "°, Roll=" << roll << "°" << std::endl;
 
                 // Write to file with 4 decimal places for direct comparison
                 f_out << fs::path(img_path).filename().string() << "," << i + 1 << ","
-                      << std::fixed << std::setprecision(4) << yaw << ","
-                      << pitch << "," << roll << "\n";
+                      << std::fixed << std::setprecision(4) << pitch << ","
+                      << yaw << "," << roll << "\n";
 
                 if (show) {
                     cv::Scalar box_color;
