@@ -165,9 +165,22 @@ def main():
             print(f"  人脸 #{i + 1} 姿态角: Yaw={yaw:.2f}°, Pitch={pitch:.2f}°, Roll={roll:.2f}°")
 
             if args.show:
+                # --- 新增：根据姿态角判断是否为正脸 ---
+                yaw_threshold = 20
+                pitch_threshold = 256
+                roll_threshold = 25
+
+                if abs(yaw) < yaw_threshold and abs(pitch) < pitch_threshold and abs(roll) < roll_threshold:
+                    box_color = (0, 255, 0)  # 绿色 (正脸)
+                    print(f"    -> 判断为: 正脸")
+                else:
+                    box_color = (0, 0, 255) # 黄色 (侧脸)
+                    print(f"    -> 判断为: 侧脸")
+                # --- 结束新增 ---
+
                 # 绘制关键点和框
                 x1, y1, x2, y2 = bbox[:4].astype(int)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
                 for (x, y) in kps.astype(int):
                     cv2.circle(frame, (x, y), 2, (0, 0, 255), -1, cv2.LINE_AA)
                 # 在框上方绘制姿态文字
