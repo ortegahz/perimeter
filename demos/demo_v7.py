@@ -265,12 +265,11 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
 
             # --- Drawing ---
             cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
-            # Display pose text if available, otherwise display score
+            # Display pose text if available
             if pose_text:
                 cv2.putText(frame, pose_text, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
-            else:
-                cv2.putText(frame, f"S:{score:.2f}", (x1, max(y1 - 5, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
-
+            # Always display score below the box
+            cv2.putText(frame, f"S:{score:.2f}", (x1, y2 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
             if "kps" in face and face["kps"]:
                 for kx, ky in face['kps']:
                     cv2.circle(frame, (int(kx * SHOW_SCALE), int(ky * SHOW_SCALE)), 1, (0, 0, 255), 2)
@@ -383,11 +382,11 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
 
             # --- Drawing ---
             cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+            # Display pose text if available
             if pose_text:
                 cv2.putText(frame, pose_text, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
-            else:
-                cv2.putText(frame, f"S:{score:.2f}", (x1, max(y1 - 5, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
-
+            # Always display score below the box
+            cv2.putText(frame, f"S:{score:.2f}", (x1, y2 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
             if "kps" in face and face["kps"]:
                 for kx, ky in face['kps']:
                     cv2.circle(frame, (int(kx * SHOW_SCALE), int(ky * SHOW_SCALE)), 1, (0, 0, 255), 2)
