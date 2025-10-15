@@ -13,7 +13,7 @@ const std::vector<cv::Point3f> PoseEstimator::OBJECT_POINTS_3D = {
         {25.0f,  -20.0f, 0.0f}    // Right mouth corner
 };
 
-PoseAngles PoseEstimator::rotationMatrixToEulerAngles(const cv::Mat &R) {
+PoseEstimator::EulerAngles PoseEstimator::rotationMatrixToEulerAngles(const cv::Mat &R) {
     double sy = std::sqrt(R.at<double>(0, 0) * R.at<double>(0, 0) + R.at<double>(1, 0) * R.at<double>(1, 0));
     bool singular = sy < 1e-6;
 
@@ -32,7 +32,7 @@ PoseAngles PoseEstimator::rotationMatrixToEulerAngles(const cv::Mat &R) {
     return {x * 180.0 / CV_PI, y * 180.0 / CV_PI, z * 180.0 / CV_PI};
 }
 
-std::optional<PoseAngles> PoseEstimator::estimate_pose(cv::Size image_size, const std::vector<cv::Point2f> &image_pts) {
+std::optional<PoseResult> PoseEstimator::estimate_pose(cv::Size image_size, const std::vector<cv::Point2f> &image_pts) {
     // This estimator is specifically for 5-point landmarks from an ArcFace-style model.
     if (image_pts.size() != 5) {
         return std::nullopt;
@@ -64,9 +64,29 @@ std::optional<PoseAngles> PoseEstimator::estimate_pose(cv::Size image_size, cons
     cv::Mat rot_mat;
     cv::Rodrigues(rvec, rot_mat);
 
-    // The original test app code had a bug that swapped pitch and yaw upon return.
-    // This implementation is correct: it returns a PoseAngles struct where
-    // .pitch is pitch, .yaw is yaw, and .roll is roll.
-    return rotationMatrixToEulerAngles(rot_mat);
+    EulerAngles angles = rotationMatrixToEulerAngles(rot_mat);
+    double yaw = angles.yaw;
+    double roll = angles.roll;
+
+    // --- New: Calculate pitch score based on keypoint ratio ---
+    // Keypoint order: [left_eye, right_eye, nose_tip, left_mouth_corner, right_mouth_corner]
+    cv::Point2f left_eye = image_pts[0];
+    cv::Point2f right_eye = image_pts[1];
+    cv::Point2f nose = image_pts[2];
+    cv::Point2f left_mouth = image_pts[3];
+    cv::Point2f right_mouth = image_pts[4];
+
+    cv::Point2f eye_center = (left_eye + right_eye) * 0.5f;
+    cv::Point2f mouth_center = (left_mouth + right_mouth) * 0.5f;
+
+    double eye_to_nose = cv::norm(nose - eye_center);
+    double pitch_score;
+    if (eye_to_nose < 1e-6) {
+        pitch_score = 1.0; // Avoid division by zero, return neutral value
+    } else {
+        double nose_to_mouth = cv::norm(mouth_center - nose);
+        pitch_score = nose_to_mouth / eye_to_nose;
+    }
+    return PoseResult{yaw, pitch_score, roll};
 }
 

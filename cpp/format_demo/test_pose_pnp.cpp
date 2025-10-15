@@ -33,8 +33,9 @@ namespace fs = std::filesystem;
 
 // Constants for pose status visualization
 constexpr int YAW_TH = 30;
-constexpr int PITCH_TH = 25;
 constexpr int ROLL_TH = 25;
+constexpr double PITCH_RATIO_LOWER_TH = 0.6;
+constexpr double PITCH_RATIO_UPPER_TH = 1.0;
 
 int main(int argc, char *argv[]) {
     // 参数设置 (输入已修改为固定值)
@@ -115,31 +116,31 @@ int main(int argc, char *argv[]) {
                 auto &face = faces[i];
 
                 // Use the new static method from the PoseEstimator class
-                auto pose_angles = PoseEstimator::estimate_pose(frame.size(), face.kps);
-                if (!pose_angles.has_value()) {
+                auto pose_result = PoseEstimator::estimate_pose(frame.size(), face.kps);
+                if (!pose_result.has_value()) {
                     std::cout << "  人脸 #" << i + 1 << ": 姿态估计失败。" << std::endl;
                     continue;
                 }
 
-                // The new PoseEstimator correctly assigns pitch and yaw.
-                double pitch = pose_angles.value().pitch;
-                double yaw = pose_angles.value().yaw;
-                double roll  = pose_angles.value().roll;
-                std::cout << "  人脸 #" << i + 1 << " 姿态角: Yaw=" << std::fixed << std::setprecision(2) << yaw
-                          << "°, Pitch=" << pitch << "°, Roll=" << roll << "°" << std::endl;
+                double yaw = pose_result.value().yaw;
+                double pitch_score = pose_result.value().pitch_score;
+                double roll = pose_result.value().roll;
+                std::cout << "  人脸 #" << i + 1 << " 姿态: Yaw=" << std::fixed << std::setprecision(2) << yaw
+                          << "°, Pitch_Score=" << pitch_score << ", Roll=" << roll << "°" << std::endl;
 
-                // Write to file with 4 decimal places for direct comparison
+                // Write to file, strictly matching the Python script's output format (pitch_score, yaw, roll)
                 f_out << fs::path(img_path).filename().string() << "," << i + 1 << ","
-                      << std::fixed << std::setprecision(4) << pitch << ","
+                      << std::fixed << std::setprecision(4) << pitch_score << ","
                       << yaw << "," << roll << "\n";
 
                 if (show) {
                     cv::Scalar box_color;
-                    if (std::abs(yaw) < YAW_TH && std::abs(pitch) < PITCH_TH && std::abs(roll) < ROLL_TH) {
+                    if (std::abs(yaw) < YAW_TH && std::abs(roll) < ROLL_TH &&
+                        pitch_score > PITCH_RATIO_LOWER_TH && pitch_score < PITCH_RATIO_UPPER_TH) {
                         box_color = cv::Scalar(0, 255, 0); // Green (frontal)
                         std::cout << "    -> 判断为: 正脸" << std::endl;
                     } else {
-                        box_color = cv::Scalar(0, 0, 255); // Red (side)
+                        box_color = cv::Scalar(0, 255, 255); // Yellow (side/bad pose)
                         std::cout << "    -> 判断为: 侧脸" << std::endl;
                     }
 
@@ -152,7 +153,7 @@ int main(int argc, char *argv[]) {
                     // Draw pose text above the box
                     std::stringstream ss;
                     ss << "Y:" << std::fixed << std::setprecision(1) << yaw
-                       << " P:" << pitch << " R:" << roll;
+                       << " P_score:" << std::setprecision(2) << pitch_score << " R:" << std::setprecision(1) << roll;
                     cv::Point text_origin(static_cast<int>(face.bbox.x), static_cast<int>(face.bbox.y) - 10);
                     cv::putText(frame, ss.str(), text_origin, cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 0),
                                 1);

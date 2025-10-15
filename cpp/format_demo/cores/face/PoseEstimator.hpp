@@ -6,10 +6,10 @@
 #include <opencv2/core.hpp>
 
 /**
- * @brief Structure to hold calculated pose angles in degrees.
+ * @brief Structure to hold calculated pose results. Yaw and Roll are in degrees.
  */
-struct PoseAngles {
-    double pitch, yaw, roll;
+struct PoseResult {
+    double yaw, pitch_score, roll;
 };
 
 /**
@@ -21,14 +21,17 @@ public:
      * @brief Estimates head pose using solvePnP from 5 facial keypoints.
      * @param image_size The size of the input image.
      * @param image_pts A vector of 5 2D keypoints (from ArcFace model).
-     * @return An optional containing PoseAngles. The members are pitch, yaw, and roll in degrees. Returns std::nullopt on failure.
+     * @return An optional containing PoseResult. Contains yaw, roll (in degrees), and a calculated pitch_score. Returns std::nullopt on failure.
      */
-    static std::optional<PoseAngles> estimate_pose(cv::Size image_size, const std::vector<cv::Point2f> &image_pts);
+    static std::optional<PoseResult> estimate_pose(cv::Size image_size, const std::vector<cv::Point2f> &image_pts);
 
 private:
-    static const std::vector<cv::Point3f> OBJECT_POINTS_3D;
+    struct EulerAngles {
+        double pitch, yaw, roll;
+    };
 
-    static PoseAngles rotationMatrixToEulerAngles(const cv::Mat &R);
+    static const std::vector<cv::Point3f> OBJECT_POINTS_3D;
+    static EulerAngles rotationMatrixToEulerAngles(const cv::Mat &R);
 };
 
 #endif // POSE_ESTIMATOR_HPP
