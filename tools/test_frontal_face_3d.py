@@ -21,8 +21,10 @@ cv2.imshow("__init__", np.zeros((1, 1, 3), np.uint8))
 cv2.waitKey(1)
 
 YAW_TH = 30
-PITCH_TH = 256
+PITCH_RATIO_LOWER_TH = 0.6
+PITCH_RATIO_UPPER_TH = 1.0
 ROLL_TH = 25
+PITCH_TH = 256
 
 try:
     from cores.featureProcessor import FaceSearcher
@@ -59,13 +61,15 @@ def rotationMatrixToEulerAngles(R):
 
 def estimate_pose(image_size, image_pts):
     """
-    使用 solvePnP 计算姿态角（Yaw/Pitch/Roll）
+    使用 solvePnP 计算 Yaw 和 Roll，并根据关键点比例计算 Pitch Score。
 
     OpenCV ≥4.12 中 ITERATIVE 会先用 DLT 求初值，DLT 需要 ≥6 点。
     因此：
         • ≥6 点：直接 ITERATIVE
         • 4~5 点：EPNP 初值 + LM 细化
         • <4 点：返回 None
+
+    返回: (yaw, pitch_score, roll)
     """
     h, w = image_size
     focal_length = w
@@ -107,8 +111,27 @@ def estimate_pose(image_size, image_pts):
 
     # —— rvec → 欧拉角 ——
     rot_mat, _ = cv2.Rodrigues(rvec)
-    pitch, yaw, roll = rotationMatrixToEulerAngles(rot_mat)
-    return yaw, pitch, roll
+    _, yaw, roll = rotationMatrixToEulerAngles(rot_mat)
+
+    # --- 新增：根据关键点计算俯仰比例分数以替代 Pitch ---
+    # 顺序: [左眼, 右眼, 鼻尖, 左嘴角, 右嘴角]
+    left_eye = image_pts[0]
+    right_eye = image_pts[1]
+    nose = image_pts[2]
+    left_mouth = image_pts[3]
+    right_mouth = image_pts[4]
+
+    eye_center = (left_eye + right_eye) / 2.0
+    mouth_center = (left_mouth + right_mouth) / 2.0
+
+    eye_to_nose = np.linalg.norm(nose - eye_center)
+    if eye_to_nose < 1e-6:
+        pitch_score = 1.0  # 避免除以零，返回中性值
+    else:
+        nose_to_mouth = np.linalg.norm(mouth_center - nose)
+        pitch_score = nose_to_mouth / eye_to_nose
+
+    return yaw, pitch_score, roll
 
 
 def main():
@@ -116,7 +139,7 @@ def main():
     pa.add_argument("--image_dir", type=str, default="/home/manu/tmp/perimeter_cpp/G00005/bodies/")
     pa.add_argument("--provider", type=str, default="CPUExecutionProvider",
                     choices=["CPUExecutionProvider", "CUDAExecutionProvider"])
-    pa.add_argument("--show", default=False)
+    pa.add_argument("--show", default=True)
     pa.add_argument("--output_file", type=str, default="/home/manu/nfs/pose_results_py.txt",
                     help="用于保存姿态估计结果（yaw, pitch, roll）的文本文件路径。")
     args = pa.parse_args()
@@ -173,28 +196,27 @@ def main():
             for i, (bbox, kps) in enumerate(zip(faces_bboxes, faces_kpss)):
                 yaw_pitch_roll = estimate_pose((h, w), np.array(kps, dtype=np.float32))
                 if yaw_pitch_roll is None:
-                    print(f"  人脸 #{i + 1}: 姿态估计失败。")
+                    print(f"  人脸 #{i + 1}: 姿态计算失败。")
                     continue
-                yaw, pitch, roll = yaw_pitch_roll
-                print(f"  人脸 #{i + 1} 姿态角: Yaw={yaw:.2f}°, Pitch={pitch:.2f}°, Roll={roll:.2f}°")
+                yaw, pitch_score, roll = yaw_pitch_roll
+                print(f"  人脸 #{i + 1} 姿态: Yaw={yaw:.2f}°, Pitch_Score={pitch_score:.2f}, Roll={roll:.2f}°")
 
                 # 将结果写入文件
-                output_line = f"{os.path.basename(img_path)},{i + 1},{pitch:.4f},{yaw:.4f},{roll:.4f}\n"
+                # 注意：原始代码输出格式为 pitch,yaw,roll，此处用 pitch_score 替换 pitch
+                output_line = f"{os.path.basename(img_path)},{i + 1},{pitch_score:.4f},{yaw:.4f},{roll:.4f}\n"
                 f_out.write(output_line)
 
                 if args.show:
-                    # --- 新增：根据姿态角判断是否为正脸 ---
+                    # --- 修改：根据姿态分数判断是否为正脸 ---
                     yaw_threshold = YAW_TH
-                    pitch_threshold = PITCH_TH
                     roll_threshold = ROLL_TH
 
-                    if abs(yaw) < yaw_threshold and abs(pitch) < pitch_threshold and abs(roll) < roll_threshold:
+                    if abs(yaw) < yaw_threshold and PITCH_RATIO_LOWER_TH < pitch_score < PITCH_RATIO_UPPER_TH and abs(roll) < roll_threshold:
                         box_color = (0, 255, 0)  # 绿色 (正脸)
                         print(f"    -> 判断为: 正脸")
                     else:
-                        box_color = (0, 0, 255) # 黄色 (侧脸)
+                        box_color = (0, 255, 255) # 黄色 (侧脸/姿态不佳)
                         print(f"    -> 判断为: 侧脸")
-                    # --- 结束新增 ---
 
                     # 绘制关键点和框
                     x1, y1, x2, y2 = bbox[:4].astype(int)
@@ -202,7 +224,7 @@ def main():
                     for (x, y) in kps.astype(int):
                         cv2.circle(frame, (x, y), 2, (0, 0, 255), -1, cv2.LINE_AA)
                     # 在框上方绘制姿态文字
-                    label = f"Y:{yaw:.1f} P:{pitch:.1f} R:{roll:.1f}"
+                    label = f"Y:{yaw:.1f} P_score:{pitch_score:.2f} R:{roll:.1f}"
                     cv2.putText(frame, label, (x1, y1 - 10),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
