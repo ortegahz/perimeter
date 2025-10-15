@@ -58,25 +58,26 @@ static float calculate_clarity_score(const cv::Mat& face_patch) {
  */
 static bool is_frontal_face_pnp(const std::vector<cv::Point2f>& kps, cv::Size image_size) {
     // 定义姿态角阈值 (来自Python参考)
-    constexpr float YAW_TH = 30.0f;
-    // 注意：用户提供的 PITCH_TH=256 疑似笔误，根据Python代码和常识修正为 25.0f
-    constexpr float PITCH_TH = 256.0f;
-    constexpr float ROLL_TH = 25.0f;
+    constexpr double YAW_TH = 30.0;
+    constexpr double ROLL_TH = 25.0;
+    // 新增: Pitch Score 阈值 (参考之前 test_pose_pnp.cpp 的设定)
+    constexpr double PITCH_RATIO_LOWER_TH = 0.6;
+    constexpr double PITCH_RATIO_UPPER_TH = 1.0;
 
     if (kps.size() != 5) {
         return false;
     }
 
-    auto pose_angles = PoseEstimator::estimate_pose(image_size, kps);
+    auto pose_result_opt = PoseEstimator::estimate_pose(image_size, kps);
 
-    if (!pose_angles.has_value()) {
+    if (!pose_result_opt.has_value()) {
         return false; // 姿态估计失败，保守地认为不是正脸
     }
 
-    const auto &angles = pose_angles.value();
-    return std::abs(angles.yaw) < YAW_TH &&
-           std::abs(angles.pitch) < PITCH_TH &&
-           std::abs(angles.roll) < ROLL_TH;
+    const auto &result = pose_result_opt.value();
+    return std::abs(result.yaw) < YAW_TH &&
+           std::abs(result.roll) < ROLL_TH &&
+           result.pitch_score > PITCH_RATIO_LOWER_TH && result.pitch_score < PITCH_RATIO_UPPER_TH;
 }
 
 const int REID_INPUT_WIDTH = 128;

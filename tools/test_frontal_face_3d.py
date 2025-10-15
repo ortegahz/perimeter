@@ -139,7 +139,7 @@ def main():
     pa.add_argument("--image_dir", type=str, default="/home/manu/tmp/perimeter_cpp/G00005/bodies/")
     pa.add_argument("--provider", type=str, default="CPUExecutionProvider",
                     choices=["CPUExecutionProvider", "CUDAExecutionProvider"])
-    pa.add_argument("--show", default=True)
+    pa.add_argument("--show", default=False)
     pa.add_argument("--output_file", type=str, default="/home/manu/nfs/pose_results_py.txt",
                     help="用于保存姿态估计结果（yaw, pitch, roll）的文本文件路径。")
     args = pa.parse_args()
