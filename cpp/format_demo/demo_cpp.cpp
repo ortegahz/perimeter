@@ -327,7 +327,8 @@ int main(int argc, char **argv) {
                     for (const auto &alarm: proc_output.alarms) {
                         std::cout << "  - GID: " << alarm.gid << "\n";
                         std::cout << "  - Recognition Count (n): " << alarm.n << "\n";
-                        std::cout << "  - First Seen Time: " << format_ntp_timestamp(alarm.first_seen_timestamp)
+                        std::cout << "  - First Seen Time: " << format_ntp_timestamp(alarm.first_seen_timestamp) << "\n";
+                        std::cout << "  - Last Seen Time: " << format_ntp_timestamp(alarm.last_seen_timestamp)
                                   << "\n";
                         std::cout << "  - Face Clarity: " << std::fixed << std::setprecision(1) << alarm.face_clarity_score << "/100\n"
                                   << "\n";

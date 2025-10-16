@@ -1265,6 +1265,8 @@ void FeatureProcessor::_check_and_process_alarm(
             alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(gid_to_alarm)
                                               ? gid_mgr.first_seen_ts.at(gid_to_alarm)
                                               : now_stamp_gst;
+            // 新增：记录最后一次看到的时间戳，即当前帧的时间戳
+            alarm_info.last_seen_timestamp = now_stamp_gst;
             for (const auto &det: dets) {
                 if (stream_id + "_" + std::to_string(det.id) == tid_str) {
                     alarm_info.person_bbox = det.tlwh;

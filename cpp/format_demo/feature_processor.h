@@ -231,6 +231,7 @@ struct AlarmTriggerInfo {
     std::string gid;                // 触发告警的GID
     std::string tid_str;            // 触发告警的TID (cam_id + track_id)
     GstClockTime first_seen_timestamp = 0; // 新增：GID首次识别的时间戳(GstClockTime)
+    GstClockTime last_seen_timestamp = 0; // 新增：GID最后一次识别的时间戳
     cv::Rect2f person_bbox;         // 当前帧中该GID关联的行人框
     cv::Rect2d face_bbox;           // 当前帧中该GID关联的人脸框 (如果找到)
     cv::Mat latest_body_patch;      // GID库中最新的（或最具代表性的）行人图块
