@@ -63,7 +63,6 @@ constexpr int BEHAVIOR_ALARM_DURATION_FRAMES = 256;
 
 constexpr float MIN_HW_RATIO = 1.5f;
 constexpr float FACE_DET_MIN_SCORE = 0.6f;  // 0.60f
-constexpr float FACE_DET_MIN_SCORE_FACE_ONLY = 0.85f;
 
 //const std::string SAVE_DIR = "/mnt/nfs/perimeter_cpp";
 //const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
@@ -464,6 +463,13 @@ private:
     bool m_enable_feature_caching;
     bool m_clear_db_on_startup;
     float m_alarm_dup_thr;             // 新增：重复报警过滤阈值
+
+    // 新增: 从配置文件加载的参数
+    float m_face_det_min_score_face_only;
+    double m_pose_yaw_th;
+    double m_pose_roll_th;
+    double m_pose_pitch_ratio_lower_th;
+    double m_pose_pitch_ratio_upper_th;
 
     // MODIFIED HERE: Changed from PersonReid to PersonReidDLA
     std::unique_ptr<PersonReidDLA> reid_model_; // Re-ID 模型，将在主线程中使用

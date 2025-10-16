@@ -56,13 +56,7 @@ static float calculate_clarity_score(const cv::Mat& face_patch) {
  * @param image_size 原始图像的尺寸。
  * @return 如果是正脸则返回 true，否则返回 false。
  */
-static bool is_frontal_face_pnp(const std::vector<cv::Point2f>& kps, cv::Size image_size) {
-    // 定义姿态角阈值 (来自Python参考)
-    constexpr double YAW_TH = 30.0;
-    constexpr double ROLL_TH = 25.0;
-    // 新增: Pitch Score 阈值 (参考之前 test_pose_pnp.cpp 的设定)
-    constexpr double PITCH_RATIO_LOWER_TH = 0.6;
-    constexpr double PITCH_RATIO_UPPER_TH = 1.0;
+static bool is_frontal_face_pnp(const std::vector<cv::Point2f>& kps, cv::Size image_size, double yaw_th, double roll_th, double pitch_ratio_lower_th, double pitch_ratio_upper_th) {
 
     if (kps.size() != 5) {
         return false;
@@ -75,9 +69,9 @@ static bool is_frontal_face_pnp(const std::vector<cv::Point2f>& kps, cv::Size im
     }
 
     const auto &result = pose_result_opt.value();
-    return std::abs(result.yaw) < YAW_TH &&
-           std::abs(result.roll) < ROLL_TH &&
-           result.pitch_score > PITCH_RATIO_LOWER_TH && result.pitch_score < PITCH_RATIO_UPPER_TH;
+    return std::abs(result.yaw) < yaw_th &&
+           std::abs(result.roll) < roll_th &&
+           result.pitch_score > pitch_ratio_lower_th && result.pitch_score < pitch_ratio_upper_th;
 }
 
 const int REID_INPUT_WIDTH = 128;
@@ -461,6 +455,13 @@ nlohmann::json FeatureProcessor::_load_or_create_config() {
         nlohmann::json default_config;
         default_config["alarm_dup_thr"] = 1.0f;
 
+        // 新增: 将姿态和人脸检测阈值参数化
+        default_config["face_det_min_score_face_only"] = 0.85f;
+        default_config["pose_yaw_th"] = 30.0;
+        default_config["pose_roll_th"] = 25.0;
+        default_config["pose_pitch_ratio_lower_th"] = 0.6;
+        default_config["pose_pitch_ratio_upper_th"] = 1.0;
+
         // 将默认配置写入文件
         try {
             std::ofstream ofs(CONFIG_FILE_PATH);
@@ -501,10 +502,20 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     nlohmann::json boundary_config = _load_or_create_config();
     // 新增：从配置中读取重复报警过滤阈值, 如果未提供，默认为 1.0 (禁用)
     m_alarm_dup_thr = boundary_config.value("alarm_dup_thr", 1.0f);
+    // 新增: 从配置中加载姿态估计和人脸检测的阈值
+    m_face_det_min_score_face_only = boundary_config.value("face_det_min_score_face_only", 0.85f);
+    m_pose_yaw_th = boundary_config.value("pose_yaw_th", 30.0);
+    m_pose_roll_th = boundary_config.value("pose_roll_th", 25.0);
+    m_pose_pitch_ratio_lower_th = boundary_config.value("pose_pitch_ratio_lower_th", 0.6);
+    m_pose_pitch_ratio_upper_th = boundary_config.value("pose_pitch_ratio_upper_th", 1.0);
 
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is "
               << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
     std::cout << ">>> Alarm duplication filter threshold (alarm_dup_thr) set to: " << m_alarm_dup_thr << std::endl;
+    std::cout << ">>> Face-only det score threshold set to: " << m_face_det_min_score_face_only << std::endl;
+    std::cout << ">>> Pose Yaw threshold set to: " << m_pose_yaw_th << std::endl;
+    std::cout << ">>> Pose Roll threshold set to: " << m_pose_roll_th << std::endl;
+    std::cout << ">>> Pose Pitch Ratio threshold set to: [" << m_pose_pitch_ratio_lower_th << ", " << m_pose_pitch_ratio_upper_th << "]" << std::endl;
 
 
     if (mode_ == "realtime") {
@@ -1318,7 +1329,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
     // 新增: 当仅使用人脸比对时(w_face=1.0)，提高人脸检测的置信度阈值
     const bool is_face_only_mode = (w_face >= 0.999f); // 使用小公差进行浮点数比较
-    float current_face_det_min_score = is_face_only_mode ? FACE_DET_MIN_SCORE_FACE_ONLY : FACE_DET_MIN_SCORE;
+    float current_face_det_min_score = is_face_only_mode ? m_face_det_min_score_face_only : FACE_DET_MIN_SCORE;
     int current_min_face_4_gid = is_face_only_mode ? 2 : MIN_FACE4GID;
 
     ProcessOutput output;
@@ -1482,7 +1493,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     // 新增：在仅人脸模式下，进行正脸过滤
                     if (is_face_only_mode) {
                         // 使用新的基于PnP的姿态估计算法判断是否为正脸
-                        if (!is_frontal_face_pnp(face_global_coords.kps, cpu_frame.size())) {
+                        if (!is_frontal_face_pnp(face_global_coords.kps, cpu_frame.size(), m_pose_yaw_th, m_pose_roll_th, m_pose_pitch_ratio_lower_th, m_pose_pitch_ratio_upper_th)) {
                             continue; // 跳过非正脸
                         }
                     }
