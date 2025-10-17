@@ -374,7 +374,7 @@ public:
                               bool enable_alarm_saving = true, // for alarm media
                               bool processing_enabled = true,  // for algorithm
                               bool enable_feature_caching = false, // for the features_cache.json
-                              bool clear_db_on_startup = false);
+                              bool clear_db_on_startup = true);
     // ======================= 【修改结束】 =======================
 
     ~FeatureProcessor();
