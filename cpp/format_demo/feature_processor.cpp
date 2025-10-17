@@ -12,6 +12,7 @@
 #include <iomanip> // For sprintf
 #include <optional>
 #include <cmath> // For std::atan2, std::abs
+#include <ctime>   // For localtime_r and strftime
 #include <sstream>
 #include "cores/face/PoseEstimator.hpp" // 新增头文件
 
@@ -20,6 +21,34 @@
 // 如果要关闭所有耗时的文件写入和删除，请注释掉下面这行
 //#define ENABLE_DISK_IO
 // ======================= 【修改结束】 =======================
+
+// ======================= 【新增：时间戳格式化函数】 =======================
+#ifndef GST_CLOCK_TIME_NONE
+// using GstClockTime defined in header, but keep guard for standalone safety
+#define GST_CLOCK_TIME_NONE ((GstClockTime)-1)
+#endif
+
+/**
+ * @brief 将 GStreamer NTP 时间戳格式化为人类可读的字符串 (用于调试打印)。
+ * @param ntp_timestamp GStreamer 时钟时间（纳秒）。
+ * @return 格式化后的时间字符串 (例如 "YYYY-MM-DD HH:MM:SS.ms")。
+ */
+static std::string format_ntp_timestamp(GstClockTime ntp_timestamp) {
+    if (ntp_timestamp == 0 || ntp_timestamp == GST_CLOCK_TIME_NONE) {
+        return "[INVALID TIMESTAMP]";
+    }
+    time_t seconds = ntp_timestamp / 1000000000;
+    long milliseconds = (ntp_timestamp % 1000000000) / 1000000;
+    char time_str_buffer[128];
+    struct tm broken_down_time;
+    localtime_r(&seconds, &broken_down_time);
+    int len = strftime(time_str_buffer, sizeof(time_str_buffer),
+                       "%Y-%m-%d %H:%M:%S", &broken_down_time);
+    snprintf(time_str_buffer + len, sizeof(time_str_buffer) - len,
+             ".%03ld", milliseconds);
+    return std::string(time_str_buffer);
+}
+// ======================= 【新增结束】 =======================
 
 // ======================= 【NEW: 人脸清晰度估计算法】 =======================
 /**
@@ -1307,6 +1336,20 @@ void FeatureProcessor::_check_and_process_alarm(
                 }
                 alarm_info.latest_body_patch = body_p.clone();
                 alarm_info.latest_face_patch = face_p.clone();
+                // ======================= 【新增：打印待上报的报警详细信息】 =======================
+                std::cout << "\n--- [Preparing to Report Alarm] ---\n"
+                          << "  GID: " << alarm_info.gid << "\n"
+                          << "  TID: " << alarm_info.tid_str << "\n"
+                          << "  First Seen: " << format_ntp_timestamp(alarm_info.first_seen_timestamp) << "\n"
+                          << "  Last Seen: " << format_ntp_timestamp(alarm_info.last_seen_timestamp) << "\n"
+                          << "  Recognition Count (n): " << alarm_info.n << "\n"
+                          << "  Face Clarity: " << std::fixed << std::setprecision(1) << alarm_info.face_clarity_score << "/100\n"
+                          << "  Person Bbox: [" << alarm_info.person_bbox.x << ", " << alarm_info.person_bbox.y << ", " << alarm_info.person_bbox.width << ", " << alarm_info.person_bbox.height << "]\n"
+                          << "  Face Bbox: [" << alarm_info.face_bbox.x << ", " << alarm_info.face_bbox.y << ", " << alarm_info.face_bbox.width << ", " << alarm_info.face_bbox.height << "]\n"
+                          << "  Body Patch Size: " << (!alarm_info.latest_body_patch.empty() ? std::to_string(alarm_info.latest_body_patch.cols) + "x" + std::to_string(alarm_info.latest_body_patch.rows) : "empty") << "\n"
+                          << "  Face Patch Size: " << (!alarm_info.latest_face_patch.empty() ? std::to_string(alarm_info.latest_face_patch.cols) + "x" + std::to_string(alarm_info.latest_face_patch.rows) : "empty") << "\n"
+                          << "-------------------------------------\n";
+                // ======================= 【新增结束】 =======================
                 output.alarms.push_back(alarm_info);
             }
         }
