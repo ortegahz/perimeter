@@ -1231,7 +1231,8 @@ void FeatureProcessor::_check_and_process_alarm(
         float w_face,
         float face_det_score,
         float face_clarity,
-        bool is_face_only_mode) {
+        bool is_face_only_mode,
+        const std::vector<float>& current_face_feat) {
 
     // ======================= 【新增：白名单检查】 =======================
     // 如果当前 GID 在本次调用传入的白名单中，则直接返回，不触发任何报警逻辑。
@@ -1261,6 +1262,22 @@ void FeatureProcessor::_check_and_process_alarm(
     int n = gid_mgr.tid_hist.count(gid) ? (int) gid_mgr.tid_hist.at(gid).size() : 0;
 
     if (n >= config.alarm_cnt_th) {
+        // ======================= 【新增：报警一致性校验】 =======================
+        // 检查当前帧的人脸特征与 GID 的原型库是否足够相似，防止跟踪器跟错人导致的持续误报
+        if (!current_face_feat.empty() && gid_mgr.bank_faces.count(gid) && !gid_mgr.bank_faces.at(gid).empty()) {
+            auto gid_prototype_face_feat = avg_feats(gid_mgr.bank_faces.at(gid));
+            float consistency_score = sim_vec(current_face_feat, gid_prototype_face_feat);
+
+            if (consistency_score < 0.5f) { // 硬编码阈值
+                std::cout << "\n[ALARM SUPPRESSED] TID " << tid_str
+                          << " failed consistency check for GID " << gid
+                          << ". Live Score: " << std::fixed << std::setprecision(4) << consistency_score
+                          << " < Threshold: " << 0.5f << std::endl;
+                return; // 校验失败，抑制本次报警
+            }
+        }
+        // ======================= 【新增结束】 =======================
+
         if (auto alarm_data_opt = trigger_alarm(tid_str, gid, n, agg, now_stamp, config.alarm_record_thresh)) {
             auto &[gid_to_alarm, timestamp, was_newly_saved] = *alarm_data_opt;
 
@@ -1344,6 +1361,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     current_frame_face_boxes_.clear(); // 每帧开始时清空
     current_frame_face_scores_.clear(); // 清空人脸置信度表
     current_frame_face_clarity_.clear(); // 新增：清空人脸清晰度表
+    current_frame_face_features_.clear(); // 新增：清空当前帧的人脸特征
 
     const auto &stream_id = cam_id;
 
@@ -1545,6 +1563,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         current_frame_face_clarity_[tid_str] = clarity;
                         gpu_face_patch.download(face_patch);
                         agg_pool[tid_str].add_face(f_emb, face_patch.clone());
+                        current_frame_face_features_[tid_str] = f_emb; // 新增：暂存当前帧人脸特征
                         // ======================= 【修改结束】 =======================
                         last_seen[tid_str] = now_stamp;
                         if (m_enable_feature_caching) {
@@ -1616,6 +1635,13 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             continue;
         }
 
+        // ======================= 【新增: 获取当前帧特征以备后用】 =======================
+        std::vector<float> current_face_feat;
+        if (current_frame_face_features_.count(tid_str)) {
+            current_face_feat = current_frame_face_features_.at(tid_str);
+        }
+        // ======================= 【新增结束】 =======================
+
         auto [cand_gid, score] = gid_mgr.probe(face_f, body_f, w_face, w_body);
 
         auto &state = candidate_state[tid_str];
@@ -1647,7 +1673,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                          w_face,
                                          current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                          current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                                         is_face_only_mode
+                                         is_face_only_mode,
+                                         current_face_feat
                 );
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
@@ -1668,7 +1695,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                      w_face,
                                      current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                      current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                                     is_face_only_mode
+                                     is_face_only_mode,
+                                     current_face_feat
             );
 
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
@@ -1686,7 +1714,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                          w_face,
                                          current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                          current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                                         is_face_only_mode
+                                         is_face_only_mode,
+                                         current_face_feat
                 );
 
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
@@ -1709,7 +1738,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                              w_face,
                                              current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                              current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                                             is_face_only_mode
+                                             is_face_only_mode,
+                                             current_face_feat
                     );
 
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};

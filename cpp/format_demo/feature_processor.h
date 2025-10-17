@@ -421,7 +421,8 @@ private:
             float w_face,
             float face_det_score,
             float face_clarity,
-            bool is_face_only_mode);
+            bool is_face_only_mode,
+            const std::vector<float>& current_face_feat);
     // ======================= 【修改结束】 =======================
 
     // I/O线程相关
@@ -494,4 +495,6 @@ private:
     std::map<std::string, float> current_frame_face_scores_;
     // 新增：临时存储本帧每个 TID 对应的人脸清晰度分数
     std::map<std::string, float> current_frame_face_clarity_;
+    // 新增：临时存储本帧每个 TID 对应的人脸特征向量
+    std::map<std::string, std::vector<float>> current_frame_face_features_;
 };
