@@ -417,9 +417,13 @@ GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &fac
     if (!bank_faces.count(gid)) return 0;
     if (!bank_faces[gid].empty() && !face_f.empty() && sim_vec(face_f, avg_feats(bank_faces[gid])) < FACE_THR_STRICT)
         return -1;
-    if (!bank_bodies.count(gid) || (bank_bodies.count(gid) && !bank_bodies[gid].empty() && !body_f.empty() &&
-                                    sim_vec(body_f, avg_feats(bank_bodies[gid])) < BODY_THR_STRICT))
-        return -2;
+    // 只有在提供了 body 特征时，才进行 body 相关的一致性检查。
+    // 这修复了在 face-only 模式下，从数据库加载的、没有 body 原型的旧 GID 无法通过检查的问题。
+    if (!body_f.empty()) {
+        if (!bank_bodies.count(gid) ||
+            (!bank_bodies.at(gid).empty() && sim_vec(body_f, avg_feats(bank_bodies.at(gid))) < BODY_THR_STRICT))
+            return -2;
+    }
     return 0;
 }
 
