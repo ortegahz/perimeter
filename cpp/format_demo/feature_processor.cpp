@@ -1160,7 +1160,8 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
         if (gid != ogid && sim_vec(cur_rep, rep) >= m_alarm_dup_thr) {
             // 如果是不同的 GID 但特征相似，则抑制本次报警。
             std::cout << "\n[ALARM SUPPRESSED] GID " << gid << " is similar to already alarmed GID "
-                      << ogid << " (Similarity threshold: " << m_alarm_dup_thr << "). Suppressing this alarm." << std::endl;
+                      << ogid << " (Similarity threshold: " << m_alarm_dup_thr << "). Suppressing this alarm."
+                      << std::endl;
             return std::nullopt; // 返回空 optional 来抑制报警
         }
     }
@@ -1199,17 +1200,18 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
         task.face_patches_backup = agg.face_patches();
         task.body_patches_backup = agg.body_patches();
         submit_io_task(task);
+
+        // --- 无论是否保存，都生成时间戳并返回报警信号 ---
+        time_t seconds = static_cast<time_t>(frame_timestamp);
+        char buf[80];
+        struct tm broken_down_time;
+        localtime_r(&seconds, &broken_down_time);
+        strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &broken_down_time);
+        std::string timestamp_str(buf);
+
+        return std::make_tuple(gid, timestamp_str, was_newly_saved);
     }
-
-    // --- 无论是否保存，都生成时间戳并返回报警信号 ---
-    time_t seconds = static_cast<time_t>(frame_timestamp);
-    char buf[80];
-    struct tm broken_down_time;
-    localtime_r(&seconds, &broken_down_time);
-    strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &broken_down_time);
-    std::string timestamp_str(buf);
-
-    return std::make_tuple(gid, timestamp_str, was_newly_saved);
+    return std::nullopt;
 }
 // ======================= 【修改结束】 =======================
 
