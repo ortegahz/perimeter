@@ -33,7 +33,7 @@ SENTINEL = None
 
 MATCH_THR = 0.5
 THR_NEW_GID = 0.3
-FACE_DET_MIN_SCORE = 0.80  # 0.9 for face only mode && 0.8 for mix mode
+FACE_DET_MIN_SCORE = 0.60  # 0.9 for face only mode && 0.8 for mix mode
 
 SAVE_DIR = "/home/manu/tmp/perimeter"
 ALARM_DIR = "/home/manu/tmp/perimeter_alarm"

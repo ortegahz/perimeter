@@ -1236,6 +1236,11 @@ void FeatureProcessor::_check_and_process_alarm(
     // ======================= 【新增：白名单检查】 =======================
     // 如果当前 GID 在本次调用传入的白名单中，则直接返回，不触发任何报警逻辑。
     if (config.whitelist_gids.count(gid)) {
+        // 新增：如果是在纯人脸模式下，且 GID 在白名单中，则将其识别次数（tid_hist）清零。
+        // 这样，当该 GID 从白名单中移除后，其识别次数 n 会从 0 重新开始累计。
+        if (is_face_only_mode && gid_mgr.tid_hist.count(gid)) {
+            gid_mgr.tid_hist.at(gid).clear();
+        }
         return;
     }
     // ======================= 【新增结束】 =======================
