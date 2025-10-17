@@ -265,7 +265,7 @@ struct GlobalID {
     int can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f);
 
     void bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst,
-              const TrackAgg &agg, class FeatureProcessor *fp, const std::string &creation_reason = "");
+              const TrackAgg &agg, class FeatureProcessor *fp, const std::string &creation_reason = "", bool is_whitelisted = false);
 
     std::pair<std::string, float> probe(const std::vector<float> &face_f, const std::vector<float> &body_f,
                                         float w_face, float w_body);

@@ -424,15 +424,17 @@ GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &fac
 }
 
 void GlobalID::bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst,
-                    const TrackAgg &agg, FeatureProcessor *fp, const std::string &creation_reason) {
+                    const TrackAgg &agg, FeatureProcessor *fp, const std::string &creation_reason, bool is_whitelisted) {
     auto [face_f, face_p] = agg.main_face_feat_and_patch();
     auto [body_f, body_p] = agg.main_body_feat_and_patch();
 
     _add_or_update_prototype(bank_faces[gid], face_f, face_p, gid, "faces", fp, creation_reason);
     _add_or_update_prototype(bank_bodies[gid], body_f, body_p, gid, "bodies", fp, creation_reason);
 
-    auto &v = tid_hist[gid];
-    if (std::find(v.begin(), v.end(), tid) == v.end()) v.push_back(tid);
+    if (!is_whitelisted) {
+        auto &v = tid_hist[gid];
+        if (std::find(v.begin(), v.end(), tid) == v.end()) v.push_back(tid);
+    }
     last_update[gid] = current_ts;
 
     // 新增：如果这是第一次绑定该 GID，记录其首次出现的时间戳
@@ -1707,7 +1709,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             state.cand_gid = cand_gid;
             int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f);
             if (state.count >= CANDIDATE_FRAMES && flag_code == 0) {
-                gid_mgr.bind(cand_gid, tid_str, now_stamp, now_stamp_gst, agg, this);
+                gid_mgr.bind(cand_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "", config.whitelist_gids.count(cand_gid));
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
@@ -1728,7 +1730,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         } else if (gid_mgr.bank_faces.empty()) {
             // Reason 1: The very first GID
             std::string new_gid = gid_mgr.new_gid(); // This is the pure GID
-            gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "first");
+            gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "first", config.whitelist_gids.count(new_gid));
             tid2gid[tid_str] = new_gid;
             candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
             new_gid_state[tid_str].last_new_fid = fid;
@@ -1747,7 +1749,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 std::string new_gid = gid_mgr.new_gid(); // Pure GID
-                gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "similar_pending");
+                gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "similar_pending", config.whitelist_gids.count(new_gid));
                 tid2gid[tid_str] = new_gid;
                 candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                 new_gid_state[tid_str] = {0, fid, 0};
@@ -1771,7 +1773,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 ng_state.count++;
                 if (ng_state.count >= NEW_GID_MIN_FRAMES) {
                     std::string new_gid = gid_mgr.new_gid(); // Pure GID
-                    gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "dissimilar");
+                    gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "dissimilar", config.whitelist_gids.count(new_gid));
                     tid2gid[tid_str] = new_gid;
                     candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                     new_gid_state[tid_str] = {0, fid, 0};
