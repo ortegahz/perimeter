@@ -297,11 +297,6 @@ int main(int argc, char **argv) {
                 proc_config.reid_weight_by_cam[CAM_ID] = 0.4f;
                 proc_config.alarmDuration_ms_by_cam[CAM_ID] = 0;
 
-                // 新增: 从加载的json配置中读取全局GID识别冷却时间
-                if (config_json.contains("gid_recognition_cooldown_ms") && config_json["gid_recognition_cooldown_ms"].is_number()) {
-                    proc_config.gid_recognition_cooldown_ms = config_json["gid_recognition_cooldown_ms"].get<long long>();
-                }
-
                 proc_config.new_gid_time_window = 50;
 
                 // ======================= 【新增：实时配置白名单，用于测试】 =======================

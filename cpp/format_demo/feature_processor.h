@@ -101,8 +101,7 @@ struct ProcessConfig {
     int alarm_record_thresh = 3;
     // 新增: 实时白名单，此集合中的 GID 将不会触发报警。
     std::set<std::string> whitelist_gids;
-    // 新增: 全局配置，同一GID两次有效识别之间的最小间隔时间 (毫秒)。
-    long long gid_recognition_cooldown_ms = 0;
+    // gid_recognition_cooldown_ms 已被移至 FeatureProcessor 的成员变量中
 };
 
 /* ---------- 数据结构定义 ---------- */
@@ -467,6 +466,7 @@ private:
     bool m_enable_feature_caching;
     bool m_clear_db_on_startup;
     float m_alarm_dup_thr;             // 新增：重复报警过滤阈值
+    long long m_gid_recognition_cooldown_ms; // 新增: GID识别冷却时间 (毫秒)
 
     // 新增: 从配置文件加载的参数
     float m_face_det_min_score_face_only;

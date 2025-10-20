@@ -545,6 +545,8 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     m_pose_roll_th = boundary_config.value("pose_roll_th", 25.0);
     m_pose_pitch_ratio_lower_th = boundary_config.value("pose_pitch_ratio_lower_th", 0.6);
     m_pose_pitch_ratio_upper_th = boundary_config.value("pose_pitch_ratio_upper_th", 1.0);
+    // 新增：从配置中读取GID识别冷却时间
+    m_gid_recognition_cooldown_ms = boundary_config.value("gid_recognition_cooldown_ms", 0LL);
 
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is "
               << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
@@ -553,6 +555,7 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     std::cout << ">>> Pose Yaw threshold set to: " << m_pose_yaw_th << std::endl;
     std::cout << ">>> Pose Roll threshold set to: " << m_pose_roll_th << std::endl;
     std::cout << ">>> Pose Pitch Ratio threshold set to: [" << m_pose_pitch_ratio_lower_th << ", " << m_pose_pitch_ratio_upper_th << "]" << std::endl;
+    std::cout << ">>> GID Recognition Cooldown set to: " << m_gid_recognition_cooldown_ms << " ms" << std::endl;
 
 
     if (mode_ == "realtime") {
@@ -1478,7 +1481,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         }
     }
 
-    long long current_gid_cooldown_ms = config.gid_recognition_cooldown_ms;
+    long long current_gid_cooldown_ms = m_gid_recognition_cooldown_ms;
     double gid_cooldown_threshold = 0.0;
     if (current_gid_cooldown_ms > 0) {
         if (use_fid_time_) {
