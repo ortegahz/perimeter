@@ -18,6 +18,7 @@
 #include <future>
 #include <queue>
 #include <optional>
+#include <optional>
 
 #include <sqlite3.h>
 // MODIFIED HERE: Include the correct header
@@ -101,7 +102,8 @@ struct ProcessConfig {
     int alarm_record_thresh = 3;
     // 新增: 实时白名单，此集合中的 GID 将不会触发报警。
     std::set<std::string> whitelist_gids;
-    // gid_recognition_cooldown_ms 已被移至 FeatureProcessor 的成员变量中
+    // 新增: 实时配置参数 (分钟)。如果此值被设置, 它将覆盖本帧的默认配置。
+    std::optional<long long> gid_recognition_cooldown_min;
 };
 
 /* ---------- 数据结构定义 ---------- */

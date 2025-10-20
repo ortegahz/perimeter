@@ -299,6 +299,8 @@ int main(int argc, char **argv) {
 
                 proc_config.new_gid_time_window = 50;
 
+                proc_config.gid_recognition_cooldown_min = 1;
+
                 // ======================= 【新增：实时配置白名单，用于测试】 =======================
                 // 在实际应用中，这个列表可以从外部实时获取 (例如，通过网络接口)
                 // 这里我们硬编码一个示例，将 "G00001" 和 "G00005" 加入白名单

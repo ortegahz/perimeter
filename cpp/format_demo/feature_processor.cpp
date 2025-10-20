@@ -1482,7 +1482,15 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         }
     }
 
-    long long current_gid_cooldown_ms = m_gid_recognition_cooldown_ms;
+    // 优先使用实时参数，如果未提供，则回退到初始化时加载的默认参数
+    long long current_gid_cooldown_ms;
+    if (config.gid_recognition_cooldown_min.has_value()) {
+        // 实时参数(分钟)存在，将其转换为毫秒
+        current_gid_cooldown_ms = config.gid_recognition_cooldown_min.value() * 60 * 1000;
+    } else {
+        // 实时参数不存在，使用从 config.json 加载的默认值 (已是毫秒)
+        current_gid_cooldown_ms = m_gid_recognition_cooldown_ms;
+    }
     double gid_cooldown_threshold = 0.0;
     if (current_gid_cooldown_ms > 0) {
         if (use_fid_time_) {
