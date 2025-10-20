@@ -18,7 +18,6 @@
 #include <future>
 #include <queue>
 #include <optional>
-#include <optional>
 
 #include <sqlite3.h>
 // MODIFIED HERE: Include the correct header
