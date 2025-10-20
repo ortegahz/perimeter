@@ -428,15 +428,17 @@ GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &fac
 }
 
 void GlobalID::bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst,
-                    const TrackAgg &agg, FeatureProcessor *fp, const std::string &creation_reason) {
+                    const TrackAgg &agg, FeatureProcessor *fp, const std::string &creation_reason, bool increment_n) {
     auto [face_f, face_p] = agg.main_face_feat_and_patch();
     auto [body_f, body_p] = agg.main_body_feat_and_patch();
 
     _add_or_update_prototype(bank_faces[gid], face_f, face_p, gid, "faces", fp, creation_reason);
     _add_or_update_prototype(bank_bodies[gid], body_f, body_p, gid, "bodies", fp, creation_reason);
 
-    auto &v = tid_hist[gid];
-    if (std::find(v.begin(), v.end(), tid) == v.end()) v.push_back(tid);
+    if (increment_n) {
+        auto &v = tid_hist[gid];
+        if (std::find(v.begin(), v.end(), tid) == v.end()) v.push_back(tid);
+    }
     last_update[gid] = current_ts;
 
     // 新增：如果这是第一次绑定该 GID，记录其首次出现的时间戳
@@ -494,6 +496,8 @@ nlohmann::json FeatureProcessor::_load_or_create_config() {
         default_config["pose_roll_th"] = 25.0;
         default_config["pose_pitch_ratio_lower_th"] = 0.6;
         default_config["pose_pitch_ratio_upper_th"] = 1.0;
+        // 新增: 全局配置，同一GID两次有效识别之间的最小间隔 (毫秒)。值为0表示禁用。
+        default_config["gid_recognition_cooldown_ms"] = 0;
 
         // 将默认配置写入文件
         try {
@@ -1474,6 +1478,16 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         }
     }
 
+    long long current_gid_cooldown_ms = config.gid_recognition_cooldown_ms;
+    double gid_cooldown_threshold = 0.0;
+    if (current_gid_cooldown_ms > 0) {
+        if (use_fid_time_) {
+            gid_cooldown_threshold = (double)current_gid_cooldown_ms / 1000.0 * FPS_ESTIMATE;
+        } else {
+            gid_cooldown_threshold = (double)current_gid_cooldown_ms / 1000.0;
+        }
+    }
+
     if (mode_ == "realtime") {
         nlohmann::json extracted_features_for_this_frame;
         const int H = full_frame.rows;
@@ -1711,20 +1725,35 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             state.cand_gid = cand_gid;
             int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f);
             if (state.count >= CANDIDATE_FRAMES && flag_code == 0) {
-                gid_mgr.bind(cand_gid, tid_str, now_stamp, now_stamp_gst, agg, this);
+                bool on_cooldown = false;
+                if (gid_cooldown_threshold > 0 && gid_last_recognized_time.count(cand_gid)) {
+                    if ((now_stamp - gid_last_recognized_time.at(cand_gid)) < gid_cooldown_threshold) {
+                        on_cooldown = true;
+                    }
+                }
+
+                // 调用 bind 更新原型，但根据冷却状态决定是否增加 n
+                gid_mgr.bind(cand_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "", !on_cooldown); // creation_reason is empty, increment_n is conditional
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
-                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst,
-                                         dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
-                                         w_face,
-                                         current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
-                                         current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                                         is_face_only_mode,
-                                         current_face_feat
-                );
 
-                output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
+                if (!on_cooldown) {
+                    // 冷却时间已过或首次识别，正常报警并重置计时器
+                    _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst,
+                                             dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                                             w_face,
+                                             current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
+                                             current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
+                                             is_face_only_mode,
+                                             current_face_feat
+                    );
+                    gid_last_recognized_time[cand_gid] = now_stamp;
+                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
+                } else {
+                    // 冷却时间内，不报警，但在UI上显示特殊状态
+                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid + "_-9_cool", score, n};
+                }
             } else {
                 std::string flag = (flag_code == -1) ? "_-4_ud_f" : (flag_code == -2) ? "_-4_ud_b" : "_-4_c";
                 output.mp[s_id][tid_num] = {tid_str + flag, -1.0f, 0};
@@ -1732,10 +1761,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         } else if (gid_mgr.bank_faces.empty()) {
             // Reason 1: The very first GID
             std::string new_gid = gid_mgr.new_gid(); // This is the pure GID
-            gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "first");
+            gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "first"); // 默认 increment_n=true
             tid2gid[tid_str] = new_gid;
             candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
             new_gid_state[tid_str].last_new_fid = fid;
+            gid_last_recognized_time[new_gid] = now_stamp;
             int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
             _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
                                      dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
@@ -1751,10 +1781,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 std::string new_gid = gid_mgr.new_gid(); // Pure GID
-                gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "similar_pending");
+                gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "similar_pending"); // 默认 increment_n=true
                 tid2gid[tid_str] = new_gid;
                 candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                 new_gid_state[tid_str] = {0, fid, 0};
+                gid_last_recognized_time[new_gid] = now_stamp;
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
                 _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
                                          dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
@@ -1775,10 +1806,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 ng_state.count++;
                 if (ng_state.count >= NEW_GID_MIN_FRAMES) {
                     std::string new_gid = gid_mgr.new_gid(); // Pure GID
-                    gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "dissimilar");
+                    gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "dissimilar"); // 默认 increment_n=true
                     tid2gid[tid_str] = new_gid;
                     candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                     new_gid_state[tid_str] = {0, fid, 0};
+                    gid_last_recognized_time[new_gid] = now_stamp;
                     int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
                     _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
                                              dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
@@ -1854,6 +1886,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         gid_mgr.first_seen_ts.erase(gid_del);
         alarmed.erase(gid_del);
         alarm_reprs.erase(gid_del);
+        gid_last_recognized_time.erase(gid_del);
 
 #ifdef ENABLE_DISK_IO
         IoTask task;

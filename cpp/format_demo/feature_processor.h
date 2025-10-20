@@ -101,6 +101,8 @@ struct ProcessConfig {
     int alarm_record_thresh = 3;
     // 新增: 实时白名单，此集合中的 GID 将不会触发报警。
     std::set<std::string> whitelist_gids;
+    // 新增: 全局配置，同一GID两次有效识别之间的最小间隔时间 (毫秒)。
+    long long gid_recognition_cooldown_ms = 0;
 };
 
 /* ---------- 数据结构定义 ---------- */
@@ -264,8 +266,8 @@ struct GlobalID {
 
     int can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f);
 
-    void bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst,
-              const TrackAgg &agg, class FeatureProcessor *fp, const std::string &creation_reason = "");
+    void bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst, const TrackAgg &agg,
+              class FeatureProcessor *fp, const std::string &creation_reason = "", bool increment_n = true);
 
     std::pair<std::string, float> probe(const std::vector<float> &face_f, const std::vector<float> &body_f,
                                         float w_face, float w_body);
@@ -491,6 +493,7 @@ private:
     std::map<std::string, std::unique_ptr<IntrusionDetector>> intrusion_detectors;
     std::map<std::string, std::unique_ptr<LineCrossingDetector>> line_crossing_detectors;
     std::map<std::string, cv::Rect2d> current_frame_face_boxes_; // 临时存储TID-FaceBbox映射
+    std::map<std::string, double> gid_last_recognized_time; // 新增: 记录每个 GID 最后一次被有效识别的时间戳
     // 新增：临时存储本帧每个 TID 对应的人脸检测置信度
     std::map<std::string, float> current_frame_face_scores_;
     // 新增：临时存储本帧每个 TID 对应的人脸清晰度分数

@@ -191,6 +191,18 @@ int main(int argc, char **argv) {
         OUTPUT_VIDEO_PATH = "/mnt/nfs/output_video_cpp_realtime.mp4";
     }
 
+    // 新增：在主循环外加载一次配置文件，以供后续使用
+    nlohmann::json config_json;
+    if (std::filesystem::exists(CONFIG_FILE_PATH)) {
+        std::ifstream ifs(CONFIG_FILE_PATH);
+        try {
+            config_json = nlohmann::json::parse(ifs);
+            std::cout << "Successfully loaded settings from " << CONFIG_FILE_PATH << std::endl;
+        } catch (const nlohmann::json::parse_error& e) {
+            std::cerr << "Warning: Could not parse config.json for settings. Using defaults. Error: " << e.what() << std::endl;
+        }
+    }
+
     try {
         bool _use_fid_time = (MODE == "load");
         // ======================= 【MODIFIED】 =======================
@@ -284,6 +296,11 @@ int main(int argc, char **argv) {
                 proc_config.face_weight_by_cam[CAM_ID] = 0.6f;
                 proc_config.reid_weight_by_cam[CAM_ID] = 0.4f;
                 proc_config.alarmDuration_ms_by_cam[CAM_ID] = 0;
+
+                // 新增: 从加载的json配置中读取全局GID识别冷却时间
+                if (config_json.contains("gid_recognition_cooldown_ms") && config_json["gid_recognition_cooldown_ms"].is_number()) {
+                    proc_config.gid_recognition_cooldown_ms = config_json["gid_recognition_cooldown_ms"].get<long long>();
+                }
 
                 proc_config.new_gid_time_window = 50;
 
@@ -387,6 +404,9 @@ int main(int argc, char **argv) {
                         } else if (full_gid_str.find("_AL") != std::string::npos) {
                             display_status = (gid_found ? display_status + " " : "") + "Crossing!";
                             color_override = cv::Scalar(0, 0, 255); // 红色
+                        } else if (full_gid_str.find("_-9_cool") != std::string::npos) {
+                            // 如果 GID 在冷却状态，也附加状态文本
+                            display_status = (gid_found ? display_status + " " : "") + "Cooldown";
                         } else if (!gid_found) {
                             if (full_gid_str.find("_-1_b_") != std::string::npos) {
                                 size_t pos = full_gid_str.find("_-1_b_");
