@@ -496,8 +496,8 @@ nlohmann::json FeatureProcessor::_load_or_create_config() {
         default_config["pose_roll_th"] = 25.0;
         default_config["pose_pitch_ratio_lower_th"] = 0.6;
         default_config["pose_pitch_ratio_upper_th"] = 1.0;
-        // 新增: 全局配置，同一GID两次有效识别之间的最小间隔 (毫秒)。值为0表示禁用。
-        default_config["gid_recognition_cooldown_ms"] = 0;
+        // 新增: 全局配置，同一GID两次有效识别之间的最小间隔 (分钟)。值为0表示禁用。
+        default_config["gid_recognition_cooldown_min"] = 0;
 
         // 将默认配置写入文件
         try {
@@ -545,8 +545,9 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     m_pose_roll_th = boundary_config.value("pose_roll_th", 25.0);
     m_pose_pitch_ratio_lower_th = boundary_config.value("pose_pitch_ratio_lower_th", 0.6);
     m_pose_pitch_ratio_upper_th = boundary_config.value("pose_pitch_ratio_upper_th", 1.0);
-    // 新增：从配置中读取GID识别冷却时间
-    m_gid_recognition_cooldown_ms = boundary_config.value("gid_recognition_cooldown_ms", 0LL);
+    // 新增：从配置中读取GID识别冷却时间(分钟)，并转换为毫秒
+    long long cooldown_min = boundary_config.value("gid_recognition_cooldown_min", 0LL);
+    m_gid_recognition_cooldown_ms = cooldown_min * 60 * 1000;
 
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is "
               << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
@@ -555,7 +556,7 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     std::cout << ">>> Pose Yaw threshold set to: " << m_pose_yaw_th << std::endl;
     std::cout << ">>> Pose Roll threshold set to: " << m_pose_roll_th << std::endl;
     std::cout << ">>> Pose Pitch Ratio threshold set to: [" << m_pose_pitch_ratio_lower_th << ", " << m_pose_pitch_ratio_upper_th << "]" << std::endl;
-    std::cout << ">>> GID Recognition Cooldown set to: " << m_gid_recognition_cooldown_ms << " ms" << std::endl;
+    std::cout << ">>> GID Recognition Cooldown set to: " << cooldown_min << " min" << std::endl;
 
 
     if (mode_ == "realtime") {
@@ -1741,20 +1742,22 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 state.last_bind_fid = fid;
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
 
+                // 【修改】报警逻辑现在总会执行，无论是否在冷却期内。n 是否增加已在 bind 函数中处理。
+                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst,
+                                         dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                                         w_face,
+                                         current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
+                                         current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
+                                         is_face_only_mode,
+                                         current_face_feat);
+
+                // 【修改】仅根据冷却状态决定是否更新时间和UI显示
                 if (!on_cooldown) {
-                    // 冷却时间已过或首次识别，正常报警并重置计时器
-                    _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst,
-                                             dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
-                                             w_face,
-                                             current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
-                                             current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                                             is_face_only_mode,
-                                             current_face_feat
-                    );
+                    // 冷却时间已过或首次识别 (n已增加)，重置计时器并正常显示
                     gid_last_recognized_time[cand_gid] = now_stamp;
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
                 } else {
-                    // 冷却时间内，不报警，但在UI上显示特殊状态
+                    // 冷却时间内 (n 未增加)，不重置计时器，但在UI上显示特殊状态
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid + "_-9_cool", score, n};
                 }
             } else {
