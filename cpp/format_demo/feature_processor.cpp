@@ -1367,8 +1367,14 @@ void FeatureProcessor::_check_and_process_alarm(
                 // 这个TID已经触发过报警，使用它之前被分配的n值
                 business_n = tid_to_business_n_.at(tid_str);
             } else {
-                // 这个TID首次触发报警，为GID增加计数，并将新的n值分配给这个TID
-                business_n = ++gid_alarm_business_counts_[gid_to_alarm];
+                // 这个TID是首次触发报警。
+                // 1. 获取该GID上次上报的n值，如果不存在则为0。
+                int last_n_for_gid = gid_alarm_business_counts_.count(gid_to_alarm) ? gid_alarm_business_counts_.at(gid_to_alarm) : 0;
+                // 2. 新的n值是上次的值+1，保证连续性。
+                business_n = last_n_for_gid + 1;
+                // 3. 更新该GID的最新n值记录。
+                gid_alarm_business_counts_[gid_to_alarm] = business_n;
+                // 4. 将这个新分配的连续n值与当前TID绑定，防止它在后续帧重复增加GID的计数。
                 tid_to_business_n_[tid_str] = business_n;
             }
             alarm_info.n = business_n;
