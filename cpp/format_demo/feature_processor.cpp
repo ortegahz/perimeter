@@ -1306,11 +1306,11 @@ void FeatureProcessor::_check_and_process_alarm(
     // 检查是否满足徘徊时间，如果不满足，则直接返回，不触发报警
     if (alarmDuration_threshold > 0 && duration < alarmDuration_threshold) {
         // 识别结果依然有效，只是不触发报警
-        double duration_sec = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
-        double threshold_sec = use_fid_time_ ? (alarmDuration_threshold / FPS_ESTIMATE) : alarmDuration_threshold;
-        std::cout << "\n[ALARM SKIPPED] GID " << gid << " (TID " << tid_str << ") did not meet loitering time."
-                  << " Duration: " << std::fixed << std::setprecision(2) << duration_sec << "s"
-                  << " < Threshold: " << threshold_sec << "s." << std::endl;
+//        double duration_sec = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
+//        double threshold_sec = use_fid_time_ ? (alarmDuration_threshold / FPS_ESTIMATE) : alarmDuration_threshold;
+//        std::cout << "\n[ALARM SKIPPED] GID " << gid << " (TID " << tid_str << ") did not meet loitering time."
+//                  << " Duration: " << std::fixed << std::setprecision(2) << duration_sec << "s"
+//                  << " < Threshold: " << threshold_sec << "s." << std::endl;
         return;
     }
 
@@ -1318,8 +1318,8 @@ void FeatureProcessor::_check_and_process_alarm(
     // 新增：如果要求有人脸（例如纯人脸模式），但历史轨迹中从未成功提取过代表人脸，则不触发报警。
     // 这个检查是基于历史的(face_p)，而不是当前帧的检测结果。
     if (is_face_only_mode && face_p.empty()) {
-        std::cout << "\n[ALARM SKIPPED] GID " << gid << " (TID " << tid_str << ") (is_face_only_mode && face_p.empty())."
-                  << std::endl;
+//        std::cout << "\n[ALARM SKIPPED] GID " << gid << " (TID " << tid_str << ") (is_face_only_mode && face_p.empty())."
+//                  << std::endl;
         return;
     }
     // ======================= 【修改结束】 =======================
@@ -1399,8 +1399,8 @@ void FeatureProcessor::_check_and_process_alarm(
             }
         }
     } else {
-        std::cout << "\n[ALARM PENDING] GID " << gid << " (TID " << tid_str << ") recognition count n=" << n
-                  << " is less than alarm threshold n_th=" << config.alarm_cnt_th << "." << std::endl;
+//        std::cout << "\n[ALARM PENDING] GID " << gid << " (TID " << tid_str << ") recognition count n=" << n
+//                  << " is less than alarm threshold n_th=" << config.alarm_cnt_th << "." << std::endl;
     }
 }
 // ======================= 【修改结束】 =======================
