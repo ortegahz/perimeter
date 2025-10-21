@@ -1361,15 +1361,19 @@ void FeatureProcessor::_check_and_process_alarm(
                 }
             }
 
-            // ======================= 【MODIFIED: n值逻辑简化】 =======================
-            // 新逻辑: n 是 GID 的报警序号，每次在前一次基础上+1
+            // ======================= 【MODIFIED: n值逻辑增加TID变化条件】 =======================
+            // 新逻辑: n 是 GID 的报警序号，只有当TID变化时，才在前一次基础上+1
             int new_n = 1; // 默认为1（首次报警）
             if (gid_last_alarm_n_.count(gid_to_alarm)) {
-                // 如果该 GID 之前报过警，则 n = 上次 n + 1
-                new_n = gid_last_alarm_n_.at(gid_to_alarm) + 1;
+                int last_n = gid_last_alarm_n_.at(gid_to_alarm);
+                const std::string& last_tid = gid_last_alarm_tid_.at(gid_to_alarm);
+                // 如果TID与上次相同，n不变；如果TID不同，n+1
+                new_n = (tid_str == last_tid) ? last_n : last_n + 1;
             }
-            // 更新或插入该 GID 的最新报警序号
+
+            // 更新该 GID 的最新报警序号和触发的TID
             gid_last_alarm_n_[gid_to_alarm] = new_n;
+            gid_last_alarm_tid_[gid_to_alarm] = tid_str;
             alarm_info.n = new_n;
             alarm_info.face_clarity_score = face_clarity; // 新增：赋值人脸清晰度分数
 
@@ -1919,7 +1923,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         alarmed.erase(gid_del);
         alarm_reprs.erase(gid_del);
         gid_last_recognized_time.erase(gid_del);
-        gid_last_alarm_n_.erase(gid_del); // 清理报警序号记录
+        gid_last_alarm_n_.erase(gid_del);   // 清理报警序号记录
+        gid_last_alarm_tid_.erase(gid_del); // 清理报警TID记录
 
 #ifdef ENABLE_DISK_IO
         IoTask task;

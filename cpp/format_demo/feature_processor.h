@@ -501,6 +501,8 @@ private:
     std::map<std::string, float> current_frame_face_clarity_;
     // 临时存储本帧每个 TID 对应的人脸特征向量
     std::map<std::string, std::vector<float>> current_frame_face_features_;
-    // 新增: 记录每个GID上一次报警时上报的n值，用于实现报警序号递增
+    // 记录每个GID上一次报警时上报的n值
     std::map<std::string, int> gid_last_alarm_n_;
+    // 记录每个GID上一次报警是由哪个TID触发的
+    std::map<std::string, std::string> gid_last_alarm_tid_;
 };
