@@ -1361,17 +1361,16 @@ void FeatureProcessor::_check_and_process_alarm(
                 }
             }
 
-            // ======================= 【MODIFIED: 修正业务n值递增逻辑】 =======================
-            int business_n = 0;
-            if (tid_to_business_n_.count(tid_str)) {
-                // 这个TID已经触发过报警，使用它之前被分配的n值
-                business_n = tid_to_business_n_.at(tid_str);
-            } else {
-                // 这个TID首次触发报警，为GID增加计数，并将新的n值分配给这个TID
-                business_n = ++gid_alarm_business_counts_[gid_to_alarm];
-                tid_to_business_n_[tid_str] = business_n;
+            // ======================= 【MODIFIED: n值逻辑简化】 =======================
+            // 新逻辑: n 是 GID 的报警序号，每次在前一次基础上+1
+            int new_n = 1; // 默认为1（首次报警）
+            if (gid_last_alarm_n_.count(gid_to_alarm)) {
+                // 如果该 GID 之前报过警，则 n = 上次 n + 1
+                new_n = gid_last_alarm_n_.at(gid_to_alarm) + 1;
             }
-            alarm_info.n = business_n;
+            // 更新或插入该 GID 的最新报警序号
+            gid_last_alarm_n_[gid_to_alarm] = new_n;
+            alarm_info.n = new_n;
             alarm_info.face_clarity_score = face_clarity; // 新增：赋值人脸清晰度分数
 
             if (alarm_info.person_bbox.area() > 0) {
@@ -1887,7 +1886,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         if (now_stamp - it->second >= max_tid_idle) {
             agg_pool.erase(it->first);
             saved_alarm_tids_.erase(it->first); // 清理已保存报警的TID记录
-            tid_to_business_n_.erase(it->first); // 清理已分配的业务n值
             first_seen_tid.erase(it->first);
             tid2gid.erase(it->first);
             candidate_state.erase(it->first);
@@ -1905,7 +1903,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         std::vector<std::string> tids_to_clean;
         for (auto const &[tid_str, g]: tid2gid) { if (g == gid_del) tids_to_clean.push_back(tid_str); }
         for (const auto &tid_str: tids_to_clean) {
-            tid_to_business_n_.erase(tid_str);
             agg_pool.erase(tid_str);
             first_seen_tid.erase(tid_str);
             tid2gid.erase(tid_str);
@@ -1922,8 +1919,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         alarmed.erase(gid_del);
         alarm_reprs.erase(gid_del);
         gid_last_recognized_time.erase(gid_del);
-        // 新增：清理业务报警计数器中对应的GID条目
-        gid_alarm_business_counts_.erase(gid_del);
+        gid_last_alarm_n_.erase(gid_del); // 清理报警序号记录
 
 #ifdef ENABLE_DISK_IO
         IoTask task;
