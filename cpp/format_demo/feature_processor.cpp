@@ -1381,7 +1381,8 @@ void FeatureProcessor::_check_and_process_alarm(
             alarm_info.n = business_n;
             alarm_info.face_clarity_score = face_clarity; // 新增：赋值人脸清晰度分数
 
-            if (alarm_info.person_bbox.area() > 0) {
+//            if (alarm_info.person_bbox.area() > 0)
+            {
                 triggered_alarms_this_frame.emplace_back(gid_to_alarm, tid_str, timestamp, n, was_newly_saved);
                 if (current_frame_face_boxes_.count(tid_str)) {
                     alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
