@@ -1554,7 +1554,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
         // 1. Re-ID特征提取
         // 仅当需要进行人体特征比对时才执行 (w_body > 0, 即 w_face < 1.0)
-        if (!is_face_only_mode) {
+//        if (!is_face_only_mode)
+        {
             // 首先在主线程中执行Re-ID特征提取 (使用DLA Core 1)
             for (const auto &det: dets) {
                 if (det.class_id != 0) continue;
