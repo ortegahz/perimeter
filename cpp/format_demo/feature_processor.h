@@ -504,4 +504,6 @@ private:
     std::map<std::string, std::vector<float>> current_frame_face_features_;
     // 新增: 业务报警计数器，用于记录每个GID实际触发的、连续的报警次数
     std::map<std::string, int> gid_alarm_business_counts_;
+    // 新增: 记录每个TID首次触发报警时分配到的业务n值，以防止n值在同一TID上持续增加
+    std::map<std::string, int> tid_to_business_n_;
 };

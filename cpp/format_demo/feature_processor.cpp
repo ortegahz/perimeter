@@ -1276,19 +1276,16 @@ void FeatureProcessor::_check_and_process_alarm(
         bool is_face_only_mode,
         const std::vector<float>& current_face_feat) {
 
-    // ======================= 【新增：白名单检查】 =======================
     // 如果当前 GID 在本次调用传入的白名单中，则直接返回，不触发任何报警逻辑。
     if (config.whitelist_gids.count(gid)) {
-        // 新增：如果是在纯人脸模式下，且 GID 在白名单中，则将其识别次数（tid_hist）清零。
+        // 如果是在纯人脸模式下，且 GID 在白名单中，则将其识别次数（tid_hist）清零。
         // 这样，当该 GID 从白名单中移除后，其识别次数 n 会从 0 重新开始累计。
         if (is_face_only_mode && gid_mgr.tid_hist.count(gid)) {
             gid_mgr.tid_hist.at(gid).clear();
         }
         return;
     }
-    // ======================= 【新增结束】 =======================
 
-    // ======================= 【MODIFIED: 徘徊时长判断移到此处】 =======================
     // 获取该摄像头的徘徊时间配置，如果未设置则默认为0
     long long current_alarm_duration_ms = 0;
     if (config.alarmDuration_ms_by_cam.count(stream_id)) {
@@ -1305,30 +1302,19 @@ void FeatureProcessor::_check_and_process_alarm(
         }
     }
 
-    // 新增：检查是否满足徘徊时间，如果不满足，则直接返回，不触发报警
+    // 检查是否满足徘徊时间，如果不满足，则直接返回，不触发报警
     if (alarmDuration_threshold > 0 && duration < alarmDuration_threshold) {
-        // 识别结果依然有效，只是不触发报警，因此无需向 output.mp 添加 "_-8_wait_d" 状态
-        // std::cout << "\n[INFO] GID " << gid << " (TID " << tid_str
-        //           << ") recognized, but alarm suppressed due to insufficient duration ("
-        //           << std::fixed << std::setprecision(2) << (use_fid_time_ ? duration / FPS_ESTIMATE : duration)
-        //           << "s < " << std::fixed << std::setprecision(2) << (alarmDuration_threshold / (use_fid_time_ ? FPS_ESTIMATE : 1.0))
-        //           << "s)." << std::endl;
+        // 识别结果依然有效，只是不触发报警
+        return;
+    }
+
+    // ======================= 【MODIFIED: 移除对当前帧人脸检测的依赖】 =======================
+    // 新增：如果要求有人脸（例如纯人脸模式），但历史轨迹中从未成功提取过代表人脸，则不触发报警。
+    // 这个检查是基于历史的(face_p)，而不是当前帧的检测结果。
+    if (is_face_only_mode && face_p.empty()) {
         return;
     }
     // ======================= 【修改结束】 =======================
-
-    // 在 _check_and_process_alarm 里添加当前帧检测检查
-    if (is_face_only_mode) {
-        if (face_p.empty()) return; // 历史无脸
-        if (!current_frame_face_boxes_.count(tid_str) || current_frame_face_boxes_[tid_str].area() <= 0) {
-            return; // 当前帧没检测到人脸框，不报警
-        }
-    }
-
-//    // 新增逻辑：当人脸权重为 1.0 且人脸检测置信度 ≤ 0.95 时，不触发报警
-//    if (w_face >= 0.999f && face_det_score <= 0.95f) {
-//        return;
-//    }
 
     int n = gid_mgr.tid_hist.count(gid) ? (int) gid_mgr.tid_hist.at(gid).size() : 0;
 
@@ -1367,8 +1353,16 @@ void FeatureProcessor::_check_and_process_alarm(
                 }
             }
 
-            // 新增：使用独立的业务报警计数器，确保'n'的连续性
-            int business_n = ++gid_alarm_business_counts_[gid_to_alarm];
+            // ======================= 【MODIFIED: 修正业务n值递增逻辑】 =======================
+            int business_n = 0;
+            if (tid_to_business_n_.count(tid_str)) {
+                // 这个TID已经触发过报警，使用它之前被分配的n值
+                business_n = tid_to_business_n_.at(tid_str);
+            } else {
+                // 这个TID首次触发报警，为GID增加计数，并将新的n值分配给这个TID
+                business_n = ++gid_alarm_business_counts_[gid_to_alarm];
+                tid_to_business_n_[tid_str] = business_n;
+            }
             alarm_info.n = business_n;
             alarm_info.face_clarity_score = face_clarity; // 新增：赋值人脸清晰度分数
 
@@ -1781,16 +1775,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 state.last_bind_fid = fid;
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
 
-                // 【修改】报警逻辑现在总会执行，无论是否在冷却期内。n 是否增加已在 bind 函数中处理。
-                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst,
-                                         duration, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
-                                         w_face,
-                                         current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
-                                         current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                                         is_face_only_mode,
-                                         current_face_feat);
-
-                // 【修改】仅根据冷却状态决定是否更新时间和UI显示
                 if (!on_cooldown) {
                     // 冷却时间已过或首次识别 (n已增加)，重置计时器并正常显示
                     gid_last_recognized_time[cand_gid] = now_stamp;
@@ -1812,15 +1796,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             new_gid_state[tid_str].last_new_fid = fid;
             gid_last_recognized_time[new_gid] = now_stamp;
             int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-            _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
-                                     duration, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
-                                     w_face,
-                                     current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
-                                     current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                                     is_face_only_mode,
-                                     current_face_feat
-            );
-
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
         } else if (!cand_gid.empty() && score >= THR_NEW_GID && mode_ == "load") { // Reason 3: Ambiguous, pending for a long time
             ng_state.ambig_count++;
@@ -1832,15 +1807,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 new_gid_state[tid_str] = {0, fid, 0};
                 gid_last_recognized_time[new_gid] = now_stamp;
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, duration,
-                                         dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
-                                         w_face,
-                                         current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
-                                         current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                                         is_face_only_mode,
-                                         current_face_feat
-                );
-
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
             } else {
                 output.mp[s_id][tid_num] = {tid_str + "_-7", score, 0};
@@ -1857,15 +1823,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     new_gid_state[tid_str] = {0, fid, 0};
                     gid_last_recognized_time[new_gid] = now_stamp;
                     int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, duration,
-                                             dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
-                                             w_face,
-                                             current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
-                                             current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                                             is_face_only_mode,
-                                             current_face_feat
-                    );
-
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
                 } else {
                     output.mp[s_id][tid_num] = {tid_str + "_-5", -1.0f, 0};
@@ -1874,6 +1831,26 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 output.mp[s_id][tid_num] = {tid_str + "_-6", -1.0f, 0};
             }
         }
+
+        // ======================= 【NEW: Consolidated Alarm Logic】 =======================
+        // 从 GID 匹配块中移至此处，形成一个统一的报警检查点。
+        // 现在，只要一个 TID 仍然活跃并绑定到 GID，即使当前帧没有高质量的匹配，
+        // 报警也可以基于持续时间被触发。
+        if (tid2gid.count(tid_str)) {
+            std::string bound_gid = tid2gid.at(tid_str);
+            // 主要的判断逻辑现在封装在 _check_and_process_alarm 函数内部。
+            // 我们传递所有相关的上下文信息，由它来决定是否触发报警。
+            _check_and_process_alarm(
+                output, config, tid_str, bound_gid, agg, now_stamp, now_stamp_gst,
+                duration, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                w_face,
+                current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
+                current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
+                is_face_only_mode,
+                current_face_feat
+            );
+        }
+        // ======================= 【修改结束】 =======================
     }
 
     std::map<std::string, std::tuple<uint64_t, std::string>> active_alarms;
@@ -1899,6 +1876,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         if (now_stamp - it->second >= max_tid_idle) {
             agg_pool.erase(it->first);
             saved_alarm_tids_.erase(it->first); // 清理已保存报警的TID记录
+            tid_to_business_n_.erase(it->first); // 清理已分配的业务n值
             first_seen_tid.erase(it->first);
             tid2gid.erase(it->first);
             candidate_state.erase(it->first);
@@ -1916,6 +1894,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         std::vector<std::string> tids_to_clean;
         for (auto const &[tid_str, g]: tid2gid) { if (g == gid_del) tids_to_clean.push_back(tid_str); }
         for (const auto &tid_str: tids_to_clean) {
+            tid_to_business_n_.erase(tid_str);
             agg_pool.erase(tid_str);
             first_seen_tid.erase(tid_str);
             tid2gid.erase(tid_str);
