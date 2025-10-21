@@ -1209,13 +1209,13 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
     // 如果程序执行到这里，说明这是一个全新的、不重复的报警 GID (或者重复了一个未被记录的GID)。
     // 根据 N 值决定是否将其注册为新的“原始报警 GID”以用于未来的去重。
     if (n >= alarm_record_thresh) {
-        std::cout << "\n[ALARM] New original alarmer registered for deduplication: " << gid
-                  << " (n=" << n << " > threshold=" << alarm_record_thresh << ")." << std::endl;
+//        std::cout << "\n[ALARM] New original alarmer registered for deduplication: " << gid
+//                  << " (n=" << n << " > threshold=" << alarm_record_thresh << ")." << std::endl;
         alarmed.insert(gid);
         alarm_reprs[gid] = cur_rep;
     } else {
-        std::cout << "\n[ALARM] GID " << gid << " triggered, but not registered for deduplication (n=" << n
-                  << " <= threshold=" << alarm_record_thresh << ")." << std::endl;
+//        std::cout << "\n[ALARM] GID " << gid << " triggered, but not registered for deduplication (n=" << n
+//                  << " <= threshold=" << alarm_record_thresh << ")." << std::endl;
     }
 
     // --- 新增：检查此TID是否已保存过报警 ---
@@ -1364,18 +1364,19 @@ void FeatureProcessor::_check_and_process_alarm(
             // ======================= 【MODIFIED: 修正业务n值递增逻辑】 =======================
             int business_n = 0;
             if (tid_to_business_n_.count(tid_str)) {
-                // 这个TID已经触发过报警，使用它之前被分配的n值
+                // 这个TID已经触发过报警，复用之前分配给它的连续n值。
                 business_n = tid_to_business_n_.at(tid_str);
+                std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for already seen TID: " << tid_str << std::endl;
             } else {
                 // 这个TID是首次触发报警。
-                // 1. 获取该GID上次上报的n值，如果不存在则为0。
+                std::cout << "\n[n_DEBUG] New alarm TID: " << tid_str << " for GID: " << gid_to_alarm << ". Calculating new n..." << std::endl;
                 int last_n_for_gid = gid_alarm_business_counts_.count(gid_to_alarm) ? gid_alarm_business_counts_.at(gid_to_alarm) : 0;
-                // 2. 新的n值是上次的值+1，保证连续性。
+                std::cout << "          - Last recorded n for GID was: " << last_n_for_gid << std::endl;
                 business_n = last_n_for_gid + 1;
-                // 3. 更新该GID的最新n值记录。
+                std::cout << "          - New continuous n is now: " << business_n << std::endl;
                 gid_alarm_business_counts_[gid_to_alarm] = business_n;
-                // 4. 将这个新分配的连续n值与当前TID绑定，防止它在后续帧重复增加GID的计数。
                 tid_to_business_n_[tid_str] = business_n;
+                std::cout << "          - Global count for GID updated. TID locked to this n." << std::endl;
             }
             alarm_info.n = business_n;
             alarm_info.face_clarity_score = face_clarity; // 新增：赋值人脸清晰度分数
