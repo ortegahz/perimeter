@@ -502,4 +502,6 @@ private:
     std::map<std::string, float> current_frame_face_clarity_;
     // 新增：临时存储本帧每个 TID 对应的人脸特征向量
     std::map<std::string, std::vector<float>> current_frame_face_features_;
+    // 新增: 业务报警计数器，用于记录每个GID实际触发的、连续的报警次数
+    std::map<std::string, int> gid_alarm_business_counts_;
 };

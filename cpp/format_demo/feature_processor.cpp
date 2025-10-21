@@ -1366,10 +1366,11 @@ void FeatureProcessor::_check_and_process_alarm(
                     break;
                 }
             }
-            // 新增：将识别次数 n 赋值给告警信息
-            alarm_info.n = n;
+
+            // 新增：使用独立的业务报警计数器，确保'n'的连续性
+            int business_n = ++gid_alarm_business_counts_[gid_to_alarm];
+            alarm_info.n = business_n;
             alarm_info.face_clarity_score = face_clarity; // 新增：赋值人脸清晰度分数
-            alarm_info.n = n;
 
             if (alarm_info.person_bbox.area() > 0) {
                 triggered_alarms_this_frame.emplace_back(gid_to_alarm, tid_str, timestamp, n, was_newly_saved);
@@ -1931,6 +1932,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         alarmed.erase(gid_del);
         alarm_reprs.erase(gid_del);
         gid_last_recognized_time.erase(gid_del);
+        // 新增：清理业务报警计数器中对应的GID条目
+        gid_alarm_business_counts_.erase(gid_del);
 
 #ifdef ENABLE_DISK_IO
         IoTask task;
