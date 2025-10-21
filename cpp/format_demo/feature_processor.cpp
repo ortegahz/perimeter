@@ -1697,12 +1697,31 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     for (auto const &[tid_str, agg]: agg_pool) {
         if (tid_str.rfind(stream_id, 0) != 0) continue;
 
-        // 新增：计算可见时长并填充输出，以便在UI上显示
+        // 【修改前】原有TID时长计算
         double duration = 0.0;
         if (first_seen_tid.count(tid_str)) {
             duration = now_stamp - first_seen_tid.at(tid_str);
         }
         output.tid_durations_sec[tid_str] = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
+
+        // ======================= 【修改/新增：基于GID计算徘徊时长】 =======================
+        double duration_for_alarm = 0.0; // 这是我们将用于报警判断的最终时长
+        std::string current_gid;
+        if (tid2gid.count(tid_str)) {
+            current_gid = tid2gid.at(tid_str);
+        }
+
+        if (!current_gid.empty()) {
+            const double continuity_timeout = use_fid_time_ ? 50.0 : 60.0;  // 50 frame or x second
+
+            // 检查是否需要重置计时器：1.首次出现; 2.距离上次出现间隔太长
+            if (!gid_continuous_appearance_start_ts.count(current_gid) ||
+                ((now_stamp - gid_mgr.last_update.at(current_gid)) > continuity_timeout)) {
+                gid_continuous_appearance_start_ts[current_gid] = now_stamp;
+            }
+            duration_for_alarm = now_stamp - gid_continuous_appearance_start_ts.at(current_gid);
+        }
+        // ======================= 【修改/新增结束】 =======================
 
         size_t last_underscore = tid_str.find_last_of('_');
         std::string s_id = tid_str.substr(0, last_underscore);
@@ -1782,8 +1801,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
 
                 // 【修改】报警逻辑现在总会执行，无论是否在冷却期内。n 是否增加已在 bind 函数中处理。
-                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst,
-                                         duration, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                // 【修改】使用新计算的 duration_for_alarm 替换旧的 duration
+                _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst, duration_for_alarm, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                          w_face,
                                          current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                          current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
@@ -1812,8 +1831,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             new_gid_state[tid_str].last_new_fid = fid;
             gid_last_recognized_time[new_gid] = now_stamp;
             int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-            _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
-                                     duration, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+            // 【修改】使用新计算的 duration_for_alarm 替换旧的 duration
+            _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, duration_for_alarm, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                      w_face,
                                      current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                      current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
@@ -1832,8 +1851,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 new_gid_state[tid_str] = {0, fid, 0};
                 gid_last_recognized_time[new_gid] = now_stamp;
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, duration,
-                                         dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                // 【修改】使用新计算的 duration_for_alarm 替换旧的 duration
+                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, duration_for_alarm, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                          w_face,
                                          current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                          current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
@@ -1857,8 +1876,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     new_gid_state[tid_str] = {0, fid, 0};
                     gid_last_recognized_time[new_gid] = now_stamp;
                     int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, duration,
-                                             dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                    // 【修改】使用新计算的 duration_for_alarm 替换旧的 duration
+                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, duration_for_alarm, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                              w_face,
                                              current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                              current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
@@ -1934,6 +1953,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         gid_last_recognized_time.erase(gid_del);
         // 新增：清理业务报警计数器中对应的GID条目
         gid_alarm_business_counts_.erase(gid_del);
+        // 【新增】同步清理徘徊计时器的状态
+        gid_continuous_appearance_start_ts.erase(gid_del);
 
 #ifdef ENABLE_DISK_IO
         IoTask task;
