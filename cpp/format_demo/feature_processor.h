@@ -415,6 +415,7 @@ private:
             const TrackAgg &agg,
             double now_stamp,
             GstClockTime now_stamp_gst,
+            double duration,
             const std::vector<Detection> &dets,
             const std::string &stream_id,
             const cv::Mat &body_p,

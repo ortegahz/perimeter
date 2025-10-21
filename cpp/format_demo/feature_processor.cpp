@@ -1264,6 +1264,7 @@ void FeatureProcessor::_check_and_process_alarm(
         const TrackAgg &agg,
         double now_stamp,
         GstClockTime now_stamp_gst,
+        double duration,
         const std::vector<Detection> &dets,
         const std::string &stream_id,
         const cv::Mat &body_p,
@@ -1286,6 +1287,35 @@ void FeatureProcessor::_check_and_process_alarm(
         return;
     }
     // ======================= 【新增结束】 =======================
+
+    // ======================= 【MODIFIED: 徘徊时长判断移到此处】 =======================
+    // 获取该摄像头的徘徊时间配置，如果未设置则默认为0
+    long long current_alarm_duration_ms = 0;
+    if (config.alarmDuration_ms_by_cam.count(stream_id)) {
+        current_alarm_duration_ms = config.alarmDuration_ms_by_cam.at(stream_id);
+    }
+
+    // 计算徘徊时间阈值 (单位与 now_stamp 一致)
+    double alarmDuration_threshold = 0.0;
+    if (current_alarm_duration_ms > 0) {
+        if (use_fid_time_) {
+            alarmDuration_threshold = (double)current_alarm_duration_ms / 1000.0 * FPS_ESTIMATE;
+        } else {
+            alarmDuration_threshold = (double)current_alarm_duration_ms / 1000.0;
+        }
+    }
+
+    // 新增：检查是否满足徘徊时间，如果不满足，则直接返回，不触发报警
+    if (alarmDuration_threshold > 0 && duration < alarmDuration_threshold) {
+        // 识别结果依然有效，只是不触发报警，因此无需向 output.mp 添加 "_-8_wait_d" 状态
+        // std::cout << "\n[INFO] GID " << gid << " (TID " << tid_str
+        //           << ") recognized, but alarm suppressed due to insufficient duration ("
+        //           << std::fixed << std::setprecision(2) << (use_fid_time_ ? duration / FPS_ESTIMATE : duration)
+        //           << "s < " << std::fixed << std::setprecision(2) << (alarmDuration_threshold / (use_fid_time_ ? FPS_ESTIMATE : 1.0))
+        //           << "s)." << std::endl;
+        return;
+    }
+    // ======================= 【修改结束】 =======================
 
     // 在 _check_and_process_alarm 里添加当前帧检测检查
     if (is_face_only_mode) {
@@ -1677,12 +1707,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         std::string s_id = tid_str.substr(0, last_underscore);
         int tid_num = std::stoi(tid_str.substr(last_underscore + 1));
 
-        // 【修改】检查是否满足徘徊时间
-        if (current_alarm_duration_ms > 0 && duration < alarmDuration_threshold) {
-            output.mp[s_id][tid_num] = {tid_str + "_-8_wait_d", -1.f, 0};
-            continue;
-        }
-
         // 如果不是纯人脸模式，则检查body特征数量
         if (!is_face_only_mode && (int) agg.body.size() < MIN_BODY4GID) {
             std::string gid_str = tid_str + "_-1_b_" + std::to_string(agg.body.size());
@@ -1752,7 +1776,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
                 // 【修改】报警逻辑现在总会执行，无论是否在冷却期内。n 是否增加已在 bind 函数中处理。
                 _check_and_process_alarm(output, config, tid_str, cand_gid, agg, now_stamp, now_stamp_gst,
-                                         dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                                         duration, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                          w_face,
                                          current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                          current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
@@ -1782,7 +1806,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             gid_last_recognized_time[new_gid] = now_stamp;
             int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
             _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
-                                     dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                                     duration, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                      w_face,
                                      current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                                      current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
@@ -1801,7 +1825,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 new_gid_state[tid_str] = {0, fid, 0};
                 gid_last_recognized_time[new_gid] = now_stamp;
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
+                _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, duration,
                                          dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                          w_face,
                                          current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
@@ -1826,7 +1850,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     new_gid_state[tid_str] = {0, fid, 0};
                     gid_last_recognized_time[new_gid] = now_stamp;
                     int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst,
+                    _check_and_process_alarm(output, config, tid_str, new_gid, agg, now_stamp, now_stamp_gst, duration,
                                              dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
                                              w_face,
                                              current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
