@@ -46,11 +46,10 @@ constexpr int NEW_GID_MIN_FRAMES = 3;
 constexpr int NEW_GID_TIME_WINDOW = 50;
 constexpr int BIND_LOCK_FRAMES = 15;
 constexpr int CANDIDATE_FRAMES = 2;
-constexpr int MAX_TID_IDLE_FRAMES = 256;
-constexpr int GID_MAX_IDLE_FRAMES = 25 / 2 * 60 * 60 * 24 * 7;
-constexpr int WAIT_FRAMES_AMBIGUOUS = 10;
-
 constexpr double FPS_ESTIMATE = 25.0 / 2.;
+constexpr int MAX_TID_IDLE_FRAMES = int(FPS_ESTIMATE) * 60 * 60 * 24;
+constexpr int GID_MAX_IDLE_FRAMES = int(FPS_ESTIMATE) * 60 * 60 * 24 * 7;
+constexpr int WAIT_FRAMES_AMBIGUOUS = 10;
 constexpr double MAX_TID_IDLE_SEC = MAX_TID_IDLE_FRAMES / FPS_ESTIMATE;
 constexpr double GID_MAX_IDLE_SEC = GID_MAX_IDLE_FRAMES / FPS_ESTIMATE;
 
