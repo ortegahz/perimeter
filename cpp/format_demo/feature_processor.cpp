@@ -1707,6 +1707,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         std::string s_id = tid_str.substr(0, last_underscore);
         int tid_num = std::stoi(tid_str.substr(last_underscore + 1));
 
+        // 【修改】检查是否满足徘徊时间
+        if (current_alarm_duration_ms > 0 && duration < alarmDuration_threshold and mode_ == "load") {
+            output.mp[s_id][tid_num] = {tid_str + "_-8_wait_d", -1.f, 0};
+            continue;
+        }
+
         // 如果不是纯人脸模式，则检查body特征数量
         if (!is_face_only_mode && (int) agg.body.size() < MIN_BODY4GID) {
             std::string gid_str = tid_str + "_-1_b_" + std::to_string(agg.body.size());
