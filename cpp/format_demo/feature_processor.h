@@ -506,4 +506,6 @@ private:
     std::map<std::string, int> gid_alarm_business_counts_;
     // 【新增】记录每个GID本轮连续出现的起始时间戳，用于徘徊报警
     std::map<std::string, double> gid_continuous_appearance_start_ts;
+    // 新增: 记录每个 GID 最后一次触发报警的 TID，用于防止同一 TID 重复增加 n
+    std::map<std::string, std::string> gid_last_alarmed_tid_;
 };

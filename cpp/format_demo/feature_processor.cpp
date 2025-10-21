@@ -1368,7 +1368,12 @@ void FeatureProcessor::_check_and_process_alarm(
             }
 
             // 新增：使用独立的业务报警计数器，确保'n'的连续性
-            int business_n = ++gid_alarm_business_counts_[gid_to_alarm];
+            // FIX: 只有当同一个 GID 关联到一个新的 TID 时，才增加业务报警计数器 n
+            if (!gid_last_alarmed_tid_.count(gid_to_alarm) || gid_last_alarmed_tid_.at(gid_to_alarm) != tid_str) {
+                ++gid_alarm_business_counts_[gid_to_alarm]; // 首次出现或TID变更时，增加计数
+                gid_last_alarmed_tid_[gid_to_alarm] = tid_str;      // 更新最后触发报警的TID
+            }
+            int business_n = gid_alarm_business_counts_[gid_to_alarm]; // 使用（可能）更新后的计数值
             alarm_info.n = business_n;
             alarm_info.face_clarity_score = face_clarity; // 新增：赋值人脸清晰度分数
 
@@ -1955,6 +1960,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         gid_alarm_business_counts_.erase(gid_del);
         // 【新增】同步清理徘徊计时器的状态
         gid_continuous_appearance_start_ts.erase(gid_del);
+        // 新增: 同步清理 GID 最后关联的报警 TID
+        gid_last_alarmed_tid_.erase(gid_del);
 
 #ifdef ENABLE_DISK_IO
         IoTask task;
