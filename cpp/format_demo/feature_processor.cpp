@@ -1299,7 +1299,8 @@ void FeatureProcessor::_check_and_process_alarm(
         float face_det_score,
         float face_clarity,
         bool is_face_only_mode,
-        const std::vector<float>& current_face_feat) {
+        const std::vector<float>& current_face_feat,
+        bool is_on_cooldown) { // 新增：接收冷却状态
 
     // 如果当前 GID 在本次调用传入的白名单中，则直接返回，不触发任何报警逻辑。
     if (config.whitelist_gids.count(gid)) {
@@ -1394,7 +1395,13 @@ void FeatureProcessor::_check_and_process_alarm(
             // 检查此TID之前是否触发过报警
             if (tid_to_business_n_.count(tid_str)) {
                 // 如果触发过，检查当时关联的GID是否与现在的GID相同
-                if (tid_last_gid_for_n_.count(tid_str) && tid_last_gid_for_n_.at(tid_str) == gid) {
+                // 新增：如果当前 GID 处于冷却状态，即使是新的 TID，也强制复用 n 值，不重新计算
+                if (is_on_cooldown) {
+                     recalculate_n = false;
+                     business_n = gid_alarm_business_counts_.count(gid) ? gid_alarm_business_counts_.at(gid) : 0;
+                     std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for GID " << gid << " on new TID " << tid_str << " because GID is in cooldown." << std::endl;
+                }
+                else if (tid_last_gid_for_n_.count(tid_str) && tid_last_gid_for_n_.at(tid_str) == gid) {
                     // GID未变，直接复用之前的n值
                     business_n = tid_to_business_n_.at(tid_str);
                     recalculate_n = false;
@@ -1406,7 +1413,13 @@ void FeatureProcessor::_check_and_process_alarm(
                                 << " to " << gid << ". Recalculating n." << std::endl;
                 }
             }
-
+            // 新增：如果当前 GID 处于冷却状态，即使是新的 TID，也强制复用 n 值，不重新计算
+            else if (is_on_cooldown) {
+                recalculate_n = false;
+                business_n = gid_alarm_business_counts_.count(gid) ? gid_alarm_business_counts_.at(gid) : 0;
+                std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for GID " << gid << " on new TID " << tid_str << " because GID is in cooldown." << std::endl;
+                tid_to_business_n_[tid_str] = business_n; // 锁定这个TID到复用的n值
+            }
             if (recalculate_n) {
                 // 首次触发报警，或TID关联的GID发生变化，需要计算新的n值
                 if (!tid_to_business_n_.count(tid_str)) {
@@ -1538,6 +1551,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     // --- 核心修改：超时逻辑 ---
     double now_stamp; // 内部统一使用 double 秒级时间戳
     GstClockTime now_stamp_gst; // GStreamer 时间戳 (ns), 用于精确存储
+    // 声明冷却状态变量在循环外层，以便后续传递
+    bool on_cooldown = false;
     double max_tid_idle, gid_max_idle;
     if (use_fid_time_) {
         // 如果是基于帧号计时（例如 'load' 模式），则 fid 是时间源
@@ -1837,8 +1852,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                << (use_fid_time_ ? " frames" : "s") << ")\n";
                 }
                 #endif
-
-                bool on_cooldown = false;
+                // 重置冷却状态，为当前TID的检查做准备
+                on_cooldown = false;
                 if (gid_cooldown_threshold > 0 && gid_last_recognized_time.count(cand_gid)) {
                     double time_since_last_rec = now_stamp - gid_last_recognized_time.at(cand_gid);
 
@@ -1954,8 +1969,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 w_face,
                 current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                 current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                is_face_only_mode,
-                current_face_feat
+                is_face_only_mode, // 模式
+                current_face_feat, // 特征
+                on_cooldown        // 冷却状态
             );
         }
         // ======================= 【NEW: Consolidated Cooldown Timer Reset Logic】 =======================
