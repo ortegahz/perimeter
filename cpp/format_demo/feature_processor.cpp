@@ -1814,15 +1814,17 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     }
                 }
 
+                // 核心修改：无论是否在冷却期，只要成功识别并绑定，就立即更新其“最后出现时间”。
+                // 这会持续刷新冷却计时器，直到目标消失超过冷却时间为止。
+                gid_last_recognized_time[cand_gid] = now_stamp;
+
                 // 调用 bind 更新原型，但根据冷却状态决定是否增加 n
                 gid_mgr.bind(cand_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "", !on_cooldown); // creation_reason is empty, increment_n is conditional
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
 
-                if (!on_cooldown) {
-                    // 冷却时间已过或首次识别 (n已增加)，重置计时器并正常显示
-                    gid_last_recognized_time[cand_gid] = now_stamp;
+                if (!on_cooldown) { // 冷却时间已过或首次识别
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
                 } else {
                     // 冷却时间内 (n 未增加)，不重置计时器，但在UI上显示特殊状态
@@ -1910,6 +1912,16 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 is_face_only_mode,
                 current_face_feat
             );
+        }
+        // ======================= 【NEW: Consolidated Cooldown Timer Reset Logic】 =======================
+        // 在该TID的所有识别逻辑结束后，统一检查它是否已绑定到一个GID。
+        // 如果绑定了（无论是之前绑定的还是刚刚新绑定的），就刷新该GID的冷却计时器。
+        // 这同时满足了两个需求：
+        // 1. 对于一个已识别的TID，只要它还在视野中，就持续刷新其GID的冷却时间。
+        // 2. 对于一个新识别并绑定的TID，立即为其GID启动冷却计时。
+        if (tid2gid.count(tid_str)) {
+            const std::string& bound_gid = tid2gid.at(tid_str);
+            gid_last_recognized_time[bound_gid] = now_stamp;
         }
         // ======================= 【修改结束】 =======================
     }
