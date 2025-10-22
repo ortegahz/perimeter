@@ -1858,6 +1858,14 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
         auto [cand_gid, score] = gid_mgr.probe(face_f, body_f, w_face, w_body);
 
+        if (face_enabled && !face_f.empty()) {
+            std::cout << "[FaceMatch] cam:" << stream_id
+                      << " tid:" << tid_num
+                      << " cand_gid:" << (cand_gid.empty() ? "None" : cand_gid)
+                      << " score:" << std::fixed << std::setprecision(4) << score
+                      << std::endl;
+        }
+
         auto &state = candidate_state[tid_str];
         auto &ng_state = new_gid_state[tid_str];
         uint64_t time_since_last_new = fid - ng_state.last_new_fid;
