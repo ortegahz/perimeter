@@ -16,6 +16,11 @@
 #include <sstream>
 #include "cores/face/PoseEstimator.hpp" // 新增头文件
 
+// ======================= 【新增宏：控制冷却逻辑调试打印】 =======================
+// 取消注释此行以启用关于 GID 识别冷却逻辑的详细打印
+ #define ENABLE_COOLDOWN_DEBUG_PRINTS
+// ======================= 【新增结束】 =======================
+
 // ======================= 【MODIFIED】 =======================
 // 添加一个宏来控制所有磁盘I/O操作
 // 如果要关闭所有耗时的文件写入和删除，请注释掉下面这行
@@ -1825,12 +1830,34 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             state.cand_gid = cand_gid;
             int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f);
             if (state.count >= CANDIDATE_FRAMES && flag_code == 0) {
+                #ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
+                if (gid_cooldown_threshold > 0) {
+                     std::cout << "\n[COOLDOWN_DEBUG] TID: " << tid_str << ", GID: " << cand_gid
+                               << ", Cooldown Check ACTIVE (threshold=" << std::fixed << std::setprecision(3) << gid_cooldown_threshold
+                               << (use_fid_time_ ? " frames" : "s") << ")\n";
+                }
+                #endif
+
                 bool on_cooldown = false;
                 if (gid_cooldown_threshold > 0 && gid_last_recognized_time.count(cand_gid)) {
-                    if ((now_stamp - gid_last_recognized_time.at(cand_gid)) < gid_cooldown_threshold) {
+                    double time_since_last_rec = now_stamp - gid_last_recognized_time.at(cand_gid);
+
+                    #ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
+                    std::cout << "                 > Now: " << now_stamp << ", Last Rec @: " << gid_last_recognized_time.at(cand_gid)
+                              << ", Delta: " << time_since_last_rec << "\n";
+                    std::cout << "                 > Check: Is Delta (" << time_since_last_rec << ") < Threshold (" << gid_cooldown_threshold << ") ?\n";
+                    #endif
+
+                    if (time_since_last_rec < gid_cooldown_threshold) {
                         on_cooldown = true;
                     }
                 }
+
+                #ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
+                if (gid_cooldown_threshold > 0) {
+                    std::cout << "                 > Result: on_cooldown = " << (on_cooldown ? "true" : "false") << "\n";
+                }
+                #endif
 
                 // 核心修改：无论是否在冷却期，只要成功识别并绑定，就立即更新其“最后出现时间”。
                 // 这会持续刷新冷却计时器，直到目标消失超过冷却时间为止。
@@ -1939,6 +1966,13 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         // 2. 对于一个新识别并绑定的TID，立即为其GID启动冷却计时。
         if (tid2gid.count(tid_str)) {
             const std::string& bound_gid = tid2gid.at(tid_str);
+            #ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
+            if (gid_cooldown_threshold > 0 && (!gid_last_recognized_time.count(bound_gid) || std::abs(gid_last_recognized_time.at(bound_gid) - now_stamp) > 1e-6)) {
+                 std::cout << "[COOLDOWN_DEBUG] TID: " << tid_str << ", GID: " << bound_gid
+                           << " -> END-OF-LOOP TIMESTAMP REFRESH. Old: " << (gid_last_recognized_time.count(bound_gid) ? std::to_string(gid_last_recognized_time.at(bound_gid)) : "N/A")
+                           << ", New: " << now_stamp << "\n";
+            }
+            #endif
             gid_last_recognized_time[bound_gid] = now_stamp;
         }
         // ======================= 【修改结束】 =======================
