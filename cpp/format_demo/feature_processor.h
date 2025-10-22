@@ -244,11 +244,13 @@ struct AlarmTriggerInfo {
 struct TrackAgg {
     void add_body(const std::vector<float> &feat, float score, const cv::Mat &patch);
 
-    void add_face(const std::vector<float> &feat, const cv::Mat &patch);
+    void add_face(const std::vector<float> &feat, const cv::Mat &patch, bool is_frontal, float score);
 
     std::pair<std::vector<float>, cv::Mat> main_body_feat_and_patch() const;
 
     std::pair<std::vector<float>, cv::Mat> main_face_feat_and_patch() const;
+
+    int count_high_quality_faces(float score_thr) const;
 
     std::vector<cv::Mat> body_patches() const;
 
@@ -257,7 +259,7 @@ struct TrackAgg {
     static bool check_consistency(const std::deque<std::vector<float>> &feats, float thr = 0.5f);
 
     std::deque<std::tuple<std::vector<float>, float, cv::Mat>> body;
-    std::deque<std::tuple<std::vector<float>, cv::Mat>> face;
+    std::deque<std::tuple<std::vector<float>, cv::Mat, bool, float>> face; // feat, patch, is_frontal, score
 };
 
 struct GlobalID {

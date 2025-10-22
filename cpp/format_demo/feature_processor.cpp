@@ -272,9 +272,9 @@ void TrackAgg::add_body(const std::vector<float> &feat, float score, const cv::M
     if (body.size() > MIN_BODY4GID) body.pop_front();
 }
 
-void TrackAgg::add_face(const std::vector<float> &feat, const cv::Mat &patch) {
+void TrackAgg::add_face(const std::vector<float> &feat, const cv::Mat &patch, bool is_frontal, float score) {
     if (patch.empty()) return;
-    face.emplace_back(feat, patch.clone());
+    face.emplace_back(feat, patch.clone(), is_frontal, score);
     if (face.size() > MIN_FACE4GID) face.pop_front();
 }
 
@@ -294,12 +294,31 @@ std::pair<std::vector<float>, cv::Mat> TrackAgg::main_face_feat_and_patch() cons
     if (face.empty())
         return {{},
                 {}};
+
+    // 为兼容 main_representation_with_patch_cpp 模板函数，创建一个临时的、不包含姿态和分数信息的 deque
+    std::deque<std::tuple<std::vector<float>, cv::Mat>> face_data_for_main_rep;
+    for (const auto &rec : face) {
+        face_data_for_main_rep.emplace_back(std::get<0>(rec), std::get<1>(rec));
+    }
+
     std::deque<std::vector<float>> feats;
     for (const auto &t: face) feats.push_back(std::get<0>(t));
     if (!check_consistency(feats))
         return {{},
                 {}};
-    return main_representation_with_patch_cpp(face);
+    return main_representation_with_patch_cpp(face_data_for_main_rep);
+}
+
+int TrackAgg::count_high_quality_faces(float score_thr) const {
+    int count = 0;
+    for (const auto &record : face) {
+        bool is_frontal = std::get<2>(record);
+        float score = std::get<3>(record);
+        if (is_frontal && score >= score_thr) {
+            count++;
+        }
+    }
+    return count;
 }
 
 std::vector<cv::Mat> TrackAgg::body_patches() const {
@@ -1157,7 +1176,8 @@ FeatureProcessor::_load_features_from_cache(const std::string &cam_id, uint64_t 
         }
         if (fd.contains("face_feat") && !fd["face_feat"].is_null()) {
             auto ff = fd["face_feat"].get<std::vector<float>>();
-            if (!ff.empty()) agg.add_face(ff, patch.clone());
+            // Provide default values for is_frontal and score when loading from cache, as they are not available.
+            if (!ff.empty()) agg.add_face(ff, patch.clone(), false, 0.0f);
         } // 注意：在load模式下，`last_seen`的更新依赖于`use_fid_time`的设置。
         last_seen[tid_str_json] = now_stamp;
     }
@@ -1304,6 +1324,7 @@ void FeatureProcessor::_check_and_process_alarm(
     }
 
     // 检查是否满足徘徊时间，如果不满足，则直接返回，不触发报警
+    alarmDuration_threshold = 0.0;  // disable
     if (alarmDuration_threshold > 0 && duration < alarmDuration_threshold) {
         // 识别结果依然有效，只是不触发报警
 //        double duration_sec = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
@@ -1630,16 +1651,20 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
                     size_t unique_face_idx = matching_face_indices[0];
                     Face &face_global_coords = internal_face_info[unique_face_idx]; // Use reference to update
-                    // 使用动态调整后的阈值进行判断
-                    if (face_global_coords.det_score < current_face_det_min_score) continue;
 
-                    // 新增：在仅人脸模式下，进行正脸过滤
+                    // ======================= 【MODIFIED: 分阶段人脸质量检查】 =======================
+                    bool is_frontal = true; // 在非 face_only 模式下，默认所有脸都合格
                     if (is_face_only_mode) {
-                        // 使用新的基于PnP的姿态估计算法判断是否为正脸
-                        if (!is_frontal_face_pnp(face_global_coords.kps, cpu_frame.size(), m_pose_yaw_th, m_pose_roll_th, m_pose_pitch_ratio_lower_th, m_pose_pitch_ratio_upper_th)) {
-                            continue; // 跳过非正脸
-                        }
+                        const float RELAXED_FACE_SCORE_THR = 0.75f;
+                        // 阶段一：使用宽松的分数阈值收集人脸，为后续严格检查做准备
+                        if (face_global_coords.det_score < RELAXED_FACE_SCORE_THR) continue;
+                        // 获取姿态标志，但在此阶段不进行过滤
+                        is_frontal = is_frontal_face_pnp(face_global_coords.kps, cpu_frame.size(), m_pose_yaw_th, m_pose_roll_th, m_pose_pitch_ratio_lower_th, m_pose_pitch_ratio_upper_th);
+                    } else {
+                        // 在混合模式下，保持原有的分数检查逻辑
+                        if (face_global_coords.det_score < current_face_det_min_score) continue;
                     }
+                    // ======================= 【修改结束】 =======================
 
                     cv::Rect face_roi(face_global_coords.bbox);
                     face_roi &= cv::Rect(0, 0, W, H);
@@ -1680,7 +1705,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         float clarity = calculate_clarity_score(face_patch);
                         current_frame_face_clarity_[tid_str] = clarity;
                         gpu_face_patch.download(face_patch);
-                        agg_pool[tid_str].add_face(f_emb, face_patch.clone());
+                        agg_pool[tid_str].add_face(f_emb, face_patch.clone(), is_frontal, face_global_coords.det_score);
                         current_frame_face_features_[tid_str] = f_emb; // 新增：暂存当前帧人脸特征
                         // ======================= 【修改结束】 =======================
                         last_seen[tid_str] = now_stamp;
@@ -1809,6 +1834,14 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             }
         } else if (gid_mgr.bank_faces.empty()) {
             // Reason 1: The very first GID
+            // ======================= 【MODIFIED: 新增高质量人脸检查点】 =======================
+            if (is_face_only_mode) {
+                if (agg.count_high_quality_faces(m_face_det_min_score_face_only) < current_min_face_4_gid) {
+                    output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0}; // hq: high quality
+                    continue;
+                }
+            }
+            // ======================= 【修改结束】 =======================
             std::string new_gid = gid_mgr.new_gid(); // This is the pure GID
             gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "first"); // 默认 increment_n=true
             tid2gid[tid_str] = new_gid;
@@ -1836,6 +1869,14 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             if (time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 ng_state.count++;
                 if (ng_state.count >= NEW_GID_MIN_FRAMES) {
+                    // ======================= 【MODIFIED: 新增高质量人脸检查点】 =======================
+                    if (is_face_only_mode) {
+                        if (agg.count_high_quality_faces(m_face_det_min_score_face_only) < current_min_face_4_gid) {
+                            output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0}; // hq: high quality
+                            continue;
+                        }
+                    }
+                    // ======================= 【修改结束】 =======================
                     std::string new_gid = gid_mgr.new_gid(); // Pure GID
                     gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "dissimilar"); // 默认 increment_n=true
                     tid2gid[tid_str] = new_gid;
