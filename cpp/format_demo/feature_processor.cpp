@@ -1447,7 +1447,10 @@ void FeatureProcessor::_check_and_process_alarm(
                 std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for GID " << gid << " on new TID " << tid_str << " because GID is in cooldown." << std::endl;
                 tid_to_business_n_[tid_str] = business_n; // 锁定这个TID到复用的n值
             }
-            if (recalculate_n) {
+
+            // 如果需要重新计算（例如新TID或TID漂移），或者 business_n 因错误的复用逻辑被置为0，则强制计算。
+            // 这可以修复在冷却期间复用一个还未被计数的GID时，business_n为0的bug。
+            if (recalculate_n || business_n == 0) {
                 // 首次触发报警，或TID关联的GID发生变化，需要计算新的n值
                 if (!tid_to_business_n_.count(tid_str)) {
                     std::cout << "\n[n_DEBUG] New alarm TID: " << tid_str << " for GID: " << gid << ". Calculating new n..." << std::endl;
