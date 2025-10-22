@@ -1384,27 +1384,45 @@ void FeatureProcessor::_check_and_process_alarm(
 
             // ======================= 【MODIFIED: 修正业务n值递增逻辑】 =======================
             int business_n = 0;
+            bool recalculate_n = true; // 默认需要重新计算n
+
+            // 检查此TID之前是否触发过报警
             if (tid_to_business_n_.count(tid_str)) {
-                // 这个TID已经触发过报警，复用之前分配给它的连续n值。
-                business_n = tid_to_business_n_.at(tid_str);
-                std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for already seen TID: " << tid_str << std::endl;
-            } else {
-                // 这个TID是首次触发报警。
-                std::cout << "\n[n_DEBUG] New alarm TID: " << tid_str << " for GID: " << gid_to_alarm << ". Calculating new n..." << std::endl;
-                int last_n_for_gid = gid_alarm_business_counts_.count(gid_to_alarm) ? gid_alarm_business_counts_.at(gid_to_alarm) : 0;
+                // 如果触发过，检查当时关联的GID是否与现在的GID相同
+                if (tid_last_gid_for_n_.count(tid_str) && tid_last_gid_for_n_.at(tid_str) == gid) {
+                    // GID未变，直接复用之前的n值
+                    business_n = tid_to_business_n_.at(tid_str);
+                    recalculate_n = false;
+                    std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for same GID " << gid << " on TID: " << tid_str << std::endl;
+                } else {
+                    // GID发生了变化（TID漂移），需要为新的GID重新计算n
+                    std::cout << "\n[n_DEBUG] GID changed for TID " << tid_str << ". From "
+                                << (tid_last_gid_for_n_.count(tid_str) ? tid_last_gid_for_n_.at(tid_str) : "N/A")
+                                << " to " << gid << ". Recalculating n." << std::endl;
+                }
+            }
+
+            if (recalculate_n) {
+                // 首次触发报警，或TID关联的GID发生变化，需要计算新的n值
+                if (!tid_to_business_n_.count(tid_str)) {
+                    std::cout << "\n[n_DEBUG] New alarm TID: " << tid_str << " for GID: " << gid << ". Calculating new n..." << std::endl;
+                }
+                int last_n_for_gid = gid_alarm_business_counts_.count(gid) ? gid_alarm_business_counts_.at(gid) : 0;
                 std::cout << "          - Last recorded n for GID was: " << last_n_for_gid << std::endl;
                 business_n = last_n_for_gid + 1;
                 std::cout << "          - New continuous n is now: " << business_n << std::endl;
-                gid_alarm_business_counts_[gid_to_alarm] = business_n;
+                gid_alarm_business_counts_[gid] = business_n;
                 tid_to_business_n_[tid_str] = business_n;
-                std::cout << "          - Global count for GID updated. TID locked to this n." << std::endl;
+                tid_last_gid_for_n_[tid_str] = gid;
+                std::cout << "          - Global count for GID updated. TID " << tid_str << " locked to n=" << business_n << " for GID " << gid << "." << std::endl;
             }
+
             alarm_info.n = business_n;
             alarm_info.face_clarity_score = face_clarity; // 新增：赋值人脸清晰度分数
 
 //            if (alarm_info.person_bbox.area() > 0)
             {
-                triggered_alarms_this_frame.emplace_back(gid_to_alarm, tid_str, timestamp, n, was_newly_saved);
+                triggered_alarms_this_frame.emplace_back(gid, tid_str, timestamp, n, was_newly_saved);
                 if (current_frame_face_boxes_.count(tid_str)) {
                     alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
                 }
@@ -1950,6 +1968,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             agg_pool.erase(it->first);
             saved_alarm_tids_.erase(it->first); // 清理已保存报警的TID记录
             tid_to_business_n_.erase(it->first); // 清理已分配的业务n值
+            tid_last_gid_for_n_.erase(it->first); // 清理TID与其n值关联的GID记录
             first_seen_tid.erase(it->first);
             tid2gid.erase(it->first);
             candidate_state.erase(it->first);
@@ -1967,6 +1986,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         std::vector<std::string> tids_to_clean;
         for (auto const &[tid_str, g]: tid2gid) { if (g == gid_del) tids_to_clean.push_back(tid_str); }
         for (const auto &tid_str: tids_to_clean) {
+            tid_last_gid_for_n_.erase(tid_str); // 清理TID与其n值关联的GID记录
             tid_to_business_n_.erase(tid_str);
             agg_pool.erase(tid_str);
             first_seen_tid.erase(tid_str);

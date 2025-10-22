@@ -507,4 +507,6 @@ private:
     std::map<std::string, int> gid_alarm_business_counts_;
     // 新增: 记录每个TID首次触发报警时分配到的业务n值，以防止n值在同一TID上持续增加
     std::map<std::string, int> tid_to_business_n_;
+    // 新增: 记录TID上次计算业务n值时所关联的GID，用于检测GID漂移
+    std::map<std::string, std::string> tid_last_gid_for_n_;
 };
