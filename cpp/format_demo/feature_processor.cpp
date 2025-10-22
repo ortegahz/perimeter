@@ -1387,7 +1387,7 @@ void FeatureProcessor::_check_and_process_alarm(
                 if (current_frame_face_boxes_.count(tid_str)) {
                     alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
                 }
-                alarm_info.latest_body_patch = body_p.clone();
+                alarm_info.latest_body_patch = is_face_only_mode ? body_p.clone() : alarm_info.latest_body_patch;
                 alarm_info.latest_face_patch = face_p.clone();
                 // ======================= 【新增：打印待上报的报警详细信息】 =======================
                 std::cout << "\n--- [Preparing to Report Alarm] ---\n"
