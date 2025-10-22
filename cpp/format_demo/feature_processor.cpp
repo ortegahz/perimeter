@@ -1544,6 +1544,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
     ProcessOutput output;
     std::vector<std::tuple<std::string, std::string, std::string, int, bool>> triggered_alarms_this_frame; // <gid, tid_str, timestamp, n, was_newly_saved>
+    // 新增：延迟更新冷却时间戳，以保证单帧内状态一致性
+    std::set<std::string> gids_recognized_this_frame;
+
     current_frame_face_boxes_.clear(); // 每帧开始时清空
     current_frame_face_scores_.clear(); // 清空人脸置信度表
     current_frame_face_clarity_.clear(); // 新增：清空人脸清晰度表
@@ -1906,7 +1909,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
                 // 核心修改：无论是否在冷却期，只要成功识别并绑定，就立即更新其“最后出现时间”。
                 // 这会持续刷新冷却计时器，直到目标消失超过冷却时间为止。
-                gid_last_recognized_time[cand_gid] = now_stamp;
+                gids_recognized_this_frame.insert(cand_gid);
 
                 // 调用 bind 更新原型，但根据冷却状态决定是否增加 n
                 gid_mgr.bind(cand_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "", !on_cooldown); // creation_reason is empty, increment_n is conditional
@@ -1950,7 +1953,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 tid2gid[tid_str] = new_gid;
                 candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                 new_gid_state[tid_str] = {0, fid, 0};
-                gid_last_recognized_time[new_gid] = now_stamp;
+                gids_recognized_this_frame.insert(new_gid);
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
                 output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
             } else {
@@ -1974,7 +1977,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     tid2gid[tid_str] = new_gid;
                     candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                     new_gid_state[tid_str] = {0, fid, 0};
-                    gid_last_recognized_time[new_gid] = now_stamp;
+                    gids_recognized_this_frame.insert(new_gid);
                     int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
                     output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
                 } else {
@@ -2021,6 +2024,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             gid_last_recognized_time[bound_gid] = now_stamp;
         }
         // ======================= 【修改结束】 =======================
+    }
+
+    // 在处理完本帧所有TID后，统一更新所有被识别到的GID的冷却时间戳
+    for (const auto& gid : gids_recognized_this_frame) {
+        gid_last_recognized_time[gid] = now_stamp;
     }
 
     std::map<std::string, std::tuple<uint64_t, std::string>> active_alarms;
