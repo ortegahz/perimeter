@@ -1299,8 +1299,35 @@ void FeatureProcessor::_check_and_process_alarm(
         float face_det_score,
         float face_clarity,
         bool is_face_only_mode,
-        const std::vector<float>& current_face_feat,
-        bool is_on_cooldown) { // 新增：接收冷却状态
+        const std::vector<float>& current_face_feat) {
+
+    /* -------- 动态计算当前 GID 是否处于冷却期 -------- */
+    bool is_on_cooldown = false;
+    long long current_gid_cooldown_ms = 0;
+    if (config.gid_recognition_cooldown_s.has_value()) {
+        current_gid_cooldown_ms = config.gid_recognition_cooldown_s.value() * 1000;
+    } else {
+        current_gid_cooldown_ms = m_gid_recognition_cooldown_ms;
+    }
+    double gid_cooldown_threshold = 0.0;
+    if (current_gid_cooldown_ms > 0) {
+        gid_cooldown_threshold = use_fid_time_
+                                 ? (double) current_gid_cooldown_ms / 1000.0 * FPS_ESTIMATE
+                                 : (double) current_gid_cooldown_ms / 1000.0;
+
+        if (gid_last_recognized_time.count(gid)) {
+            double delta = now_stamp - gid_last_recognized_time.at(gid);
+            if (delta < gid_cooldown_threshold) {
+                is_on_cooldown = true;
+            }
+#ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
+            std::cout << "[COOLDOWN_DEBUG] TID: " << tid_str << ", GID: " << gid
+                      << " delta=" << delta << (use_fid_time_ ? " frames" : "s")
+                      << ", threshold=" << gid_cooldown_threshold
+                      << " => on_cooldown=" << (is_on_cooldown ? "true" : "false") << std::endl;
+#endif
+        }
+    }
 
     // 如果当前 GID 在本次调用传入的白名单中，则直接返回，不触发任何报警逻辑。
     if (config.whitelist_gids.count(gid)) {
@@ -1970,8 +1997,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                 current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
                 is_face_only_mode, // 模式
-                current_face_feat, // 特征
-                on_cooldown        // 冷却状态
+                current_face_feat // 特征
             );
         }
         // ======================= 【NEW: Consolidated Cooldown Timer Reset Logic】 =======================

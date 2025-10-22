@@ -426,8 +426,7 @@ private:
             float face_det_score,
             float face_clarity,
             bool is_face_only_mode,
-            const std::vector<float>& current_face_feat,
-            bool is_on_cooldown); // 新增：传递冷却状态
+            const std::vector<float>& current_face_feat);
     // ======================= 【修改结束】 =======================
 
     // I/O线程相关
