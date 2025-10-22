@@ -50,7 +50,7 @@ constexpr double FPS_ESTIMATE = 25.0 / 2.;
 constexpr int MAX_TID_IDLE_FRAMES = 256;
 constexpr int GID_MAX_IDLE_FRAMES = int(FPS_ESTIMATE) * 60 * 60 * 24 * 7;
 constexpr int WAIT_FRAMES_AMBIGUOUS = 10;
-constexpr double MAX_TID_IDLE_SEC = MAX_TID_IDLE_FRAMES / FPS_ESTIMATE;
+constexpr double MAX_TID_IDLE_SEC = 15.0; // 设置为固定的15秒
 constexpr double GID_MAX_IDLE_SEC = GID_MAX_IDLE_FRAMES / FPS_ESTIMATE;
 
 constexpr int ALARM_CNT_TH = 2;

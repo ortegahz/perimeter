@@ -1317,7 +1317,7 @@ void FeatureProcessor::_check_and_process_alarm(
 
         if (gid_last_recognized_time.count(gid)) {
             double delta = now_stamp - gid_last_recognized_time.at(gid);
-            if (delta < gid_cooldown_threshold) {
+            if (delta < (gid_cooldown_threshold - MAX_TID_IDLE_SEC)) {
                 is_on_cooldown = true;
             }
 #ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
