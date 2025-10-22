@@ -515,8 +515,8 @@ nlohmann::json FeatureProcessor::_load_or_create_config() {
         default_config["pose_roll_th"] = 25.0;
         default_config["pose_pitch_ratio_lower_th"] = 0.6;
         default_config["pose_pitch_ratio_upper_th"] = 1.0;
-        // 新增: 全局配置，同一GID两次有效识别之间的最小间隔 (分钟)。值为0表示禁用。
-        default_config["gid_recognition_cooldown_min"] = 0;
+        // 新增: 全局配置，同一GID两次有效识别之间的最小间隔 (秒)。值为0表示禁用。
+        default_config["gid_recognition_cooldown_s"] = 0;
 
         // 将默认配置写入文件
         try {
@@ -564,9 +564,9 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     m_pose_roll_th = boundary_config.value("pose_roll_th", 25.0);
     m_pose_pitch_ratio_lower_th = boundary_config.value("pose_pitch_ratio_lower_th", 0.6);
     m_pose_pitch_ratio_upper_th = boundary_config.value("pose_pitch_ratio_upper_th", 1.0);
-    // 新增：从配置中读取GID识别冷却时间(分钟)，并转换为毫秒
-    long long cooldown_min = boundary_config.value("gid_recognition_cooldown_min", 0LL);
-    m_gid_recognition_cooldown_ms = cooldown_min * 60 * 1000;
+    // 新增：从配置中读取GID识别冷却时间(秒)，并转换为毫秒
+    long long cooldown_s = boundary_config.value("gid_recognition_cooldown_s", 0LL);
+    m_gid_recognition_cooldown_ms = cooldown_s * 1000;
 
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is "
               << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
@@ -575,7 +575,7 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     std::cout << ">>> Pose Yaw threshold set to: " << m_pose_yaw_th << std::endl;
     std::cout << ">>> Pose Roll threshold set to: " << m_pose_roll_th << std::endl;
     std::cout << ">>> Pose Pitch Ratio threshold set to: [" << m_pose_pitch_ratio_lower_th << ", " << m_pose_pitch_ratio_upper_th << "]" << std::endl;
-    std::cout << ">>> GID Recognition Cooldown set to: " << cooldown_min << " min" << std::endl;
+    std::cout << ">>> GID Recognition Cooldown set to: " << cooldown_s << " s" << std::endl;
 
 
     if (mode_ == "realtime") {
@@ -1549,9 +1549,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
     // 优先使用实时参数，如果未提供，则回退到初始化时加载的默认参数
     long long current_gid_cooldown_ms;
-    if (config.gid_recognition_cooldown_min.has_value()) {
-        // 实时参数(分钟)存在，将其转换为毫秒
-        current_gid_cooldown_ms = config.gid_recognition_cooldown_min.value() * 60 * 1000;
+    if (config.gid_recognition_cooldown_s.has_value()) {
+        // 实时参数(秒)存在，将其转换为毫秒
+        current_gid_cooldown_ms = config.gid_recognition_cooldown_s.value() * 1000;
     } else {
         // 实时参数不存在，使用从 config.json 加载的默认值 (已是毫秒)
         current_gid_cooldown_ms = m_gid_recognition_cooldown_ms;
