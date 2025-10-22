@@ -437,13 +437,14 @@ std::string GlobalID::new_gid() {
 }
 
 int
-GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f) {
+GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f, bool is_face_only_mode) {
     if (!bank_faces.count(gid)) return 0;
     if (!bank_faces[gid].empty() && !face_f.empty() && sim_vec(face_f, avg_feats(bank_faces[gid])) < FACE_THR_STRICT)
         return -1;
     // 只有在提供了 body 特征时，才进行 body 相关的一致性检查。
     // 这修复了在 face-only 模式下，从数据库加载的、没有 body 原型的旧 GID 无法通过检查的问题。
-    if (!body_f.empty()) {
+    // 如果不是 face-only 模式，并且提供了 body 特征时，才进行 body 相关的一致性检查。
+    if (!is_face_only_mode && !body_f.empty()) {
         if (!bank_bodies.count(gid) ||
             (!bank_bodies.at(gid).empty() && sim_vec(body_f, avg_feats(bank_bodies.at(gid))) < BODY_THR_STRICT))
             return -2;
@@ -1884,7 +1885,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             ng_state.ambig_count = 0;
             state.count = (state.cand_gid == cand_gid) ? state.count + 1 : 1;
             state.cand_gid = cand_gid;
-            int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f);
+            int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f, is_face_only_mode);
             if (state.count >= CANDIDATE_FRAMES && flag_code == 0) {
                 #ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
                 if (gid_cooldown_threshold > 0) {
