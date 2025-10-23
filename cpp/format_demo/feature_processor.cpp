@@ -1300,7 +1300,8 @@ void FeatureProcessor::_check_and_process_alarm(
         float face_det_score,
         float face_clarity,
         bool is_face_only_mode,
-        const std::vector<float>& current_face_feat) {
+        const std::vector<float>& current_face_feat,
+        float current_match_thr) {
 
     /* -------- 动态计算当前 GID 是否处于冷却期 -------- */
     bool is_on_cooldown = false;
@@ -1388,11 +1389,11 @@ void FeatureProcessor::_check_and_process_alarm(
             auto gid_prototype_face_feat = avg_feats(gid_mgr.bank_faces.at(gid));
             float consistency_score = sim_vec(current_face_feat, gid_prototype_face_feat);
 
-            if (consistency_score < 0.5f) { // 硬编码阈值
+            if (consistency_score < current_match_thr) { // 使用动态阈值
                 std::cout << "\n[ALARM SUPPRESSED] TID " << tid_str
                           << " failed consistency check for GID " << gid
                           << ". Live Score: " << std::fixed << std::setprecision(4) << consistency_score
-                          << " < Threshold: " << 0.5f << std::endl;
+                          << " < Threshold: " << current_match_thr << std::endl;
                 return; // 校验失败，抑制本次报警
             }
         }
@@ -2012,7 +2013,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
                 current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
                 is_face_only_mode, // 模式
-                current_face_feat // 特征
+                current_face_feat, // 特征
+                current_match_thr
             );
         }
         // ======================= 【NEW: Consolidated Cooldown Timer Reset Logic】 =======================

@@ -426,7 +426,8 @@ private:
             float face_det_score,
             float face_clarity,
             bool is_face_only_mode,
-            const std::vector<float>& current_face_feat);
+            const std::vector<float>& current_face_feat,
+            float current_match_thr);
     // ======================= 【修改结束】 =======================
 
     // I/O线程相关
