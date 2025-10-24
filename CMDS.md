@@ -58,6 +58,7 @@ onnxsim /home/manu/.insightface/models/buffalo_l/w600k_r50.onnx /home/manu/.insi
     --verbose
 
 /usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/reid_model.onnx --saveEngine=/home/nvidia/VSCodeProject/smartboxcore/models/tensorrt/reid_model_dla.engine --useDLACore=1 --allowGPUFallback --verbose
+/usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/reid_model.onnx --saveEngine=/home/nvidia/VSCodeProject/smartboxcore/models/reid_model.dla.engine --useDLACore=1 --allowGPUFallback --verbose
 
 /usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/Resnet50_epoch_0.onnx --saveEngine=/mnt/nfs/Resnet50_epoch_0.dla.engine --useDLACore=0 --allowGPUFallback
 /usr/src/tensorrt/bin/trtexec --onnx=/mnt/nfs/mobilenet0.25_epoch_0.onnx --saveEngine=/mnt/nfs/mobilenet0.25_epoch_0.dla.engine --useDLACore=0 --allowGPUFallback
