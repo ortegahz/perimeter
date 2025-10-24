@@ -1250,22 +1250,25 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
         was_newly_saved = true;
         saved_alarm_tids_.insert(tid_str);
 
-        // 仅在首次保存此TID的报警时，提交原型备份任务 (Back up GID prototypes)
-        time_t seconds_for_task = static_cast<time_t>(frame_timestamp);
-        char buf_for_task[80];
-        struct tm broken_down_time_for_task;
-        localtime_r(&seconds_for_task, &broken_down_time_for_task);
-        strftime(buf_for_task, sizeof(buf_for_task), "%Y%m%d_%H%M%S", &broken_down_time_for_task);
+        // 仅当开启了报警保存功能时，才提交IO任务
+        if (m_enable_alarm_saving) {
+            // 仅在首次保存此TID的报警时，提交原型备份任务 (Back up GID prototypes)
+            time_t seconds_for_task = static_cast<time_t>(frame_timestamp);
+            char buf_for_task[80];
+            struct tm broken_down_time_for_task;
+            localtime_r(&seconds_for_task, &broken_down_time_for_task);
+            strftime(buf_for_task, sizeof(buf_for_task), "%Y%m%d_%H%M%S", &broken_down_time_for_task);
 
-        IoTask task;
-        task.type = IoTaskType::BACKUP_ALARM;
-        task.gid = gid; // 既然是新报警，上报的 GID 就是当前 GID
-        task.tid_str = tid_str;
-        task.n = n;
-        task.timestamp = std::string(buf_for_task);
-        task.face_patches_backup = agg.face_patches();
-        task.body_patches_backup = agg.body_patches();
-        submit_io_task(task);
+            IoTask task;
+            task.type = IoTaskType::BACKUP_ALARM;
+            task.gid = gid; // 既然是新报警，上报的 GID 就是当前 GID
+            task.tid_str = tid_str;
+            task.n = n;
+            task.timestamp = std::string(buf_for_task);
+            task.face_patches_backup = agg.face_patches();
+            task.body_patches_backup = agg.body_patches();
+            submit_io_task(task);
+        }
     }
 
     // --- 无论是否保存，都生成时间戳并返回报警信号 ---
