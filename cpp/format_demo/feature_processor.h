@@ -374,7 +374,7 @@ public:
                               const std::string &device = "cuda",
                               const std::string &feature_cache_path = "",
                               bool use_fid_time = false,
-                              bool enable_alarm_saving = true, // for alarm media
+                              bool enable_alarm_saving = false, // for alarm media
                               bool processing_enabled = true,  // for algorithm
                               bool enable_feature_caching = false, // for the features_cache.json
                               bool clear_db_on_startup = false);
