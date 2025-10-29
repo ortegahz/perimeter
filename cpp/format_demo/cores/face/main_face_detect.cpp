@@ -23,6 +23,7 @@ int main(int argc, char *argv[]) {
     // 参数设置
     std::string folder = "/mnt/nfs/perimeter_v1/G00002/faces/";
     std::string provider = "CUDAExecutionProvider"; // <--- 修改点：启用GPU
+    bool use_fp16 = true;                         // <--- 新增点: 启用FP16推理
     int det_size = 640;
     double outlier_thresh = 1.2;
     std::string output_json = "/mnt/nfs/embeddings.json";
@@ -33,11 +34,12 @@ int main(int argc, char *argv[]) {
     std::string rec_model = "/mnt/nfs/w600k_r50_simplified.onnx";
 
     std::cout << "[INFO] folder: " << folder << std::endl;
+    std::cout << "[INFO] FP16 Inference: " << (use_fp16 ? "Enabled" : "Disabled") << std::endl;
 
     try {
         // ... (初始化模型部分保持不变) ...
         FaceAnalyzer face_app(det_model, rec_model);
-        face_app.prepare(provider, 0.5f, cv::Size(det_size, det_size));
+        face_app.prepare(provider, 0.5f, cv::Size(det_size, det_size), use_fp16);
         std::cout << "[INFO] Face analyzer ready (provider=" << provider << ")" << std::endl;
 
         if (!fs::exists(folder)) {

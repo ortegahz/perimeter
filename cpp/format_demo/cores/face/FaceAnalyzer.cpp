@@ -16,13 +16,21 @@ FaceAnalyzer::FaceAnalyzer(const std::string &det_model_path, const std::string 
     }
 }
 
-void FaceAnalyzer::prepare(const std::string &provider, float det_thresh, cv::Size det_size) {
+void FaceAnalyzer::prepare(const std::string &provider, float det_thresh, cv::Size det_size, bool use_fp16) {
     if (provider == "CUDAExecutionProvider" || provider == "GPU") {
         std::cout << "[INFO] Attempting to use CUDA backend for FaceAnalyzer." << std::endl;
         det_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
-        det_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
         rec_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
-        rec_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+
+        if (use_fp16) {
+            std::cout << "[INFO] Using FP16 acceleration for CUDA backend." << std::endl;
+            det_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA_FP16);
+            rec_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA_FP16);
+        } else {
+            std::cout << "[INFO] Using FP32 for CUDA backend." << std::endl;
+            det_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+            rec_net_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+        }
     } else {
         std::cout << "[INFO] Using CPU backend for FaceAnalyzer." << std::endl;
         det_net_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);

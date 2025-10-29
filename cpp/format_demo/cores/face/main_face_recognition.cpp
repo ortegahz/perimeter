@@ -23,10 +23,14 @@ int main() {
 
     // 3. 设置识别（recognition）模型的路径
     std::string rec_model_path = "/mnt/nfs/w600k_r50_simplified.onnx";
+
+    // 4. 是否使用FP16进行推理 (需要GPU支持)
+    bool use_fp16 = true;
     // =============================================================
 
     std::cout << "[INFO] Starting batch feature extraction test..." << std::endl;
     std::cout << "[INFO] Reading BMP images from: " << bmp_folder_path << std::endl;
+    std::cout << "[INFO] FP16 Inference: " << (use_fp16 ? "Enabled" : "Disabled") << std::endl;
 
     try {
         // --- 1. 加载ONNX识别模型 (只需加载一次) ---
@@ -37,8 +41,13 @@ int main() {
 
         // --- 2. 设置模型运行的后端和目标设备 (只需设置一次) ---
         rec_net.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
-        rec_net.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
-        std::cout << "[INFO] Recognition model loaded and set to CUDA backend." << std::endl;
+        if (use_fp16) {
+            std::cout << "[INFO] Setting backend target to CUDA_FP16." << std::endl;
+            rec_net.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA_FP16);
+        } else {
+            std::cout << "[INFO] Setting backend target to CUDA (FP32)." << std::endl;
+            rec_net.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+        }
 
         // --- 3. 准备输出文件 (打开一次，准备写入) ---
         std::ofstream out_file(output_txt_path);

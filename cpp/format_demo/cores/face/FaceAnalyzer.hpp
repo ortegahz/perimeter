@@ -20,7 +20,7 @@ class FaceAnalyzer {
 public:
     FaceAnalyzer(const std::string &det_model_path, const std::string &rec_model_path);
 
-    void prepare(const std::string &provider, float det_thresh, cv::Size det_size);
+    void prepare(const std::string &provider, float det_thresh, cv::Size det_size, bool use_fp16 = false);
 
     std::vector<Face> get(const cv::Mat &img);
 
