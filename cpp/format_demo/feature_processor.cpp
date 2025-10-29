@@ -1660,6 +1660,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             for (const auto &det: dets) {
                 if (det.class_id != 0) continue;
 
+                std::string tid_str = stream_id + "_" + std::to_string(det.id);
+                first_seen_tid.try_emplace(tid_str, now_stamp);
+                last_seen[tid_str] = now_stamp;
+
+                if (is_face_only_mode) continue;
+
                 cv::Rect roi = cv::Rect(det.tlwh) & cv::Rect(0, 0, W, H);
                 if (roi.width <= 0 || roi.height <= 0) continue;
 
@@ -1686,10 +1692,10 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 cv::Mat feat_mat_cpu;
                 feat_mat_gpu.download(feat_mat_cpu);
                 std::vector<float> body_feat(feat_mat_cpu.begin<float>(), feat_mat_cpu.end<float>());
-                std::string tid_str = stream_id + "_" + std::to_string(det.id);
-                first_seen_tid.try_emplace(tid_str, now_stamp);
+//                std::string tid_str = stream_id + "_" + std::to_string(det.id);
+//                first_seen_tid.try_emplace(tid_str, now_stamp);
                 agg_pool[tid_str].add_body(body_feat, det.score, patch.clone());
-                last_seen[tid_str] = now_stamp;
+//                last_seen[tid_str] = now_stamp;
                 if (m_enable_feature_caching) {
                     extracted_features_for_this_frame[tid_str]["body_feat"] = body_feat;
                 }
