@@ -451,6 +451,10 @@ private:
     std::condition_variable queue_cond_;
     std::atomic<bool> stop_io_thread_{false};
 
+    // 新增：用于保护GID相关共享资源的互斥锁
+    std::mutex m_gid_mutex_;
+    std::mutex m_feature_cache_mutex_;
+
     // 数据库句柄
     sqlite3 *db_ = nullptr;
 

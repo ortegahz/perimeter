@@ -1807,6 +1807,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
         // 3. 保存所有本帧提取的特征到缓存文件
         if (m_enable_feature_caching && !extracted_features_for_this_frame.is_null()) {
+            // ======================= 【THREAD-SAFE MODIFICATION】 =======================
+            std::lock_guard<std::mutex> lock(m_feature_cache_mutex_);
             features_to_save_[std::to_string(fid)] = extracted_features_for_this_frame;
         }
 
@@ -1819,6 +1821,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     // 这从根本上解决了跨摄像头上下文污染的问题，且改动极小。
     for (auto const &[tid_str, agg]: agg_pool) {
         if (tid_str.rfind(stream_id, 0) != 0) continue;
+
+        // ======================= 【THREAD-SAFE MODIFICATION】 =======================
+        // 为保护全局GID状态，在此处加锁。锁的范围覆盖了所有对gid_mgr、tid2gid等
+        // 共享状态的读写操作，直到当前TID处理完毕。
+        std::lock_guard<std::mutex> lock(m_gid_mutex_);
 
         // 新增：计算可见时长并填充输出，以便在UI上显示
         double duration = 0.0;
@@ -2048,15 +2055,20 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         // ======================= 【修改结束】 =======================
     }
 
-    // 在处理完本帧所有TID后，统一更新所有被识别到的GID的冷却时间戳
-    for (const auto& gid : gids_recognized_this_frame) {
-        gid_last_recognized_time[gid] = now_stamp;
-    }
-
     std::map<std::string, std::tuple<uint64_t, std::string>> active_alarms;
-    for (const auto &[full_tid, state_tuple]: behavior_alarm_state) {
-        if (fid - std::get<0>(state_tuple) <= BEHAVIOR_ALARM_DURATION_FRAMES) {
-            active_alarms[full_tid] = state_tuple;
+
+    // 行为告警状态的更新也需要放在锁内，因为它可能与GID状态有关联
+    {
+        std::lock_guard<std::mutex> lock(m_gid_mutex_);
+        // 在处理完本帧所有TID后，统一更新所有被识别到的GID的冷却时间戳
+        for (const auto& gid : gids_recognized_this_frame) {
+            gid_last_recognized_time[gid] = now_stamp;
+        }
+
+        for (const auto &[full_tid, state_tuple]: behavior_alarm_state) {
+            if (fid - std::get<0>(state_tuple) <= BEHAVIOR_ALARM_DURATION_FRAMES) {
+                active_alarms[full_tid] = state_tuple;
+
             size_t last_underscore = full_tid.find_last_of('_');
             std::string s_id = full_tid.substr(0, last_underscore);
             int t_id_int = std::stoi(full_tid.substr(last_underscore + 1));
@@ -2068,53 +2080,59 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             std::string info_str = !bound_gid.empty() ? (full_tid + "_" + bound_gid + std::get<1>(state_tuple)) : (
                     full_tid + "_-1" + std::get<1>(state_tuple));
             output.mp[s_id][t_id_int] = {info_str, 1.0f, n_tid};
+            }
         }
-    }
-    behavior_alarm_state = active_alarms;
-
-    for (auto it = last_seen.cbegin(); it != last_seen.cend();) {
-        if (now_stamp - it->second >= max_tid_idle) {
-            agg_pool.erase(it->first);
-            saved_alarm_tids_.erase(it->first); // 清理已保存报警的TID记录
-            tid_to_business_n_.erase(it->first); // 清理已分配的业务n值
-            tid_last_gid_for_n_.erase(it->first); // 清理TID与其n值关联的GID记录
-            first_seen_tid.erase(it->first);
-            tid2gid.erase(it->first);
-            candidate_state.erase(it->first);
-            new_gid_state.erase(it->first);
-            behavior_alarm_state.erase(it->first);
-            it = last_seen.erase(it);
-        } else { ++it; }
+        behavior_alarm_state = active_alarms;
     }
 
-    std::vector<std::string> gids_to_del;
-    for (auto const &[gid, last_ts]: gid_mgr.last_update) {
-        if (now_stamp - last_ts >= gid_max_idle) gids_to_del.push_back(gid);
-    }
-    for (const auto &gid_del: gids_to_del) {
-        std::vector<std::string> tids_to_clean;
-        for (auto const &[tid_str, g]: tid2gid) { if (g == gid_del) tids_to_clean.push_back(tid_str); }
-        for (const auto &tid_str: tids_to_clean) {
-            tid_last_gid_for_n_.erase(tid_str); // 清理TID与其n值关联的GID记录
-            tid_to_business_n_.erase(tid_str);
-            agg_pool.erase(tid_str);
-            first_seen_tid.erase(tid_str);
-            tid2gid.erase(tid_str);
-            candidate_state.erase(tid_str);
-            new_gid_state.erase(tid_str);
-            last_seen.erase(tid_str);
-            behavior_alarm_state.erase(tid_str);
+    // ======================= 【THREAD-SAFE MODIFICATION】 =======================
+    // 对全局状态的清理操作（超时TID和GID）必须是原子的，以防多个线程同时清理。
+    {
+        std::lock_guard<std::mutex> lock(m_gid_mutex_);
+
+        for (auto it = last_seen.cbegin(); it != last_seen.cend();) {
+            if (now_stamp - it->second >= max_tid_idle) {
+                agg_pool.erase(it->first);
+                saved_alarm_tids_.erase(it->first); // 清理已保存报警的TID记录
+                tid_to_business_n_.erase(it->first); // 清理已分配的业务n值
+                tid_last_gid_for_n_.erase(it->first); // 清理TID与其n值关联的GID记录
+                first_seen_tid.erase(it->first);
+                tid2gid.erase(it->first);
+                candidate_state.erase(it->first);
+                new_gid_state.erase(it->first);
+                behavior_alarm_state.erase(it->first);
+                it = last_seen.erase(it);
+            } else { ++it; }
         }
-        gid_mgr.bank_faces.erase(gid_del);
-        gid_mgr.bank_bodies.erase(gid_del);
-        gid_mgr.tid_hist.erase(gid_del);
-        gid_mgr.last_update.erase(gid_del);
-        gid_mgr.first_seen_ts.erase(gid_del);
-        alarmed.erase(gid_del);
-        alarm_reprs.erase(gid_del);
-        gid_last_recognized_time.erase(gid_del);
-        // 新增：清理业务报警计数器中对应的GID条目
-        gid_alarm_business_counts_.erase(gid_del);
+
+        std::vector<std::string> gids_to_del;
+        for (auto const &[gid, last_ts]: gid_mgr.last_update) {
+            if (now_stamp - last_ts >= gid_max_idle) gids_to_del.push_back(gid);
+        }
+        for (const auto &gid_del: gids_to_del) {
+            std::vector<std::string> tids_to_clean;
+            for (auto const &[tid_str, g]: tid2gid) { if (g == gid_del) tids_to_clean.push_back(tid_str); }
+            for (const auto &tid_str: tids_to_clean) {
+                tid_last_gid_for_n_.erase(tid_str); // 清理TID与其n值关联的GID记录
+                tid_to_business_n_.erase(tid_str);
+                agg_pool.erase(tid_str);
+                first_seen_tid.erase(tid_str);
+                tid2gid.erase(tid_str);
+                candidate_state.erase(tid_str);
+                new_gid_state.erase(tid_str);
+                last_seen.erase(tid_str);
+                behavior_alarm_state.erase(tid_str);
+            }
+            gid_mgr.bank_faces.erase(gid_del);
+            gid_mgr.bank_bodies.erase(gid_del);
+            gid_mgr.tid_hist.erase(gid_del);
+            gid_mgr.last_update.erase(gid_del);
+            gid_mgr.first_seen_ts.erase(gid_del);
+            alarmed.erase(gid_del);
+            alarm_reprs.erase(gid_del);
+            gid_last_recognized_time.erase(gid_del);
+            // 新增：清理业务报警计数器中对应的GID条目
+            gid_alarm_business_counts_.erase(gid_del);
 
 #ifdef ENABLE_DISK_IO
         IoTask task;
@@ -2122,7 +2140,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         task.gid = gid_del;
         submit_io_task(task);
 #endif
-    }
+        }
+    } // 锁在此处自动释放
 
     // 仅当功能开关打开且确实有报警时才执行保存逻辑
     if (m_enable_alarm_saving && !triggered_alarms_this_frame.empty()) {
