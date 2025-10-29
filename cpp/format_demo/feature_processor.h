@@ -265,9 +265,11 @@ struct TrackAgg {
 struct GlobalID {
     std::string new_gid();
 
-    int can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f, bool is_face_only_mode);
+    int can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f,
+                         bool is_face_only_mode);
 
-    void bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst, const TrackAgg &agg,
+    void bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst,
+              const TrackAgg &agg,
               class FeatureProcessor *fp, const std::string &creation_reason = "", bool increment_n = true);
 
     std::pair<std::string, float> probe(const std::vector<float> &face_f, const std::vector<float> &body_f,
@@ -403,7 +405,8 @@ private:
 
     // ======================= 【MODIFIED: 函数签名变更】 =======================
     std::optional<std::tuple<std::string, std::string, bool>>
-    trigger_alarm(const std::string &tid_str, const std::string &gid, int n, const TrackAgg &agg, double frame_timestamp, int alarm_record_thresh);
+    trigger_alarm(const std::string &tid_str, const std::string &gid, int n, const TrackAgg &agg,
+                  double frame_timestamp, int alarm_record_thresh);
     // ======================= 【修改结束】 =======================
 
     // ======================= 【NEW】 =======================
@@ -426,7 +429,7 @@ private:
             float face_det_score,
             float face_clarity,
             bool is_face_only_mode,
-            const std::vector<float>& current_face_feat,
+            const std::vector<float> &current_face_feat,
             float current_match_thr);
     // ======================= 【修改结束】 =======================
 
