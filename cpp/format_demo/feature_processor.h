@@ -469,6 +469,7 @@ private:
     bool m_processing_enabled;
     bool m_enable_feature_caching;
     bool m_clear_db_on_startup;
+    bool m_use_face_fp16;              // 新增：人脸分析器FP16开关
     float m_alarm_dup_thr;             // 新增：重复报警过滤阈值
     long long m_gid_recognition_cooldown_ms; // 新增: GID识别冷却时间 (毫秒)
 

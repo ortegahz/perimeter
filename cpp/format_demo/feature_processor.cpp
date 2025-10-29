@@ -523,6 +523,7 @@ nlohmann::json FeatureProcessor::_load_or_create_config() {
         default_config["pose_pitch_ratio_upper_th"] = 1.5;
         // 新增: 全局配置，同一GID两次有效识别之间的最小间隔 (秒)。值为0表示禁用。
         default_config["gid_recognition_cooldown_s"] = 0;
+        default_config["use_face_fp16"] = false; // 新增：人脸模型的FP16开关
 
         // 将默认配置写入文件
         try {
@@ -573,6 +574,7 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     // 新增：从配置中读取GID识别冷却时间(秒)，并转换为毫秒
     long long cooldown_s = boundary_config.value("gid_recognition_cooldown_s", 0LL);
     m_gid_recognition_cooldown_ms = cooldown_s * 1000;
+    m_use_face_fp16 = boundary_config.value("use_face_fp16", false); // 新增：从配置加载FP16开关
 
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is "
               << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
@@ -596,7 +598,7 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
             face_analyzer_ = std::make_unique<FaceAnalyzer>(m_face_det_model_path, m_face_rec_model_path);
             std::string provider = use_gpu ? "GPU" : "DLA";
             // Dedicate DLA core 0 to the FaceAnalyzer.
-            face_analyzer_->prepare(provider, FACE_DET_MIN_SCORE, cv::Size(640, 640));
+            face_analyzer_->prepare(provider, FACE_DET_MIN_SCORE, cv::Size(640, 640), m_use_face_fp16); // 修改：传递FP16配置
         } catch (const std::exception &e) {
             std::cerr << "[FATAL] Failed to load models in realtime mode: " << e.what() << std::endl;
             throw;
