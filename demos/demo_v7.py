@@ -238,18 +238,45 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
         draw_boundaries(frame, my_stream_id, simple_display=simple_display)
 
         for d in dets:
-            x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
+            x_orig, y_orig, w_orig, h_orig = d["tlwh"]
+            x, y, w, h = [int(c * SHOW_SCALE) for c in (x_orig, y_orig, w_orig, h_orig)]
             tid, class_name = d['id'], d.get('class_name', 'UNK')
             if d.get('class_id') == 0:
-                info_str, score, n_tid = tid2info.get(tid, (f"{my_stream_id}_{tid}_-1", -1.0, 0))
+                default_info = (f"{my_stream_id}_{tid}_-1", -1.0, 0, None)
+                info_str, score, n_tid, alarm_geometry = tid2info.get(tid, default_info)
 
                 # Color logic for alarms and matches
-                # if info_str.endswith("_AA") or info_str.endswith("_AL"):
-                #     color = (0, 255, 255)  # Yellow for behavior alarm
-                if n_tid >= 2:
+                if "_AL" in info_str:
+                    color = (0, 255, 255)  # Yellow for line crossing alarm
+                elif n_tid >= 2:
                     color = (0, 0, 255)  # Red for multi-cam match
                 else:
                     color = (0, 255, 0)  # Green for normal
+
+                # --- 新增：绘制报警几何图形 ---
+                if alarm_geometry and "_AL" in info_str:
+                    overlay = frame.copy()
+                    alpha_blend = 0.3
+
+                    # 绘制报警时计算的投射区域
+                    zone_poly_orig = alarm_geometry.get("crossing_zone_poly")
+                    if zone_poly_orig:
+                        zone_poly_scaled = (np.array(zone_poly_orig) * SHOW_SCALE).astype(np.int32)
+                        cv2.fillPoly(overlay, [zone_poly_scaled], color=(0, 255, 255), lineType=cv2.LINE_AA)
+
+                    cv2.addWeighted(overlay, alpha_blend, frame, 1 - alpha_blend, 0, frame)
+
+                    # 绘制报警时的投射方向向量（法向量）
+                    line_start_orig = alarm_geometry.get("line_start")
+                    line_end_orig = alarm_geometry.get("line_end")
+                    proj_vec_orig = alarm_geometry.get("projection_vector")
+
+                    if line_start_orig and line_end_orig and proj_vec_orig:
+                        line_center_orig = (np.array(line_start_orig) + np.array(line_end_orig)) / 2
+                        proj_vec = np.array(proj_vec_orig)
+                        arrow_start_pt = tuple((line_center_orig * SHOW_SCALE).astype(int))
+                        arrow_end_pt = tuple(((line_center_orig + proj_vec * 50) * SHOW_SCALE).astype(int))
+                        cv2.arrowedLine(frame, arrow_start_pt, arrow_end_pt, (255, 255, 0), 2, tipLength=0.3)
 
                 # --- Text display logic ---
                 gid_part = None
@@ -355,18 +382,45 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
         draw_boundaries(frame, my_stream_id, simple_display=simple_display)
 
         for d in dets:
-            x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
+            x_orig, y_orig, w_orig, h_orig = d["tlwh"]
+            x, y, w, h = [int(c * SHOW_SCALE) for c in (x_orig, y_orig, w_orig, h_orig)]
             tid, class_name = d['id'], d.get('class_name', 'UNK')
             if d.get('class_id') == 0:
-                info_str, score, n_tid = tid2info.get(tid, (f"{my_stream_id}_{tid}_-1", -1.0, 0))
+                default_info = (f"{my_stream_id}_{tid}_-1", -1.0, 0, None)
+                info_str, score, n_tid, alarm_geometry = tid2info.get(tid, default_info)
 
                 # Color logic for alarms and matches
-                # if info_str.endswith("_AA") or info_str.endswith("_AL"):
-                #     color = (0, 255, 255)  # Yellow for behavior alarm
-                if n_tid >= 2:
+                if "_AL" in info_str:
+                    color = (0, 255, 255)  # Yellow for line crossing alarm
+                elif n_tid >= 2:
                     color = (0, 0, 255)  # Red for multi-cam match
                 else:
                     color = (0, 255, 0)  # Green for normal
+
+                # --- 新增：绘制报警几何图形 ---
+                if alarm_geometry and "_AL" in info_str:
+                    overlay = frame.copy()
+                    alpha_blend = 0.3
+
+                    # 绘制报警时计算的投射区域
+                    zone_poly_orig = alarm_geometry.get("crossing_zone_poly")
+                    if zone_poly_orig:
+                        zone_poly_scaled = (np.array(zone_poly_orig) * SHOW_SCALE).astype(np.int32)
+                        cv2.fillPoly(overlay, [zone_poly_scaled], color=(0, 255, 255), lineType=cv2.LINE_AA)
+
+                    cv2.addWeighted(overlay, alpha_blend, frame, 1 - alpha_blend, 0, frame)
+
+                    # 绘制报警时的投射方向向量（法向量）
+                    line_start_orig = alarm_geometry.get("line_start")
+                    line_end_orig = alarm_geometry.get("line_end")
+                    proj_vec_orig = alarm_geometry.get("projection_vector")
+
+                    if line_start_orig and line_end_orig and proj_vec_orig:
+                        line_center_orig = (np.array(line_start_orig) + np.array(line_end_orig)) / 2
+                        proj_vec = np.array(proj_vec_orig)
+                        arrow_start_pt = tuple((line_center_orig * SHOW_SCALE).astype(int))
+                        arrow_end_pt = tuple(((line_center_orig + proj_vec * 50) * SHOW_SCALE).astype(int))
+                        cv2.arrowedLine(frame, arrow_start_pt, arrow_end_pt, (255, 255, 0), 2, tipLength=0.3)
 
                 # --- Text display logic ---
                 gid_part = None

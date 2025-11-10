@@ -253,7 +253,11 @@ class LineCrossingDetectorPlus:
             alarmed_tracks[tid_int] = {
                 "direction": dir_str,
                 "distance": perpendicular_dist,
-                "ratio": overlap_ratio
+                "ratio": overlap_ratio,
+                "crossing_zone_poly": crossing_zone_poly.tolist(),
+                "line_start": self._p1.tolist(),
+                "line_end": self._p2.tolist(),
+                "projection_vector": proj_dir.tolist()
             }
             history["cooldown"] = 10  # 冷却几帧防止重复报警
 
@@ -850,20 +854,20 @@ class FeatureProcessor:
 
         # ... [ GID 绑定和清理逻辑保持不变, 此处省略以保持简洁 ] ...
         # (这部分逻辑完全复用，不需要修改)
-        realtime_map: Dict[str, Dict[int, Tuple[str, float, int]]] = {}
+        realtime_map: Dict[str, Dict[int, Tuple]] = {}
         for tid, agg in list(self.agg_pool.items()):
             ts, tn = tid.split("_")
             if ts != stream_id:
                 continue
             if len(agg.body) < MIN_BODY4GID or len(agg.face) < MIN_FACE4GID:
                 flag = f"{tid}_-1_b_{len(agg.body)}" if len(agg.body) < MIN_BODY4GID else f"{tid}_-1_f_{len(agg.face)}"
-                realtime_map.setdefault(ts, {})[int(tn)] = (flag, -1.0, 0)
+                realtime_map.setdefault(ts, {})[int(tn)] = (flag, -1.0, 0, None)
                 continue
             face_feat, _ = agg.main_face_feat_and_patch()
             body_feat, _ = agg.main_body_feat_and_patch()
             if face_feat is None or body_feat is None:
                 realtime_map.setdefault(ts, {})[int(tn)] = (
-                    f"{tid}_-2_f" if face_feat is None else f"{tid}_-2_b", -1.0, 0)
+                    f"{tid}_-2_f" if face_feat is None else f"{tid}_-2_b", -1.0, 0, None)
                 continue
 
             cand_gid, cand_score = self.gid_mgr.probe(face_feat, body_feat)
@@ -873,7 +877,7 @@ class FeatureProcessor:
                 lock_elapsed = fid - self.candidate_state.get(tid, {}).get("last_bind_fid", 0)
                 if cand_gid != bound_gid and lock_elapsed < BIND_LOCK_FRAMES:
                     n_tid = len(self.gid_mgr.tid_hist[bound_gid])
-                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-3", cand_score, n_tid)
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-3", cand_score, n_tid, None)
                     continue
 
             state = self.candidate_state.setdefault(tid, dict(cand_gid=None, count=0, last_bind_fid=0))
@@ -892,11 +896,11 @@ class FeatureProcessor:
                     state["last_bind_fid"] = fid
                     n_tid = len(self.gid_mgr.tid_hist.get(cand_gid, []))
                     if n_tid >= ALARM_CNT_TH: self.trigger_alarm(cand_gid, agg, w_face, w_body)
-                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{cand_gid}", cand_score, n_tid)
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{cand_gid}", cand_score, n_tid, None)
                 else:
                     flag = self.gid_mgr.can_update_proto(cand_gid, face_feat, body_feat)
                     realtime_map.setdefault(ts, {})[int(tn)] = (
-                        f"{tid}_-4_ud_f" if flag == -1 else f"{tid}_-4_ud_b" if flag == -2 else f"{tid}_-4_c", -1.0, 0)
+                        f"{tid}_-4_ud_f" if flag == -1 else f"{tid}_-4_ud_b" if flag == -2 else f"{tid}_-4_c", -1.0, 0, None)
 
             elif len(self.gid_mgr.bank) < 1:
                 ng_state["ambig_count"] = 0
@@ -907,7 +911,7 @@ class FeatureProcessor:
                 ng_state["last_new_fid"] = fid
                 n_tid = len(self.gid_mgr.tid_hist[new_gid])
                 if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg, w_face, w_body)
-                realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
+                realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid, None)
 
             elif cand_gid and THR_NEW_GID <= cand_score < MATCH_THR and self.mode == 'load':
                 ng_state["ambig_count"] += 1
@@ -919,9 +923,9 @@ class FeatureProcessor:
                     ng_state.update(last_new_fid=fid, count=0, ambig_count=0)
                     n_tid = len(self.gid_mgr.tid_hist[new_gid])
                     if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg, w_face, w_body)
-                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid, None)
                 else:
-                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-7", cand_score, 0)
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-7", cand_score, 0, None)
 
             elif cand_score < THR_NEW_GID:  # cand_score < THR_NEW_GID
                 ng_state["ambig_count"] = 0
@@ -935,11 +939,11 @@ class FeatureProcessor:
                         ng_state.update(last_new_fid=fid, count=0)
                         n_tid = len(self.gid_mgr.tid_hist[new_gid])
                         if n_tid >= ALARM_CNT_TH: self.trigger_alarm(new_gid, agg, w_face, w_body)
-                        realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid)
+                        realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_{new_gid}", cand_score, n_tid, None)
                     else:
-                        realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-5", -1.0, 0)
+                        realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-5", -1.0, 0, None)
                 else:
-                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-6", -1.0, 0)
+                    realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-6", -1.0, 0, None)
 
         active_alarms = {}
         for full_tid, state_tuple in self.behavior_alarm_state.items():
@@ -952,13 +956,15 @@ class FeatureProcessor:
                 n_tid = len(self.gid_mgr.tid_hist.get(bound_gid, [])) if bound_gid else 0
 
                 info_str_base = f"{full_tid}_{bound_gid}{alarm_type}" if bound_gid else f"{full_tid}_-1{alarm_type}"
+                alarm_geometry = None
                 if alarm_type.startswith('_AL') and len(state_tuple) > 2:
                     cross_info = state_tuple[2]
                     dist, ratio = cross_info.get("distance", 0), cross_info.get("ratio", 0)
                     info_str = f"{info_str_base}_D{dist:.0f}_R{ratio:.2f}"
+                    alarm_geometry = cross_info
                 else:
                     info_str = info_str_base
-                realtime_map.setdefault(s_id, {})[t_id_int] = (info_str, 1.0, n_tid)
+                realtime_map.setdefault(s_id, {})[t_id_int] = (info_str, 1.0, n_tid, alarm_geometry)
         self.behavior_alarm_state = active_alarms
 
         for tid in list(self.last_seen.keys()):
