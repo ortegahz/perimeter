@@ -32,7 +32,7 @@ SHOW_SCALE = 0.5
 PITCH_SCORE_LOWER_TH = PITCH_RATIO_LOWER_TH
 PITCH_SCORE_UPPER_TH = PITCH_RATIO_UPPER_TH
 
-PROJECTION_DEPTH = 256
+PROJECTION_DEPTH = 1024
 
 cv2.imshow("__init__", np.zeros((1, 1, 3), np.uint8))
 cv2.waitKey(1)
@@ -151,8 +151,8 @@ BOUNDARY_CONFIG = {
             },
             {
                 "name": "Line_2",
-                "start": (100, 700),
-                "end": (800, 700),
+                "start": (1000, 700),
+                "end": (2000, 700),
                 "direction": "any",
                 "projection_depth": PROJECTION_DEPTH
             }
@@ -263,6 +263,13 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
                     if zone_poly_orig:
                         zone_poly_scaled = (np.array(zone_poly_orig) * SHOW_SCALE).astype(np.int32)
                         cv2.fillPoly(overlay, [zone_poly_scaled], color=(0, 255, 255), lineType=cv2.LINE_AA)
+
+                    # 新增：绘制实际相交区域
+                    intersection_poly_orig = alarm_geometry.get("intersection_poly")
+                    if intersection_poly_orig:
+                        # 使用更醒目的红色来高亮相交区域
+                        intersection_poly_scaled = (np.array(intersection_poly_orig) * SHOW_SCALE).astype(np.int32)
+                        cv2.fillPoly(overlay, [intersection_poly_scaled], color=(0, 0, 255), lineType=cv2.LINE_AA)
 
                     cv2.addWeighted(overlay, alpha_blend, frame, 1 - alpha_blend, 0, frame)
 
@@ -407,6 +414,13 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
                     if zone_poly_orig:
                         zone_poly_scaled = (np.array(zone_poly_orig) * SHOW_SCALE).astype(np.int32)
                         cv2.fillPoly(overlay, [zone_poly_scaled], color=(0, 255, 255), lineType=cv2.LINE_AA)
+
+                    # 新增：绘制实际相交区域
+                    intersection_poly_orig = alarm_geometry.get("intersection_poly")
+                    if intersection_poly_orig:
+                        # 使用更醒目的红色来高亮相交区域
+                        intersection_poly_scaled = (np.array(intersection_poly_orig) * SHOW_SCALE).astype(np.int32)
+                        cv2.fillPoly(overlay, [intersection_poly_scaled], color=(0, 0, 255), lineType=cv2.LINE_AA)
 
                     cv2.addWeighted(overlay, alpha_blend, frame, 1 - alpha_blend, 0, frame)
 

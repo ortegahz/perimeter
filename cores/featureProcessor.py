@@ -241,7 +241,18 @@ class LineCrossingDetectorPlus:
             p2_proj = self._p2 + proj_dir * self._projection_depth
             crossing_zone_poly = np.array([self._p1, self._p2, p2_proj, p1_proj], dtype=np.float32)
 
-            intersection_area = self._polygon_intersect_area(bbox_poly, crossing_zone_poly)
+            # ----- 修改：同时计算相交区域的多边形顶点 -----
+            intersection_area = 0.0
+            intersection_poly = None
+            try:
+                poly1_geom, poly2_geom = Polygon(bbox_poly), Polygon(crossing_zone_poly)
+                if poly1_geom.is_valid and poly2_geom.is_valid:
+                    intersection_geom = poly1_geom.intersection(poly2_geom)
+                    intersection_area = intersection_geom.area
+                    if not intersection_geom.is_empty:
+                        intersection_poly = np.array(intersection_geom.exterior.coords)
+            except Exception:
+                pass  # 保持默认值
             overlap_ratio = intersection_area / (bbox_area + 1e-6)
 
             # --- 4. 输出结果 ---
@@ -255,6 +266,7 @@ class LineCrossingDetectorPlus:
                 "distance": perpendicular_dist,
                 "ratio": overlap_ratio,
                 "crossing_zone_poly": crossing_zone_poly.tolist(),
+                "intersection_poly": intersection_poly.tolist() if intersection_poly is not None else None,
                 "line_start": self._p1.tolist(),
                 "line_end": self._p2.tolist(),
                 "projection_vector": proj_dir.tolist()
