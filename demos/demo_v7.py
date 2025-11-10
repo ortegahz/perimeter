@@ -139,12 +139,22 @@ BOUNDARY_CONFIG = {
         "intrusion_poly": [
             (50, 1400), (1200, 1400), (1100, 500), (50, 500)  # Example: bottom-left area
         ],
-        "crossing_line": {
-            "start": (1200, 60),  # Example: a vertical line in the middle
-            "end": (1400, 1280),
-            "direction": "any",
-            "projection_depth": 50  # 沿法线方向延伸的深度（像素）
-        }
+        "crossing_lines": [
+            {
+                "name": "Line_1",
+                "start": (1200, 60),  # Example: a vertical line in the middle
+                "end": (1400, 1280),
+                "direction": "any",
+                "projection_depth": 50  # 沿法线方向延伸的深度（像素）
+            },
+            {
+                "name": "Line_2",
+                "start": (100, 700),
+                "end": (800, 700),
+                "direction": "any",
+                "projection_depth": 50
+            }
+        ]
     },
     "cam2": {
         "intrusion_poly": [
@@ -170,30 +180,32 @@ def draw_boundaries(frame: np.ndarray, stream_id: str, simple_display: bool = Fa
         cv2.putText(frame, "Intrusion Zone", label_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
     # Draw crossing line
-    if "crossing_line" in config:
-        start_pt = tuple((np.array(config["crossing_line"]["start"]) * SHOW_SCALE).astype(int))
-        end_pt = tuple((np.array(config["crossing_line"]["end"]) * SHOW_SCALE).astype(int))
-        depth = config["crossing_line"].get("projection_depth", 50) * SHOW_SCALE
+    if "crossing_lines" in config:
+        for line_cfg in config["crossing_lines"]:
+            start_pt = tuple((np.array(line_cfg["start"]) * SHOW_SCALE).astype(int))
+            end_pt = tuple((np.array(line_cfg["end"]) * SHOW_SCALE).astype(int))
+            depth = line_cfg.get("projection_depth", 50) * SHOW_SCALE
 
-        # draw projection area
-        v = np.array(end_pt) - np.array(start_pt)
-        normal = np.array([-v[1], v[0]])
-        normal = normal / (np.linalg.norm(normal) + 1e-6)
-        p1 = start_pt
-        p2 = end_pt
-        p3 = (np.array(end_pt) + normal * depth).astype(int)
-        p4 = (np.array(start_pt) + normal * depth).astype(int)
-        poly_area = np.array([p1, p2, p3, p4]).reshape((-1, 1, 2))
+            # draw projection area
+            v = np.array(end_pt) - np.array(start_pt)
+            normal = np.array([-v[1], v[0]])
+            normal = normal / (np.linalg.norm(normal) + 1e-6)
+            p1 = start_pt
+            p2 = end_pt
+            p3 = (np.array(end_pt) + normal * depth).astype(int)
+            p4 = (np.array(start_pt) + normal * depth).astype(int)
+            poly_area = np.array([p1, p2, p3, p4]).reshape((-1, 1, 2))
 
-        # 使用 addWeighted 实现透明填充，以兼容旧版 OpenCV
-        overlay = frame.copy()
-        cv2.fillPoly(overlay, [poly_area], color=(255, 0, 255), lineType=cv2.LINE_AA)
-        alpha_blend = 0.2  # 透明度
-        cv2.addWeighted(overlay, alpha_blend, frame, 1 - alpha_blend, 0, frame)
+            # 使用 addWeighted 实现透明填充，以兼容旧版 OpenCV
+            overlay = frame.copy()
+            cv2.fillPoly(overlay, [poly_area], color=(255, 0, 255), lineType=cv2.LINE_AA)
+            alpha_blend = 0.2  # 透明度
+            cv2.addWeighted(overlay, alpha_blend, frame, 1 - alpha_blend, 0, frame)
 
-        cv2.line(frame, start_pt, end_pt, color=(255, 0, 255), thickness=2, lineType=cv2.LINE_AA)
-        label_pos = (start_pt[0], start_pt[1] - 10)
-        cv2.putText(frame, "Crossing Line", label_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+            cv2.line(frame, start_pt, end_pt, color=(255, 0, 255), thickness=2, lineType=cv2.LINE_AA)
+            label_pos = (start_pt[0], start_pt[1] - 10)
+            label_text = line_cfg.get("name", "Crossing Line")
+            cv2.putText(frame, label_text, label_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
 
 def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps_exp, simple_display=False):
     gst, first = None, True
@@ -426,7 +438,7 @@ def main():
     mp.set_start_method("spawn", force=True)
     pa = argparse.ArgumentParser()
     pa.add_argument("--video1", default="rtsp://admin:1qaz2wsx@172.20.20.64")
-    pa.add_argument("--video2", default="rtsp://admin:1qaz2wsx@172.20.20.64")
+    pa.add_argument("--video2", default="")
     pa.add_argument("--skip", type=int, default=2)
     pa.add_argument("--display_mode", default="local", choices=["gst", "local"],
                     help="显示模式: 'gst' 推流 或 'local' 本地窗口")

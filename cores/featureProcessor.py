@@ -609,21 +609,23 @@ class FeatureProcessor:
         self.alarm_reprs: Dict[str, np.ndarray] = {}
         self.behavior_alarm_state: Dict[str, Tuple[int, str]] = {}
         self.intrusion_detectors: Dict[str, IntrusionDetector] = {}
-        self.line_crossing_detectors: Dict[str, LineCrossingDetectorPlus] = {}
+        self.line_crossing_detectors: Dict[str, Dict[str, LineCrossingDetectorPlus]] = {}
         if boundary_config:
             for stream_id, config in boundary_config.items():
                 if "intrusion_poly" in config:
                     self.intrusion_detectors[stream_id] = IntrusionDetector(config["intrusion_poly"])
                     logger.info(f"Initialized IntrusionDetector for stream '{stream_id}'.")
-                if "crossing_line" in config:
-                    line_cfg = config["crossing_line"]
-                    self.line_crossing_detectors[stream_id] = LineCrossingDetectorPlus(
-                        line_cfg["start"],
-                        line_cfg["end"],
-                        line_cfg.get("direction", "any"),
-                        line_cfg.get("projection_depth", 50)  # 新增深度参数
-                    )
-                    logger.info(f"Initialized LineCrossingDetector for stream '{stream_id}'.")
+                if "crossing_lines" in config:
+                    self.line_crossing_detectors[stream_id] = {}
+                    for i, line_cfg in enumerate(config["crossing_lines"]):
+                        line_name = line_cfg.get("name", f"line_{i}")
+                        self.line_crossing_detectors[stream_id][line_name] = LineCrossingDetectorPlus(
+                            line_cfg["start"],
+                            line_cfg["end"],
+                            line_cfg.get("direction", "any"),
+                            line_cfg.get("projection_depth", 50)
+                        )
+                        logger.info(f"Initialized LineCrossingDetector '{line_name}' for stream '{stream_id}'.")
 
     def __del__(self):
         if self.mode == 'realtime' and self.cache_path and self.features_to_save:
@@ -720,8 +722,10 @@ class FeatureProcessor:
             for tid_int in self.intrusion_detectors[stream_id].check(dets, stream_id):
                 self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, '_AA')
         if self.line_crossing_detectors.get(stream_id):
-            for tid_int, crossing_info in self.line_crossing_detectors[stream_id].check(dets, stream_id).items():
-                self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, '_AL', crossing_info)
+            for line_name, detector in self.line_crossing_detectors[stream_id].items():
+                for tid_int, crossing_info in detector.check(dets, stream_id).items():
+                    alarm_type = f'_AL_{line_name}'
+                    self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, alarm_type, crossing_info)
 
         # 4. 时间戳和超时设置
         if self.use_fid_time:
@@ -938,7 +942,7 @@ class FeatureProcessor:
                 n_tid = len(self.gid_mgr.tid_hist.get(bound_gid, [])) if bound_gid else 0
 
                 info_str_base = f"{full_tid}_{bound_gid}{alarm_type}" if bound_gid else f"{full_tid}_-1{alarm_type}"
-                if alarm_type == '_AL' and len(state_tuple) > 2:
+                if alarm_type.startswith('_AL') and len(state_tuple) > 2:
                     cross_info = state_tuple[2]
                     dist, ratio = cross_info.get("distance", 0), cross_info.get("ratio", 0)
                     info_str = f"{info_str_base}_D{dist:.0f}_R{ratio:.2f}"
