@@ -32,6 +32,8 @@ SHOW_SCALE = 0.5
 PITCH_SCORE_LOWER_TH = PITCH_RATIO_LOWER_TH
 PITCH_SCORE_UPPER_TH = PITCH_RATIO_UPPER_TH
 
+PROJECTION_DEPTH = 256
+
 cv2.imshow("__init__", np.zeros((1, 1, 3), np.uint8))
 cv2.waitKey(1)
 
@@ -145,14 +147,14 @@ BOUNDARY_CONFIG = {
                 "start": (1200, 60),  # Example: a vertical line in the middle
                 "end": (1400, 1280),
                 "direction": "any",
-                "projection_depth": 50  # 沿法线方向延伸的深度（像素）
+                "projection_depth": PROJECTION_DEPTH  # 沿法线方向延伸的深度（像素）
             },
             {
                 "name": "Line_2",
                 "start": (100, 700),
                 "end": (800, 700),
                 "direction": "any",
-                "projection_depth": 50
+                "projection_depth": PROJECTION_DEPTH
             }
         ]
     },
@@ -186,22 +188,34 @@ def draw_boundaries(frame: np.ndarray, stream_id: str, simple_display: bool = Fa
             end_pt = tuple((np.array(line_cfg["end"]) * SHOW_SCALE).astype(int))
             depth = line_cfg.get("projection_depth", 50) * SHOW_SCALE
 
-            # draw projection area
+            # ----- 修改开始: 在线的两侧绘制投射区域 -----
+            overlay = frame.copy()
+            alpha_blend = 0.15  # 透明度
+
             v = np.array(end_pt) - np.array(start_pt)
+            # 避免零向量导致除零错误
+            if np.linalg.norm(v) < 1e-6:
+                continue
             normal = np.array([-v[1], v[0]])
             normal = normal / (np.linalg.norm(normal) + 1e-6)
-            p1 = start_pt
-            p2 = end_pt
-            p3 = (np.array(end_pt) + normal * depth).astype(int)
-            p4 = (np.array(start_pt) + normal * depth).astype(int)
-            poly_area = np.array([p1, p2, p3, p4]).reshape((-1, 1, 2))
 
-            # 使用 addWeighted 实现透明填充，以兼容旧版 OpenCV
-            overlay = frame.copy()
-            cv2.fillPoly(overlay, [poly_area], color=(255, 0, 255), lineType=cv2.LINE_AA)
-            alpha_blend = 0.2  # 透明度
+            # 正方向区域
+            p_end_pos = (np.array(end_pt) + normal * depth).astype(int)
+            p_start_pos = (np.array(start_pt) + normal * depth).astype(int)
+            poly_area_pos = np.array([start_pt, end_pt, p_end_pos, p_start_pos], dtype=np.int32)
+            cv2.fillPoly(overlay, [poly_area_pos], color=(255, 0, 255), lineType=cv2.LINE_AA)
+
+            # 负方向区域
+            p_end_neg = (np.array(end_pt) - normal * depth).astype(int)
+            p_start_neg = (np.array(start_pt) - normal * depth).astype(int)
+            poly_area_neg = np.array([start_pt, end_pt, p_end_neg, p_start_neg], dtype=np.int32)
+            cv2.fillPoly(overlay, [poly_area_neg], color=(255, 0, 255), lineType=cv2.LINE_AA)
+
+            # 将带有透明区域的图层混合回原图
             cv2.addWeighted(overlay, alpha_blend, frame, 1 - alpha_blend, 0, frame)
+            # ----- 修改结束 -----
 
+            # 绘制中心线和标签
             cv2.line(frame, start_pt, end_pt, color=(255, 0, 255), thickness=2, lineType=cv2.LINE_AA)
             label_pos = (start_pt[0], start_pt[1] - 10)
             label_text = line_cfg.get("name", "Crossing Line")
