@@ -16,6 +16,7 @@ import numpy as np
 import torch
 # MODIFIED HERE: 导入 Face 对象
 from insightface.app.common import Face
+from shapely.geometry import Polygon
 from loguru import logger
 
 from cores.faceSearcher import FaceSearcher
@@ -120,48 +121,141 @@ class IntrusionDetector:
         return newly_alarmed_tids
 
 
-def get_point_side(p: tuple[int, int], a: tuple[int, int], b: tuple[int, int]) -> int:
-    """计算点相对于有向直线AB的位置"""
-    val = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
-    if val > 0: return 1
-    if val < 0: return -1
-    return 0
+class LineCrossingDetectorPlus:
+    """增强版线条穿越检测器，包含方向和深度计算"""
 
+    def __init__(self, line_start: tuple[int, int], line_end: tuple[int, int],
+                 direction: str = 'any', projection_depth: int = 50):
+        self._p1 = np.array(line_start, dtype=np.float32)
+        self._p2 = np.array(line_end, dtype=np.float32)
+        self._direction_policy = direction
+        self._projection_depth = projection_depth
 
-class LineCrossingDetector:
-    """线条穿越检测器"""
+        # 预计算线方程 ax + by + c = 0
+        self._a = self._p1[1] - self._p2[1]
+        self._b = self._p2[0] - self._p1[0]
+        self._c = -self._a * self._p1[0] - self._b * self._p1[1]
+        norm = math.sqrt(self._a ** 2 + self._b ** 2) + 1e-6
+        self._a /= norm
+        self._b /= norm
+        self._c /= norm
 
-    def __init__(self, line_start: tuple[int, int], line_end: tuple[int, int], direction: str = 'any'):
-        self.line_start = line_start
-        self.line_end = line_end
-        self.direction = direction
-        self.track_side_history = {}
-        self.alarmed_tids = set()
+        # 预计算法向量 (单位向量)
+        self._normal_vector = np.array([self._a, self._b], dtype=np.float32)
 
-    def check(self, dets: list[dict], stream_id: str) -> set[int]:
-        newly_alarmed_tids = set()
-        current_tids = {d['id'] for d in dets}
+        self._track_history = {}  # {tid: {"last_point": pt, "last_side": side, "alarm_cooldown": N}}
+
+    def _get_side(self, point: np.ndarray) -> int:
+        """计算点在线的哪一侧"""
+        val = self._a * point[0] + self._b * point[1] + self._c
+        if val > 1e-3: return 1
+        if val < -1e-3: return -1
+        return 0
+
+    @staticmethod
+    def _polygon_intersect_area(poly1: np.ndarray, poly2: np.ndarray) -> float:
+        """计算两个凸多边形的相交面积"""
+        try:
+            # 使用 shapely 库，因为它对几何计算更稳健且兼容性好
+            poly1_geom = Polygon(poly1)
+            poly2_geom = Polygon(poly2)
+            if not poly1_geom.is_valid or not poly2_geom.is_valid:
+                return 0.0
+            return poly1_geom.intersection(poly2_geom).area
+        except Exception:
+            # 如果多边形创建失败（例如，点少于3个），返回0
+            return 0.0
+
+    def check(self, dets: list[dict], stream_id: str) -> dict[int, dict]:
+        """
+        检查检测结果，返回一个字典，包含触发警报的TID及其详细越界信息
+        - key: tid (int)
+        - value: {"direction": str, "distance": float, "ratio": float}
+        """
+        alarmed_tracks = {}
+        current_tids_int = {d['id'] for d in dets}
+
         for d in dets:
-            tid = d['id']
-            if tid in self.alarmed_tids: continue
-            current_point = get_foot_point(d['tlwh'])
-            current_side = get_point_side(current_point, self.line_start, self.line_end)
-            last_side = self.track_side_history.get(tid)
-            self.track_side_history[tid] = current_side
-            if last_side is not None and current_side != last_side and last_side != 0 and current_side != 0:
-                crossed = (self.direction == 'any') or \
-                          (self.direction == 'in' and last_side < 0 and current_side > 0) or \
-                          (self.direction == 'out' and last_side > 0 and current_side < 0)
-                if crossed:
-                    logger.warning(f"[ALARM][{stream_id}] Line Crossing Detected! TID:{tid} crossed the line.")
-                    self.alarmed_tids.add(tid)
-                    newly_alarmed_tids.add(tid)
+            tid_int = d['id']
+            history = self._track_history.setdefault(tid_int, {"last_point": None, "last_side": None, "cooldown": 0})
 
-        disappeared_tids = set(self.track_side_history.keys()) - current_tids
+            if history["cooldown"] > 0:
+                history["cooldown"] -= 1
+                continue
+
+            x, y, w, h = d['tlwh']
+            bbox_poly = np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], dtype=np.float32)
+            current_point = np.array(get_foot_point(d['tlwh']), dtype=np.float32)
+            bbox_area = w * h
+
+            # --- 1. 越界触发判断 ---
+            # 条件A: 轨迹跨线
+            current_side = self._get_side(current_point)
+            last_side = history.get('last_side')
+            trajectory_crossed = (last_side is not None and current_side != last_side and
+                                  last_side != 0 and current_side != 0)
+
+            # 条件B: BBox与线相交
+            vertex_sides = [self._get_side(v) for v in bbox_poly]
+            bbox_intersects = (1 in vertex_sides and -1 in vertex_sides)
+
+            if not (trajectory_crossed or bbox_intersects):
+                history.update({"last_point": current_point, "last_side": current_side})
+                continue
+
+            # --- 2. 越界方向判断 ---
+            crossing_direction = 0  # 1 for positive, -1 for negative
+            if trajectory_crossed:
+                crossing_direction = current_side
+
+                # 策略检查
+                is_in = last_side < 0 and current_side > 0
+                is_out = last_side > 0 and current_side < 0
+                if self._direction_policy == 'in' and not is_in: continue
+                if self._direction_policy == 'out' and not is_out: continue
+
+            elif bbox_intersects:
+                # 当仅BBox相交时，方向不明确，可根据历史或中心点位置判断
+                crossing_direction = 1 if vertex_sides.count(1) > vertex_sides.count(-1) else -1
+
+            if crossing_direction == 0: continue
+
+            # --- 3. 越界深度计算 ---
+            # a) 法向距离
+            vec_p_c = current_point - self._p1
+            perpendicular_dist = np.dot(vec_p_c, self._normal_vector)
+
+            # b) 面积比例
+            proj_dir = self._normal_vector if crossing_direction > 0 else -self._normal_vector
+            p1_proj = self._p1 + proj_dir * self._projection_depth
+            p2_proj = self._p2 + proj_dir * self._projection_depth
+            crossing_zone_poly = np.array([self._p1, self._p2, p2_proj, p1_proj], dtype=np.float32)
+
+            intersection_area = self._polygon_intersect_area(bbox_poly, crossing_zone_poly)
+            overlap_ratio = intersection_area / (bbox_area + 1e-6)
+
+            # --- 4. 输出结果 ---
+            dir_str = "in" if crossing_direction > 0 else "out"
+            logger.warning(
+                f"[ALARM][{stream_id}] Line Crossing! TID:{tid_int}, Dir:{dir_str}, "
+                f"Dist:{perpendicular_dist:.1f}, Ratio:{overlap_ratio:.2f}"
+            )
+            alarmed_tracks[tid_int] = {
+                "direction": dir_str,
+                "distance": perpendicular_dist,
+                "ratio": overlap_ratio
+            }
+            history["cooldown"] = 10  # 冷却几帧防止重复报警
+
+            # 更新历史
+            history.update({"last_point": current_point, "last_side": current_side})
+
+        # 清理消失的track
+        disappeared_tids = set(self._track_history.keys()) - current_tids_int
         for tid in disappeared_tids:
-            self.track_side_history.pop(tid, None)
-            self.alarmed_tids.discard(tid)
-        return newly_alarmed_tids
+            self._track_history.pop(tid, None)
+
+        return alarmed_tracks
 
 
 # ===============================================================
@@ -254,6 +348,7 @@ class TrackAgg:
     def face_patches(self):
         return [p for _f, p in self.face]
 
+
 def is_frontal_face_2d(kps: np.ndarray, yaw_sym_threshold=0.7, roll_angle_threshold=25.0) -> bool:
     """
     使用简单的2D几何方法判断是否为正脸，不使用solvePnP。
@@ -277,7 +372,7 @@ def is_frontal_face_2d(kps: np.ndarray, yaw_sym_threshold=0.7, roll_angle_thresh
         # 计算对称性比例
         symmetry_ratio = min(dist_left, dist_right) / max(dist_left, dist_right)
         if symmetry_ratio < yaw_sym_threshold:
-            return False # 侧脸
+            return False  # 侧脸
 
         # 2. 翻滚角（Roll）检测：基于双眼连线的倾斜角度
         dy = right_eye[1] - left_eye[1]
@@ -288,12 +383,13 @@ def is_frontal_face_2d(kps: np.ndarray, yaw_sym_threshold=0.7, roll_angle_thresh
 
         angle = math.degrees(math.atan2(dy, dx))
         if abs(angle) > roll_angle_threshold:
-            return False # 头部倾斜过大
+            return False  # 头部倾斜过大
 
     except Exception:
-        return False # 关键点数据异常
+        return False  # 关键点数据异常
 
     return True
+
 
 # ===============================================================
 @torch.inference_mode()
@@ -513,7 +609,7 @@ class FeatureProcessor:
         self.alarm_reprs: Dict[str, np.ndarray] = {}
         self.behavior_alarm_state: Dict[str, Tuple[int, str]] = {}
         self.intrusion_detectors: Dict[str, IntrusionDetector] = {}
-        self.line_crossing_detectors: Dict[str, LineCrossingDetector] = {}
+        self.line_crossing_detectors: Dict[str, LineCrossingDetectorPlus] = {}
         if boundary_config:
             for stream_id, config in boundary_config.items():
                 if "intrusion_poly" in config:
@@ -521,8 +617,11 @@ class FeatureProcessor:
                     logger.info(f"Initialized IntrusionDetector for stream '{stream_id}'.")
                 if "crossing_line" in config:
                     line_cfg = config["crossing_line"]
-                    self.line_crossing_detectors[stream_id] = LineCrossingDetector(
-                        line_cfg["start"], line_cfg["end"], line_cfg.get("direction", "any")
+                    self.line_crossing_detectors[stream_id] = LineCrossingDetectorPlus(
+                        line_cfg["start"],
+                        line_cfg["end"],
+                        line_cfg.get("direction", "any"),
+                        line_cfg.get("projection_depth", 50)  # 新增深度参数
                     )
                     logger.info(f"Initialized LineCrossingDetector for stream '{stream_id}'.")
 
@@ -621,8 +720,8 @@ class FeatureProcessor:
             for tid_int in self.intrusion_detectors[stream_id].check(dets, stream_id):
                 self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, '_AA')
         if self.line_crossing_detectors.get(stream_id):
-            for tid_int in self.line_crossing_detectors[stream_id].check(dets, stream_id):
-                self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, '_AL')
+            for tid_int, crossing_info in self.line_crossing_detectors[stream_id].check(dets, stream_id).items():
+                self.behavior_alarm_state[f"{stream_id}_{tid_int}"] = (fid, '_AL', crossing_info)
 
         # 4. 时间戳和超时设置
         if self.use_fid_time:
@@ -829,14 +928,22 @@ class FeatureProcessor:
                     realtime_map.setdefault(ts, {})[int(tn)] = (f"{tid}_-6", -1.0, 0)
 
         active_alarms = {}
-        for full_tid, (start_fid, alarm_type) in self.behavior_alarm_state.items():
+        for full_tid, state_tuple in self.behavior_alarm_state.items():
+            start_fid, alarm_type = state_tuple[0], state_tuple[1]
             if fid - start_fid <= BEHAVIOR_ALARM_DURATION_FRAMES:
-                active_alarms[full_tid] = (start_fid, alarm_type)
+                active_alarms[full_tid] = state_tuple
                 s_id, t_id_str = full_tid.split("_")
                 t_id_int = int(t_id_str)
                 bound_gid = self.tid2gid.get(full_tid, "")
                 n_tid = len(self.gid_mgr.tid_hist.get(bound_gid, [])) if bound_gid else 0
-                info_str = f"{full_tid}_{bound_gid}{alarm_type}" if bound_gid else f"{full_tid}_-1{alarm_type}"
+
+                info_str_base = f"{full_tid}_{bound_gid}{alarm_type}" if bound_gid else f"{full_tid}_-1{alarm_type}"
+                if alarm_type == '_AL' and len(state_tuple) > 2:
+                    cross_info = state_tuple[2]
+                    dist, ratio = cross_info.get("distance", 0), cross_info.get("ratio", 0)
+                    info_str = f"{info_str_base}_D{dist:.0f}_R{ratio:.2f}"
+                else:
+                    info_str = info_str_base
                 realtime_map.setdefault(s_id, {})[t_id_int] = (info_str, 1.0, n_tid)
         self.behavior_alarm_state = active_alarms
 

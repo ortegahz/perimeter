@@ -1,6 +1,6 @@
 # FILE: demo_v7.py
 
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 双路视频 + 全局GID
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing as mp
-import math
 import multiprocessing.queues as mpq
 import queue
 import signal
@@ -143,7 +142,8 @@ BOUNDARY_CONFIG = {
         "crossing_line": {
             "start": (1200, 60),  # Example: a vertical line in the middle
             "end": (1400, 1280),
-            "direction": "any"
+            "direction": "any",
+            "projection_depth": 50  # 沿法线方向延伸的深度（像素）
         }
     },
     "cam2": {
@@ -153,7 +153,8 @@ BOUNDARY_CONFIG = {
     }
 }
 
-def draw_boundaries(frame, stream_id, simple_display=False):
+
+def draw_boundaries(frame: np.ndarray, stream_id: str, simple_display: bool = False):
     """Helper function to draw the pre-defined boundaries on the frame for debugging."""
     if simple_display:
         return
@@ -172,10 +173,27 @@ def draw_boundaries(frame, stream_id, simple_display=False):
     if "crossing_line" in config:
         start_pt = tuple((np.array(config["crossing_line"]["start"]) * SHOW_SCALE).astype(int))
         end_pt = tuple((np.array(config["crossing_line"]["end"]) * SHOW_SCALE).astype(int))
+        depth = config["crossing_line"].get("projection_depth", 50) * SHOW_SCALE
+
+        # draw projection area
+        v = np.array(end_pt) - np.array(start_pt)
+        normal = np.array([-v[1], v[0]])
+        normal = normal / (np.linalg.norm(normal) + 1e-6)
+        p1 = start_pt
+        p2 = end_pt
+        p3 = (np.array(end_pt) + normal * depth).astype(int)
+        p4 = (np.array(start_pt) + normal * depth).astype(int)
+        poly_area = np.array([p1, p2, p3, p4]).reshape((-1, 1, 2))
+
+        # 使用 addWeighted 实现透明填充，以兼容旧版 OpenCV
+        overlay = frame.copy()
+        cv2.fillPoly(overlay, [poly_area], color=(255, 0, 255), lineType=cv2.LINE_AA)
+        alpha_blend = 0.2  # 透明度
+        cv2.addWeighted(overlay, alpha_blend, frame, 1 - alpha_blend, 0, frame)
+
         cv2.line(frame, start_pt, end_pt, color=(255, 0, 255), thickness=2, lineType=cv2.LINE_AA)
         label_pos = (start_pt[0], start_pt[1] - 10)
         cv2.putText(frame, "Crossing Line", label_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
-
 
 def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps_exp, simple_display=False):
     gst, first = None, True
@@ -258,7 +276,7 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
                     roll_threshold = ROLL_TH
 
                     if abs(yaw) < yaw_threshold and abs(roll) < roll_threshold and \
-                       PITCH_SCORE_LOWER_TH < pitch_score < PITCH_SCORE_UPPER_TH:
+                            PITCH_SCORE_LOWER_TH < pitch_score < PITCH_SCORE_UPPER_TH:
                         box_color = (0, 255, 0)  # Green for frontal face
                     else:
                         box_color = (0, 0, 255)  # Red for side face
@@ -375,7 +393,7 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
                     roll_threshold = ROLL_TH
 
                     if abs(yaw) < yaw_threshold and abs(roll) < roll_threshold and \
-                       PITCH_SCORE_LOWER_TH < pitch_score < PITCH_SCORE_UPPER_TH:
+                            PITCH_SCORE_LOWER_TH < pitch_score < PITCH_SCORE_UPPER_TH:
                         box_color = (0, 255, 0)  # Green for frontal face
                     else:
                         box_color = (0, 0, 255)  # Red for side face
@@ -408,7 +426,7 @@ def main():
     mp.set_start_method("spawn", force=True)
     pa = argparse.ArgumentParser()
     pa.add_argument("--video1", default="rtsp://admin:1qaz2wsx@172.20.20.64")
-    pa.add_argument("--video2", default="rtsp://admin:1qaz2wsx@172.20.20.150")
+    pa.add_argument("--video2", default="rtsp://admin:1qaz2wsx@172.20.20.64")
     pa.add_argument("--skip", type=int, default=2)
     pa.add_argument("--display_mode", default="local", choices=["gst", "local"],
                     help="显示模式: 'gst' 推流 或 'local' 本地窗口")
