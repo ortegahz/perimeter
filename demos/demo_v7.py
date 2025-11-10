@@ -138,9 +138,9 @@ def init_gst(W, H, fps, host, port, use_nvenc=True):
 # Coordinates are based on the original full resolution of the video (e.g., 1920x1080 2560x1440).
 BOUNDARY_CONFIG = {
     "cam1": {
-        "intrusion_poly": [
-            (50, 1400), (1200, 1400), (1100, 500), (50, 500)  # Example: bottom-left area
-        ],
+        # "intrusion_poly": [
+        #     (50, 1400), (1200, 1400), (1100, 500), (50, 500)  # Example: bottom-left area
+        # ],
         "crossing_lines": [
             {
                 "name": "Line_1",
@@ -158,11 +158,11 @@ BOUNDARY_CONFIG = {
             }
         ]
     },
-    "cam2": {
-        "intrusion_poly": [
-            (1500, 100), (1850, 100), (1850, 400), (1500, 400)  # Example: top-right area
-        ]
-    }
+    # "cam2": {
+    #     "intrusion_poly": [
+    #         (1500, 100), (1850, 100), (1850, 400), (1500, 400)  # Example: top-right area
+    #     ]
+    # }
 }
 
 
