@@ -214,9 +214,19 @@ class LineCrossingDetectorPlus:
                 if self._direction_policy == 'in' and not is_in: continue
                 if self._direction_policy == 'out' and not is_out: continue
 
-            elif bbox_intersects:
-                # 当仅BBox相交时，方向不明确，可根据历史或中心点位置判断
-                crossing_direction = 1 if vertex_sides.count(1) > vertex_sides.count(-1) else -1
+            elif bbox_intersects and history["last_point"] is not None:
+                # 改进：当仅BBox相交时，使用目标的实际运动轨迹来判断方向
+                motion_vector = current_point - history["last_point"]
+                # 将运动向量投影到线的法向量上，判断方向
+                direction_sign = np.dot(motion_vector, self._normal_vector)
+
+                if abs(direction_sign) > 1e-6:  # 避免运动方向与线平行的情况
+                    # 同样应用方向策略
+                    is_in = direction_sign > 0
+                    is_out = direction_sign < 0
+                    if self._direction_policy == 'in' and not is_in: continue
+                    if self._direction_policy == 'out' and not is_out: continue
+                    crossing_direction = 1 if is_in else -1
 
             if crossing_direction == 0: continue
 
