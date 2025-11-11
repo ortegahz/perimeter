@@ -1,3 +1,5 @@
+# FILE: demo_v7_align.py
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -60,9 +62,10 @@ CAM_ID = "cam1"
 
 # ---- 缓存相关 ----
 SAVE_RAW = False
-LOAD_RAW = True
+LOAD_RAW = not SAVE_RAW
 RAW_DIR = "/home/manu/tmp/cache_v2"
-OVERWRITE = False
+CACHE_PATH = '/home/manu/tmp/features_cache_v2.json'
+OVERWRITE = SAVE_RAW
 
 
 # -------------------------------------------------
@@ -206,7 +209,7 @@ def main():
         # MODIFIED HERE: 缓存文件名根据您的要求修改
         # 如果是 realtime 模式，则会提取特征并在此路径下生成缓存；如果是 load 模式，则从此路径加载特征。
         mode='load' if LOAD_RAW else 'realtime',
-        cache_path='/home/manu/tmp/features_cache_v2.json'
+        cache_path=CACHE_PATH
     )
     # 确保 processor 内部也使用同一个 face_app 实例以节省资源
     if processor.face_app is None and processor.mode == 'realtime':
@@ -307,7 +310,7 @@ def main():
             # 按 tid 升序写 txt
             sorted_keys = sorted(cam_map.keys())
             for tid in sorted_keys:
-                gid, score, n_tid = cam_map[tid]
+                gid, score, n_tid, _ = cam_map[tid]
                 f_res.write(f"{fid},{CAM_ID},{tid},{gid},{score:.4f},{n_tid}\n")
 
             # ------------- 可视化 -------------
@@ -316,7 +319,7 @@ def main():
             for d in dets:  # dets 已按 id 排序
                 tid = d["id"]
                 x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
-                gid, score, n_tid = cam_map.get(tid, (f"{CAM_ID}_{tid}_-?", -1.0, 0))
+                gid, score, n_tid, _ = cam_map.get(tid, (f"{CAM_ID}_{tid}_-?", -1.0, 0, None))
                 color_id = int(str(gid).split('_')[-1].replace('G', '').lstrip('0')) if str(gid).startswith(
                     'G') else tid
                 color = _COMMON_COLORS[color_id % len(_COMMON_COLORS)]
