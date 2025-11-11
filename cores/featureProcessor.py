@@ -125,11 +125,13 @@ class LineCrossingDetectorPlus:
     """增强版线条穿越检测器，包含方向和深度计算"""
 
     def __init__(self, line_start: tuple[int, int], line_end: tuple[int, int],
-                 direction: str = 'any', projection_depth: int = 50):
+                 direction: str = 'any', projection_depth: int = 50,
+                 min_intersection_area: int = 100):
         self._p1 = np.array(line_start, dtype=np.float32)
         self._p2 = np.array(line_end, dtype=np.float32)
         self._direction_policy = direction
         self._projection_depth = projection_depth
+        self._min_intersection_area = min_intersection_area  # 新增：最小相交面积阈值
 
         # 预计算线方程 ax + by + c = 0
         self._a = self._p1[1] - self._p2[1]
@@ -143,7 +145,7 @@ class LineCrossingDetectorPlus:
         # 预计算法向量 (单位向量)
         self._normal_vector = np.array([self._a, self._b], dtype=np.float32)
 
-        self._track_history = {}  # {tid: {"last_point": pt, "last_side": side, "alarm_cooldown": N}}
+        self._track_history = {}  # {tid: {"last_point": pt, "last_side": side, "cooldown": N}}
 
     def _get_side(self, point: np.ndarray) -> int:
         """计算点在线的哪一侧"""
@@ -255,25 +257,27 @@ class LineCrossingDetectorPlus:
                 pass  # 保持默认值
             overlap_ratio = intersection_area / (bbox_area + 1e-6)
 
-            # --- 4. 输出结果 ---
-            dir_str = "in" if crossing_direction > 0 else "out"
-            logger.warning(
-                f"[ALARM][{stream_id}] Line Crossing! TID:{tid_int}, Dir:{dir_str}, "
-                f"Dist:{perpendicular_dist:.1f}, Ratio:{overlap_ratio:.2f}"
-            )
-            alarmed_tracks[tid_int] = {
-                "direction": dir_str,
-                "distance": perpendicular_dist,
-                "ratio": overlap_ratio,
-                "crossing_zone_poly": crossing_zone_poly.tolist(),
-                "intersection_poly": intersection_poly.tolist() if intersection_poly is not None else None,
-                "line_start": self._p1.tolist(),
-                "line_end": self._p2.tolist(),
-                "projection_vector": proj_dir.tolist()
-            }
-            history["cooldown"] = 10  # 冷却几帧防止重复报警
+            # --- 4. 报警有效性验证 & 输出 ---
+            # 新增：仅当相交面积满足阈值时才触发报警，此举可有效过滤抖动
+            if intersection_area >= self._min_intersection_area:
+                dir_str = "in" if crossing_direction > 0 else "out"
+                logger.warning(
+                    f"[ALARM][{stream_id}] Line Crossing! TID:{tid_int}, Dir:{dir_str}, "
+                    f"Dist:{perpendicular_dist:.1f}, Ratio:{overlap_ratio:.2f}, Area:{intersection_area:.0f}"
+                )
+                alarmed_tracks[tid_int] = {
+                    "direction": dir_str,
+                    "distance": perpendicular_dist,
+                    "ratio": overlap_ratio,
+                    "crossing_zone_poly": crossing_zone_poly.tolist(),
+                    "intersection_poly": intersection_poly.tolist() if intersection_poly is not None else None,
+                    "line_start": self._p1.tolist(),
+                    "line_end": self._p2.tolist(),
+                    "projection_vector": proj_dir.tolist()
+                }
+                history["cooldown"] = 10  # 冷却几帧防止重复报警
 
-            # 更新历史
+            # 无论是否报警，都更新历史状态，为下一帧方向判断提供稳定依据
             history.update({"last_point": current_point, "last_side": current_side})
 
         # 清理消失的track
@@ -649,7 +653,8 @@ class FeatureProcessor:
                             line_cfg["start"],
                             line_cfg["end"],
                             line_cfg.get("direction", "any"),
-                            line_cfg.get("projection_depth", 50)
+                            line_cfg.get("projection_depth", 50),
+                            line_cfg.get("min_intersection_area", 100)  # 从配置中读取面积阈值
                         )
                         logger.info(f"Initialized LineCrossingDetector '{line_name}' for stream '{stream_id}'.")
 

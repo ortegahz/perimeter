@@ -33,6 +33,7 @@ PITCH_SCORE_LOWER_TH = PITCH_RATIO_LOWER_TH
 PITCH_SCORE_UPPER_TH = PITCH_RATIO_UPPER_TH
 
 PROJECTION_DEPTH = 1024
+MIN_INTERSECTION_AREA = 256
 
 cv2.imshow("__init__", np.zeros((1, 1, 3), np.uint8))
 cv2.waitKey(1)
@@ -147,14 +148,16 @@ BOUNDARY_CONFIG = {
                 "start": (1200, 60),  # Example: a vertical line in the middle
                 "end": (1400, 1280),
                 "direction": "any",
-                "projection_depth": PROJECTION_DEPTH  # 沿法线方向延伸的深度（像素）
+                "projection_depth": PROJECTION_DEPTH,  # 沿法线方向延伸的深度（像素）
+                "min_intersection_area": MIN_INTERSECTION_AREA  # 新增：触发报警所需的最小相交像素面积
             },
             {
                 "name": "Line_2",
                 "start": (1000, 700),
                 "end": (2000, 700),
                 "direction": "any",
-                "projection_depth": PROJECTION_DEPTH
+                "projection_depth": PROJECTION_DEPTH,
+                "min_intersection_area": MIN_INTERSECTION_AREA  # 新增：触发报警所需的最小相交像素面积
             }
         ]
     },
