@@ -269,6 +269,7 @@ class LineCrossingDetectorPlus:
                     "direction": dir_str,
                     "distance": perpendicular_dist,
                     "ratio": overlap_ratio,
+                    "area": intersection_area,
                     "crossing_zone_poly": crossing_zone_poly.tolist(),
                     "intersection_poly": intersection_poly.tolist() if intersection_poly is not None else None,
                     "line_start": self._p1.tolist(),
@@ -976,8 +977,10 @@ class FeatureProcessor:
                 alarm_geometry = None
                 if alarm_type.startswith('_AL') and len(state_tuple) > 2:
                     cross_info = state_tuple[2]
-                    dist, ratio = cross_info.get("distance", 0), cross_info.get("ratio", 0)
-                    info_str = f"{info_str_base}_D{dist:.0f}_R{ratio:.2f}"
+                    dist = cross_info.get("distance", 0)
+                    ratio = cross_info.get("ratio", 0)
+                    area = cross_info.get("area", 0)
+                    info_str = f"{info_str_base}_D{dist:.0f}_R{ratio:.2f}_A{area:.0f}"
                     alarm_geometry = cross_info
                 else:
                     info_str = info_str_base
