@@ -145,7 +145,7 @@ class LineCrossingDetectorPlus:
         # 预计算法向量 (单位向量)
         self._normal_vector = np.array([self._a, self._b], dtype=np.float32)
 
-        self._track_history = {}  # {tid: {"last_point": pt, "last_side": side, "cooldown": N}}
+        self._track_history = {}  # {tid: {"last_point": pt, "last_side": side, "has_alarmed": False}}
 
     def _get_side(self, point: np.ndarray) -> int:
         """计算点在线的哪一侧"""
@@ -179,10 +179,10 @@ class LineCrossingDetectorPlus:
 
         for d in dets:
             tid_int = d['id']
-            history = self._track_history.setdefault(tid_int, {"last_point": None, "last_side": None, "cooldown": 0})
+            history = self._track_history.setdefault(tid_int, {"last_point": None, "last_side": None, "has_alarmed": False})
 
-            if history["cooldown"] > 0:
-                history["cooldown"] -= 1
+            # If this track has already triggered an alarm, skip it.
+            if history.get("has_alarmed", False):
                 continue
 
             x, y, w, h = d['tlwh']
@@ -276,7 +276,7 @@ class LineCrossingDetectorPlus:
                     "line_end": self._p2.tolist(),
                     "projection_vector": proj_dir.tolist()
                 }
-                history["cooldown"] = 10  # 冷却几帧防止重复报警
+                history["has_alarmed"] = True  # Mark as alarmed to prevent re-triggering
 
             # 无论是否报警，都更新历史状态，为下一帧方向判断提供稳定依据
             history.update({"last_point": current_point, "last_side": current_side})
