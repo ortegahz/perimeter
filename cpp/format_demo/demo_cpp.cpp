@@ -156,7 +156,7 @@ int main(int argc, char **argv) {
     // --- 可调参数 ---
     std::string VIDEO_PATH = "/mnt/nfs/64.mp4";
     // 注意：请确保 RAW_DIR 指向与 Python 端一致的 v2 版本缓存（包含face_info）
-    std::string RAW_DIR = "/mnt/nfs/cache_v2";
+    std::string RAW_DIR = "/mnt/nfs/cache_v4";
     std::string CAM_ID = "cam1";
     int SKIP = 2;
     float SHOW_SCALE = 0.5;
@@ -175,7 +175,7 @@ int main(int argc, char **argv) {
 
     std::string FEATURE_CACHE_JSON, OUTPUT_TXT, OUTPUT_VIDEO_PATH;
     if (MODE == "load") {
-        FEATURE_CACHE_JSON = "/mnt/nfs/features_cache_v2.json";
+        FEATURE_CACHE_JSON = "/mnt/nfs/features_cache_v4.json";
         OUTPUT_TXT = "/mnt/nfs/output_result_cpp_load.txt";
         OUTPUT_VIDEO_PATH = "/mnt/nfs/output_video_cpp_load.mp4";
     } else { // realtime

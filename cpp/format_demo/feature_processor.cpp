@@ -724,30 +724,33 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
         throw std::invalid_argument("Invalid mode: " + mode_ + ". Choose 'realtime' or 'load'.");
     }
 
-    // ... (boundary config and other setup remains the same)
-    if (!boundary_config.is_null()) {
-        for (auto const &[stream_id, config]: boundary_config.items()) {
-            if (config.contains("intrusion_poly")) {
-                std::vector<cv::Point> poly;
-                for (const auto &pt_json: config["intrusion_poly"]) {
-                    poly.emplace_back(pt_json[0].get<int>(), pt_json[1].get<int>());
-                }
-                intrusion_detectors[stream_id] = std::make_unique<IntrusionDetector>(poly);
-                std::cout << "Initialized IntrusionDetector for stream '" << stream_id << "'." << std::endl;
-            }
-            if (config.contains("crossing_lines")) {
-                for (const auto& line_cfg : config["crossing_lines"]) {
-                    std::string line_name = line_cfg.value("name", "line_default");
-                    cv::Point start(line_cfg["start"][0].get<int>(), line_cfg["start"][1].get<int>());
-                    cv::Point end(line_cfg["end"][0].get<int>(), line_cfg["end"][1].get<int>());
-                    std::string direction = line_cfg.value("direction", "any");
-                    int proj_depth = line_cfg.value("projection_depth", 50);
-                    int min_area = line_cfg.value("min_intersection_area", 100);
-                    line_crossing_detectors[stream_id][line_name] = std::make_unique<LineCrossingDetectorPlus>(start, end, direction, proj_depth, min_area);
-                    std::cout << "Initialized LineCrossingDetectorPlus '" << line_name << "' for stream '" << stream_id << "'." << std::endl;
-                }
-            }
+    // --- Hardcoded Boundary Configuration (replaces loading from config.json) ---
+    {
+        const std::string stream_id = "cam1";
+        const int PROJECTION_DEPTH = 1024;
+        const int MIN_INTERSECTION_AREA = 4096 * 2; // 8192
+
+        // --- Crossing Line: Line_1 ---
+        {
+            const std::string line_name = "Line_1";
+            const cv::Point start(1200, 60);
+            const cv::Point end(1400, 1280);
+            const std::string direction = "any";
+            line_crossing_detectors[stream_id][line_name] = std::make_unique<LineCrossingDetectorPlus>(
+                start, end, direction, PROJECTION_DEPTH, MIN_INTERSECTION_AREA);
+            std::cout << "Initialized hardcoded LineCrossingDetectorPlus '" << line_name << "' for stream '" << stream_id << "'." << std::endl;
         }
+        // --- Crossing Line: Line_2 ---
+        {
+            const std::string line_name = "Line_2";
+            const cv::Point start(1000, 700);
+            const cv::Point end(2000, 700);
+            const std::string direction = "any";
+            line_crossing_detectors[stream_id][line_name] = std::make_unique<LineCrossingDetectorPlus>(
+                start, end, direction, PROJECTION_DEPTH, MIN_INTERSECTION_AREA);
+            std::cout << "Initialized hardcoded LineCrossingDetectorPlus '" << line_name << "' for stream '" << stream_id << "'." << std::endl;
+        }
+        // Intrusion poly is commented out in the Python reference, so it's not added here.
     }
 
     // ======================= 【MODIFIED: 初始化逻辑变更】 =======================
