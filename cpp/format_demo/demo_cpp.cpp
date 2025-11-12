@@ -198,8 +198,9 @@ int main(int argc, char **argv) {
         try {
             config_json = nlohmann::json::parse(ifs);
             std::cout << "Successfully loaded settings from " << CONFIG_FILE_PATH << std::endl;
-        } catch (const nlohmann::json::parse_error& e) {
-            std::cerr << "Warning: Could not parse config.json for settings. Using defaults. Error: " << e.what() << std::endl;
+        } catch (const nlohmann::json::parse_error &e) {
+            std::cerr << "Warning: Could not parse config.json for settings. Using defaults. Error: " << e.what()
+                      << std::endl;
         }
     }
 
@@ -240,7 +241,8 @@ int main(int argc, char **argv) {
         }
 
         std::ofstream fout(OUTPUT_TXT);
-        fout << "frame_id,cam_id,tid,gid,score,n_tid,alarm_type,alarm_direction,alarm_distance,alarm_ratio,alarm_area\n";
+        fout
+                << "frame_id,cam_id,tid,gid,score,n_tid,alarm_type,alarm_direction,alarm_distance,alarm_ratio,alarm_area\n";
         fout << std::fixed << std::setprecision(4);
 
         uint64_t fid = 0;          // 全局递增帧号（无限循环或单次）
@@ -341,10 +343,12 @@ int main(int argc, char **argv) {
                     for (const auto &alarm: proc_output.alarms) {
                         std::cout << "  - GID: " << alarm.gid << "\n";
                         std::cout << "  - Recognition Count (n): " << alarm.n << "\n";
-                        std::cout << "  - First Seen Time: " << format_ntp_timestamp(alarm.first_seen_timestamp) << "\n";
+                        std::cout << "  - First Seen Time: " << format_ntp_timestamp(alarm.first_seen_timestamp)
+                                  << "\n";
                         std::cout << "  - Last Seen Time: " << format_ntp_timestamp(alarm.last_seen_timestamp)
                                   << "\n";
-                        std::cout << "  - Face Clarity: " << std::fixed << std::setprecision(1) << alarm.face_clarity_score << "/100\n"
+                        std::cout << "  - Face Clarity: " << std::fixed << std::setprecision(1)
+                                  << alarm.face_clarity_score << "/100\n"
                                   << "\n";
                     }
                 }
@@ -353,8 +357,8 @@ int main(int argc, char **argv) {
                 cv::Mat vis;
                 cv::resize(frame, vis, vis_size);
 
-                const auto& cam_map = proc_output.mp.count(CAM_ID) ? proc_output.mp.at(CAM_ID)
-                                      : std::map<int, std::tuple<std::string, float, int, std::optional<AlarmGeometry>>>{};
+                const auto &cam_map = proc_output.mp.count(CAM_ID) ? proc_output.mp.at(CAM_ID)
+                                                                   : std::map<int, std::tuple<std::string, float, int, std::optional<AlarmGeometry>>>{};
 
                 // ======================= 【可视化部分保持不变】 =======================
                 for (const auto &det: loaded_data.packet.dets) {
@@ -377,45 +381,47 @@ int main(int argc, char **argv) {
                         full_gid_str = std::get<0>(tpl);
                         score = std::get<1>(tpl);
                         n_tid = std::get<2>(tpl);
-                        const auto& geom_opt = std::get<3>(tpl); // Get optional geometry
+                        const auto &geom_opt = std::get<3>(tpl); // Get optional geometry
 
-                        bool is_alarm = (full_gid_str.find("_AA") != std::string::npos || full_gid_str.find("_AL") != std::string::npos);
+                        bool is_alarm = (full_gid_str.find("_AA") != std::string::npos ||
+                                         full_gid_str.find("_AL") != std::string::npos);
 
                         if (is_alarm) {
-                             color_override = cv::Scalar(0, 255, 255); // Yellow for alarm
+                            color_override = cv::Scalar(0, 255, 255); // Yellow for alarm
 
-                             if (geom_opt.has_value()) {
-                                 const auto& geom = geom_opt.value();
-                                 cv::Mat overlay = vis.clone();
-                                 double alpha = 0.3;
+                            if (geom_opt.has_value()) {
+                                const auto &geom = geom_opt.value();
+                                cv::Mat overlay = vis.clone();
+                                double alpha = 0.3;
 
-                                 // Draw crossing zone
-                                 if (!geom.crossing_zone_poly.empty()) {
-                                     std::vector<cv::Point> poly_scaled;
-                                     for(const auto& pt : geom.crossing_zone_poly) {
-                                         poly_scaled.emplace_back(pt.x * SHOW_SCALE, pt.y * SHOW_SCALE);
-                                     }
-                                     cv::fillConvexPoly(overlay, poly_scaled, cv::Scalar(0, 255, 255), cv::LINE_AA);
-                                 }
+                                // Draw crossing zone
+                                if (!geom.crossing_zone_poly.empty()) {
+                                    std::vector<cv::Point> poly_scaled;
+                                    for (const auto &pt: geom.crossing_zone_poly) {
+                                        poly_scaled.emplace_back(pt.x * SHOW_SCALE, pt.y * SHOW_SCALE);
+                                    }
+                                    cv::fillConvexPoly(overlay, poly_scaled, cv::Scalar(0, 255, 255), cv::LINE_AA);
+                                }
 
-                                 // Draw intersection
-                                 if (!geom.intersection_poly.empty()) {
-                                     std::vector<cv::Point> poly_scaled;
-                                     for(const auto& pt : geom.intersection_poly) {
-                                         poly_scaled.emplace_back(pt.x * SHOW_SCALE, pt.y * SHOW_SCALE);
-                                     }
-                                     cv::fillConvexPoly(overlay, poly_scaled, cv::Scalar(0, 0, 255), cv::LINE_AA);
-                                 }
+                                // Draw intersection
+                                if (!geom.intersection_poly.empty()) {
+                                    std::vector<cv::Point> poly_scaled;
+                                    for (const auto &pt: geom.intersection_poly) {
+                                        poly_scaled.emplace_back(pt.x * SHOW_SCALE, pt.y * SHOW_SCALE);
+                                    }
+                                    cv::fillConvexPoly(overlay, poly_scaled, cv::Scalar(0, 0, 255), cv::LINE_AA);
+                                }
 
-                                 cv::addWeighted(overlay, alpha, vis, 1 - alpha, 0, vis);
+                                cv::addWeighted(overlay, alpha, vis, 1 - alpha, 0, vis);
 
-                                 // Draw projection vector
-                                if (geom.line_start != cv::Point2f(0,0) && geom.line_end != cv::Point2f(0,0)) {
+                                // Draw projection vector
+                                if (geom.line_start != cv::Point2f(0, 0) && geom.line_end != cv::Point2f(0, 0)) {
                                     cv::Point2f line_center = (geom.line_start + geom.line_end) * 0.5f;
                                     cv::Point arr_start(line_center.x * SHOW_SCALE, line_center.y * SHOW_SCALE);
                                     cv::Point2f proj_end_pt = line_center + geom.projection_vector * 50.f;
                                     cv::Point arr_end(proj_end_pt.x * SHOW_SCALE, proj_end_pt.y * SHOW_SCALE);
-                                    cv::arrowedLine(vis, arr_start, arr_end, cv::Scalar(255, 255, 0), 2, cv::LINE_8, 0, 0.3);
+                                    cv::arrowedLine(vis, arr_start, arr_end, cv::Scalar(255, 255, 0), 2, cv::LINE_8, 0,
+                                                    0.3);
                                 }
                             }
                         }
@@ -429,7 +435,7 @@ int main(int argc, char **argv) {
                             // Strip alarm details for display
                             if (gid_part.find("_AL") != std::string::npos) {
                                 gid_part = gid_part.substr(0, gid_part.find("_AL"));
-                             }
+                            }
 
                             if (next_underscore != std::string::npos) {
                                 gid_part = gid_part.substr(0, next_underscore);
@@ -495,15 +501,15 @@ int main(int argc, char **argv) {
                                                  {0,   128, 0},
                                                  {0,   0,   128}};
                     cv::Scalar color = (color_override[0] != -1)
-                                       ? color_override : cv::Scalar(0,0,0);
+                                       ? color_override : cv::Scalar(0, 0, 0);
                     if (color_override[0] == -1) {
-                         // 在单路视频中，为不同 GID 使用调色板以区分
-                         size_t g_pos = display_status.find('G');
-                         int color_idx_val = det.id;
-                         if (g_pos == 0) {
+                        // 在单路视频中，为不同 GID 使用调色板以区分
+                        size_t g_pos = display_status.find('G');
+                        int color_idx_val = det.id;
+                        if (g_pos == 0) {
                             try { color_idx_val = std::stoi(display_status.substr(1)); } catch (...) {}
-                         }
-                         color = colors[color_idx_val % (sizeof(colors)/sizeof(cv::Scalar))];
+                        }
+                        color = colors[color_idx_val % (sizeof(colors) / sizeof(cv::Scalar))];
                     }
                     // --- 获取框的坐标 ---
                     int x = static_cast<int>(det.tlwh.x * SHOW_SCALE);
@@ -557,11 +563,11 @@ int main(int argc, char **argv) {
                     std::sort(sorted_tids.begin(), sorted_tids.end());
 
                     for (int tid: sorted_tids) {
-                        const auto& tpl = proc_output.mp.at(CAM_ID).at(tid);
-                        const std::string& full_str = std::get<0>(tpl);
+                        const auto &tpl = proc_output.mp.at(CAM_ID).at(tid);
+                        const std::string &full_str = std::get<0>(tpl);
                         float score = std::get<1>(tpl);
                         int n_tid = std::get<2>(tpl);
-                        const auto& geom_opt = std::get<3>(tpl); // Get the optional geometry
+                        const auto &geom_opt = std::get<3>(tpl); // Get the optional geometry
 
                         // --- NEW LOGIC TO MATCH PYTHON ---
                         std::string gid_to_write = full_str; // Step 1: Initialize with full string
@@ -602,14 +608,17 @@ int main(int argc, char **argv) {
                                 alarm_direction = geom_opt->direction;
                             }
                         } else if (gid_to_write.find("_AA") != std::string::npos) {
-                           alarm_type = "intrusion";
-                           // For intrusion, gid_to_write is NOT modified, which matches python.
+                            alarm_type = "intrusion";
+                            // For intrusion, gid_to_write is NOT modified, which matches python.
                         }
 
                         fout << fid << ',' << CAM_ID << ',' << tid << ','
-                             << gid_to_write << ',' << std::fixed << std::setprecision(4) << score << ',' << n_tid << ','
-                             << alarm_type << ',' << alarm_direction << ',' << std::setprecision(2) << alarm_distance << ','
-                             << std::setprecision(4) << alarm_ratio << ',' << std::setprecision(2) << alarm_area << "\n";
+                             << gid_to_write << ',' << std::fixed << std::setprecision(4) << score << ',' << n_tid
+                             << ','
+                             << alarm_type << ',' << alarm_direction << ',' << std::setprecision(2) << alarm_distance
+                             << ','
+                             << std::setprecision(4) << alarm_ratio << ',' << std::setprecision(2) << alarm_area
+                             << "\n";
                     }
                 }
 

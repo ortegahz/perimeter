@@ -19,7 +19,7 @@
 
 // ======================= 【新增宏：控制冷却逻辑调试打印】 =======================
 // 取消注释此行以启用关于 GID 识别冷却逻辑的详细打印
- #define ENABLE_COOLDOWN_DEBUG_PRINTS
+#define ENABLE_COOLDOWN_DEBUG_PRINTS
 // ======================= 【新增结束】 =======================
 
 // ======================= 【MODIFIED】 =======================
@@ -62,7 +62,7 @@ static std::string format_ntp_timestamp(GstClockTime ntp_timestamp) {
  * @param face_patch RGB格式的人脸图像块。
  * @return 0.0f (非常模糊) 到 100.0f (非常清晰) 的浮点数分数。
  */
-static float calculate_clarity_score(const cv::Mat& face_patch) {
+static float calculate_clarity_score(const cv::Mat &face_patch) {
     if (face_patch.empty()) {
         return 0.0f;
     }
@@ -91,7 +91,8 @@ static float calculate_clarity_score(const cv::Mat& face_patch) {
  * @param image_size 原始图像的尺寸。
  * @return 如果是正脸则返回 true，否则返回 false。
  */
-static bool is_frontal_face_pnp(const std::vector<cv::Point2f>& kps, cv::Size image_size, double yaw_th, double roll_th, double pitch_ratio_lower_th, double pitch_ratio_upper_th) {
+static bool is_frontal_face_pnp(const std::vector<cv::Point2f> &kps, cv::Size image_size, double yaw_th, double roll_th,
+                                double pitch_ratio_lower_th, double pitch_ratio_upper_th) {
 
     if (kps.size() != 5) {
         return false;
@@ -262,7 +263,7 @@ main_representation_with_patch_cpp(const T &data_deque, float outlier_thr = 1.5f
 
 
 // ======================= 【NEW: LineCrossingDetectorPlus & Helpers】 =======================
-static float polygon_intersect_area(const std::vector<cv::Point2f>& poly1, const std::vector<cv::Point2f>& poly2) {
+static float polygon_intersect_area(const std::vector<cv::Point2f> &poly1, const std::vector<cv::Point2f> &poly2) {
     if (poly1.empty() || poly2.empty()) {
         return 0.0f;
     }
@@ -272,12 +273,12 @@ static float polygon_intersect_area(const std::vector<cv::Point2f>& poly1, const
     return area;
 }
 
-LineCrossingDetectorPlus::LineCrossingDetectorPlus(const cv::Point& start, const cv::Point& end,
-                                                   const std::string& direction,
+LineCrossingDetectorPlus::LineCrossingDetectorPlus(const cv::Point &start, const cv::Point &end,
+                                                   const std::string &direction,
                                                    int projection_depth,
                                                    int min_intersection_area)
-    : _p1(start), _p2(end), _direction_policy(direction),
-      _projection_depth(projection_depth), _min_intersection_area(min_intersection_area) {
+        : _p1(start), _p2(end), _direction_policy(direction),
+          _projection_depth(projection_depth), _min_intersection_area(min_intersection_area) {
     _a = _p1.y - _p2.y;
     _b = _p2.x - _p1.x;
     _c = -_a * _p1.x - _b * _p1.y;
@@ -288,24 +289,26 @@ LineCrossingDetectorPlus::LineCrossingDetectorPlus(const cv::Point& start, const
     _normal_vector = cv::Point2f(_a, _b);
 }
 
-int LineCrossingDetectorPlus::_get_side(const cv::Point2f& point) const {
+int LineCrossingDetectorPlus::_get_side(const cv::Point2f &point) const {
     float val = _a * point.x + _b * point.y + _c;
     if (val > 1e-3f) return 1;
     if (val < -1e-3f) return -1;
     return 0;
 }
 
-std::map<uint64, AlarmGeometry> LineCrossingDetectorPlus::check(const std::vector<Detection>& dets, const std::string& stream_id) {
+std::map<uint64, AlarmGeometry>
+LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::string &stream_id) {
     std::map<uint64, AlarmGeometry> alarmed_tracks;
     std::set<uint64> current_tids;
 
-    for (const auto& d : dets) {
+    for (const auto &d: dets) {
         current_tids.insert(d.id);
-        auto& history = _track_history[d.id];
+        auto &history = _track_history[d.id];
         if (history.has_alarmed) continue;
 
         cv::Rect2f tlwh = d.tlwh;
-        std::vector<cv::Point2f> bbox_poly = {tlwh.tl(), {tlwh.x + tlwh.width, tlwh.y}, tlwh.br(), {tlwh.x, tlwh.y + tlwh.height}};
+        std::vector<cv::Point2f> bbox_poly = {tlwh.tl(), {tlwh.x + tlwh.width, tlwh.y}, tlwh.br(),
+                                              {tlwh.x, tlwh.y + tlwh.height}};
         cv::Point2f current_point = get_foot_point(tlwh);
         float bbox_area = tlwh.area();
 
@@ -313,7 +316,7 @@ std::map<uint64, AlarmGeometry> LineCrossingDetectorPlus::check(const std::vecto
         bool trajectory_crossed = (history.last_side != 0 && current_side != 0 && current_side != history.last_side);
 
         std::vector<int> vertex_sides;
-        for (const auto& v : bbox_poly) vertex_sides.push_back(_get_side(v));
+        for (const auto &v: bbox_poly) vertex_sides.push_back(_get_side(v));
         bool bbox_intersects = (std::find(vertex_sides.begin(), vertex_sides.end(), 1) != vertex_sides.end() &&
                                 std::find(vertex_sides.begin(), vertex_sides.end(), -1) != vertex_sides.end());
 
@@ -340,23 +343,27 @@ std::map<uint64, AlarmGeometry> LineCrossingDetectorPlus::check(const std::vecto
         if ((_direction_policy == "in" && !is_in) || (_direction_policy == "out" && is_in)) continue;
 
         cv::Point2f proj_dir = is_in ? _normal_vector : -_normal_vector;
-        std::vector<cv::Point2f> crossing_zone_poly = {_p1, _p2, _p2 + proj_dir * (float)_projection_depth, _p1 + proj_dir * (float)_projection_depth};
+        std::vector<cv::Point2f> crossing_zone_poly = {_p1, _p2, _p2 + proj_dir * (float) _projection_depth,
+                                                       _p1 + proj_dir * (float) _projection_depth};
         std::vector<cv::Point2f> intersection_poly_vec;
         float intersection_area = cv::intersectConvexConvex(bbox_poly, crossing_zone_poly, intersection_poly_vec, true);
 
         if (intersection_area >= _min_intersection_area) {
-            alarmed_tracks[d.id] = {crossing_zone_poly, intersection_poly_vec, _p1, _p2, proj_dir, is_in ? "in" : "out", static_cast<float>((current_point - _p1).ddot(_normal_vector)), intersection_area / (bbox_area + 1e-6f), intersection_area};
+            alarmed_tracks[d.id] = {crossing_zone_poly, intersection_poly_vec, _p1, _p2, proj_dir, is_in ? "in" : "out",
+                                    static_cast<float>((current_point - _p1).ddot(_normal_vector)),
+                                    intersection_area / (bbox_area + 1e-6f), intersection_area};
             history.has_alarmed = true;
         }
         history.last_point = current_point;
         history.last_side = current_side;
     }
 
-    for (auto it = _track_history.cbegin(); it != _track_history.cend(); ) {
+    for (auto it = _track_history.cbegin(); it != _track_history.cend();) {
         if (current_tids.find(it->first) == current_tids.end()) it = _track_history.erase(it); else ++it;
     }
     return alarmed_tracks;
 }
+
 /* ================= TrackAgg ================= */
 bool TrackAgg::check_consistency(const std::deque<std::vector<float>> &feats, float thr) {
     if (feats.size() < 2) return true;
@@ -400,7 +407,7 @@ std::pair<std::vector<float>, cv::Mat> TrackAgg::main_face_feat_and_patch() cons
 
     // 为兼容 main_representation_with_patch_cpp 模板函数，创建一个临时的、不包含姿态和分数信息的 deque
     std::deque<std::tuple<std::vector<float>, cv::Mat>> face_data_for_main_rep;
-    for (const auto &rec : face) {
+    for (const auto &rec: face) {
         face_data_for_main_rep.emplace_back(std::get<0>(rec), std::get<1>(rec));
     }
 
@@ -414,7 +421,7 @@ std::pair<std::vector<float>, cv::Mat> TrackAgg::main_face_feat_and_patch() cons
 
 int TrackAgg::count_high_quality_faces(float score_thr) const {
     int count = 0;
-    for (const auto &record : face) {
+    for (const auto &record: face) {
         bool is_frontal = std::get<2>(record);
         float score = std::get<3>(record);
         if (is_frontal && score >= score_thr) {
@@ -495,7 +502,8 @@ static void _add_or_update_prototype(
     auto original_size = feat_list.size();
     auto [new_lst, keep_mask] = remove_outliers_cpp(feat_list, 3.0f);
     if (new_lst.size() != original_size) {
-        std::cout << "[GlobalID] Outlier detected: " << original_size - new_lst.size() << " from GID " << pure_gid << "/"
+        std::cout << "[GlobalID] Outlier detected: " << original_size - new_lst.size() << " from GID " << pure_gid
+                  << "/"
                   << type << std::endl;
 
         std::vector<std::string> files_to_del;
@@ -535,7 +543,8 @@ std::string GlobalID::new_gid() {
 }
 
 int
-GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f, bool is_face_only_mode) {
+GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &face_f, const std::vector<float> &body_f,
+                           bool is_face_only_mode) {
     if (!bank_faces.count(gid)) return 0;
     if (!bank_faces[gid].empty() && !face_f.empty() && sim_vec(face_f, avg_feats(bank_faces[gid])) < FACE_THR_STRICT)
         return -1;
@@ -600,7 +609,7 @@ nlohmann::json FeatureProcessor::_load_or_create_config() {
             std::ifstream ifs(CONFIG_FILE_PATH);
             ifs >> config;
             std::cout << "Successfully loaded configuration from: " << CONFIG_FILE_PATH << std::endl;
-        } catch (const nlohmann::json::parse_error& e) {
+        } catch (const nlohmann::json::parse_error &e) {
             std::cerr << "Warning: Failed to parse config file '" << CONFIG_FILE_PATH << "'. Error: " << e.what()
                       << ". Using default values." << std::endl;
             config = nlohmann::json{}; // Reset to empty json on parse error
@@ -629,7 +638,7 @@ nlohmann::json FeatureProcessor::_load_or_create_config() {
             ofs << default_config.dump(4); // 使用4个空格缩进，使其更易读
             ofs.close();
             std::cout << "Successfully created a default config file at '" << CONFIG_FILE_PATH << "'." << std::endl;
-        } catch (const std::exception& e) {
+        } catch (const std::exception &e) {
             std::cerr << "Error: Failed to create default config file. Reason: " << e.what() << std::endl;
         }
         // 无论文件是否创建成功，都为本次运行加载默认配置，以防止传入一个空的（null）JSON对象。
@@ -680,7 +689,8 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     std::cout << ">>> Face-only det score threshold set to: " << m_face_det_min_score_face_only << std::endl;
     std::cout << ">>> Pose Yaw threshold set to: " << m_pose_yaw_th << std::endl;
     std::cout << ">>> Pose Roll threshold set to: " << m_pose_roll_th << std::endl;
-    std::cout << ">>> Pose Pitch Ratio threshold set to: [" << m_pose_pitch_ratio_lower_th << ", " << m_pose_pitch_ratio_upper_th << "]" << std::endl;
+    std::cout << ">>> Pose Pitch Ratio threshold set to: [" << m_pose_pitch_ratio_lower_th << ", "
+              << m_pose_pitch_ratio_upper_th << "]" << std::endl;
     std::cout << ">>> GID Recognition Cooldown set to: " << cooldown_s << " s" << std::endl;
 
 
@@ -737,8 +747,9 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
             const cv::Point end(1400, 1280);
             const std::string direction = "any";
             line_crossing_detectors[stream_id][line_name] = std::make_unique<LineCrossingDetectorPlus>(
-                start, end, direction, PROJECTION_DEPTH, MIN_INTERSECTION_AREA);
-            std::cout << "Initialized hardcoded LineCrossingDetectorPlus '" << line_name << "' for stream '" << stream_id << "'." << std::endl;
+                    start, end, direction, PROJECTION_DEPTH, MIN_INTERSECTION_AREA);
+            std::cout << "Initialized hardcoded LineCrossingDetectorPlus '" << line_name << "' for stream '"
+                      << stream_id << "'." << std::endl;
         }
         // --- Crossing Line: Line_2 ---
         {
@@ -747,8 +758,9 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
             const cv::Point end(2000, 700);
             const std::string direction = "any";
             line_crossing_detectors[stream_id][line_name] = std::make_unique<LineCrossingDetectorPlus>(
-                start, end, direction, PROJECTION_DEPTH, MIN_INTERSECTION_AREA);
-            std::cout << "Initialized hardcoded LineCrossingDetectorPlus '" << line_name << "' for stream '" << stream_id << "'." << std::endl;
+                    start, end, direction, PROJECTION_DEPTH, MIN_INTERSECTION_AREA);
+            std::cout << "Initialized hardcoded LineCrossingDetectorPlus '" << line_name << "' for stream '"
+                      << stream_id << "'." << std::endl;
         }
         // Intrusion poly is commented out in the Python reference, so it's not added here.
     }
@@ -930,7 +942,8 @@ void FeatureProcessor::_io_worker() {
                             if (type_start_pos != std::string::npos) {
                                 size_t type_end_pos = task.path_suffix.find('/', type_start_pos + 1);
                                 if (type_end_pos != std::string::npos) {
-                                    proto_type = task.path_suffix.substr(type_start_pos + 1, type_end_pos - (type_start_pos + 1));
+                                    proto_type = task.path_suffix.substr(type_start_pos + 1,
+                                                                         type_end_pos - (type_start_pos + 1));
                                     idx_str = task.path_suffix.substr(type_end_pos + 1);
                                 }
                             }
@@ -938,7 +951,7 @@ void FeatureProcessor::_io_worker() {
                         }
 
                         if (proto_idx != -1) {
-                            const char* sql = "INSERT OR REPLACE INTO prototypes (gid, type, idx, feature, image) VALUES (?, ?, ?, ?, ?);";
+                            const char *sql = "INSERT OR REPLACE INTO prototypes (gid, type, idx, feature, image) VALUES (?, ?, ?, ?, ?);";
                             sqlite3_stmt *stmt;
                             if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
                                 std::vector<uchar> img_buf;
@@ -1334,7 +1347,8 @@ FeatureProcessor::trigger_alarm(const std::string &tid_str, const std::string &g
         if (gid != ogid && sim_vec(cur_rep, rep) >= m_alarm_dup_thr) {
             // 如果是不同的 GID 但特征相似，则抑制本次报警。
             std::cout << "\n[ALARM SUPPRESSED] GID " << gid << " is similar to already alarmed GID "
-                      << ogid << " (Similarity threshold: " << m_alarm_dup_thr << "). Suppressing this alarm." << std::endl;
+                      << ogid << " (Similarity threshold: " << m_alarm_dup_thr << "). Suppressing this alarm."
+                      << std::endl;
             return std::nullopt; // 返回空 optional 来抑制报警
         }
     }
@@ -1410,7 +1424,7 @@ void FeatureProcessor::_check_and_process_alarm(
         float face_det_score,
         float face_clarity,
         bool is_face_only_mode,
-        const std::vector<float>& current_face_feat,
+        const std::vector<float> &current_face_feat,
         float current_match_thr) {
 
     /* -------- 动态计算当前 GID 是否处于冷却期 -------- */
@@ -1462,9 +1476,9 @@ void FeatureProcessor::_check_and_process_alarm(
     double alarmDuration_threshold = 0.0;
     if (current_alarm_duration_ms > 0) {
         if (use_fid_time_) {
-            alarmDuration_threshold = (double)current_alarm_duration_ms / 1000.0 * FPS_ESTIMATE;
+            alarmDuration_threshold = (double) current_alarm_duration_ms / 1000.0 * FPS_ESTIMATE;
         } else {
-            alarmDuration_threshold = (double)current_alarm_duration_ms / 1000.0;
+            alarmDuration_threshold = (double) current_alarm_duration_ms / 1000.0;
         }
     }
 
@@ -1536,27 +1550,29 @@ void FeatureProcessor::_check_and_process_alarm(
                 // 如果触发过，检查当时关联的GID是否与现在的GID相同
                 // 新增：如果当前 GID 处于冷却状态，即使是新的 TID，也强制复用 n 值，不重新计算
                 if (is_on_cooldown) {
-                     recalculate_n = false;
-                     business_n = gid_alarm_business_counts_.count(gid) ? gid_alarm_business_counts_.at(gid) : 0;
-                     std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for GID " << gid << " on new TID " << tid_str << " because GID is in cooldown." << std::endl;
-                }
-                else if (tid_last_gid_for_n_.count(tid_str) && tid_last_gid_for_n_.at(tid_str) == gid) {
+                    recalculate_n = false;
+                    business_n = gid_alarm_business_counts_.count(gid) ? gid_alarm_business_counts_.at(gid) : 0;
+                    std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for GID " << gid << " on new TID "
+                              << tid_str << " because GID is in cooldown." << std::endl;
+                } else if (tid_last_gid_for_n_.count(tid_str) && tid_last_gid_for_n_.at(tid_str) == gid) {
                     // GID未变，直接复用之前的n值
                     business_n = tid_to_business_n_.at(tid_str);
                     recalculate_n = false;
-                    std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for same GID " << gid << " on TID: " << tid_str << std::endl;
+                    std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for same GID " << gid << " on TID: "
+                              << tid_str << std::endl;
                 } else {
                     // GID发生了变化（TID漂移），需要为新的GID重新计算n
                     std::cout << "\n[n_DEBUG] GID changed for TID " << tid_str << ". From "
-                                << (tid_last_gid_for_n_.count(tid_str) ? tid_last_gid_for_n_.at(tid_str) : "N/A")
-                                << " to " << gid << ". Recalculating n." << std::endl;
+                              << (tid_last_gid_for_n_.count(tid_str) ? tid_last_gid_for_n_.at(tid_str) : "N/A")
+                              << " to " << gid << ". Recalculating n." << std::endl;
                 }
             }
-            // 新增：如果当前 GID 处于冷却状态，即使是新的 TID，也强制复用 n 值，不重新计算
+                // 新增：如果当前 GID 处于冷却状态，即使是新的 TID，也强制复用 n 值，不重新计算
             else if (is_on_cooldown) {
                 recalculate_n = false;
                 business_n = gid_alarm_business_counts_.count(gid) ? gid_alarm_business_counts_.at(gid) : 0;
-                std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for GID " << gid << " on new TID " << tid_str << " because GID is in cooldown." << std::endl;
+                std::cout << "\n[n_DEBUG] Reusing n=" << business_n << " for GID " << gid << " on new TID " << tid_str
+                          << " because GID is in cooldown." << std::endl;
                 tid_to_business_n_[tid_str] = business_n; // 锁定这个TID到复用的n值
             }
 
@@ -1565,7 +1581,8 @@ void FeatureProcessor::_check_and_process_alarm(
             if (recalculate_n || business_n == 0) {
                 // 首次触发报警，或TID关联的GID发生变化，需要计算新的n值
                 if (!tid_to_business_n_.count(tid_str)) {
-                    std::cout << "\n[n_DEBUG] New alarm TID: " << tid_str << " for GID: " << gid << ". Calculating new n..." << std::endl;
+                    std::cout << "\n[n_DEBUG] New alarm TID: " << tid_str << " for GID: " << gid
+                              << ". Calculating new n..." << std::endl;
                 }
                 int last_n_for_gid = gid_alarm_business_counts_.count(gid) ? gid_alarm_business_counts_.at(gid) : 0;
                 std::cout << "          - Last recorded n for GID was: " << last_n_for_gid << std::endl;
@@ -1574,7 +1591,8 @@ void FeatureProcessor::_check_and_process_alarm(
                 gid_alarm_business_counts_[gid] = business_n;
                 tid_to_business_n_[tid_str] = business_n;
                 tid_last_gid_for_n_[tid_str] = gid;
-                std::cout << "          - Global count for GID updated. TID " << tid_str << " locked to n=" << business_n << " for GID " << gid << "." << std::endl;
+                std::cout << "          - Global count for GID updated. TID " << tid_str << " locked to n="
+                          << business_n << " for GID " << gid << "." << std::endl;
             }
 
             alarm_info.n = business_n;
@@ -1595,11 +1613,20 @@ void FeatureProcessor::_check_and_process_alarm(
                           << "  First Seen: " << format_ntp_timestamp(alarm_info.first_seen_timestamp) << "\n"
                           << "  Last Seen: " << format_ntp_timestamp(alarm_info.last_seen_timestamp) << "\n"
                           << "  Recognition Count (n): " << alarm_info.n << "\n"
-                          << "  Face Clarity: " << std::fixed << std::setprecision(1) << alarm_info.face_clarity_score << "/100\n"
-                          << "  Person Bbox: [" << alarm_info.person_bbox.x << ", " << alarm_info.person_bbox.y << ", " << alarm_info.person_bbox.width << ", " << alarm_info.person_bbox.height << "]\n"
-                          << "  Face Bbox: [" << alarm_info.face_bbox.x << ", " << alarm_info.face_bbox.y << ", " << alarm_info.face_bbox.width << ", " << alarm_info.face_bbox.height << "]\n"
-                          << "  Body Patch Size: " << (!alarm_info.latest_body_patch.empty() ? std::to_string(alarm_info.latest_body_patch.cols) + "x" + std::to_string(alarm_info.latest_body_patch.rows) : "empty") << "\n"
-                          << "  Face Patch Size: " << (!alarm_info.latest_face_patch.empty() ? std::to_string(alarm_info.latest_face_patch.cols) + "x" + std::to_string(alarm_info.latest_face_patch.rows) : "empty") << "\n"
+                          << "  Face Clarity: " << std::fixed << std::setprecision(1) << alarm_info.face_clarity_score
+                          << "/100\n"
+                          << "  Person Bbox: [" << alarm_info.person_bbox.x << ", " << alarm_info.person_bbox.y << ", "
+                          << alarm_info.person_bbox.width << ", " << alarm_info.person_bbox.height << "]\n"
+                          << "  Face Bbox: [" << alarm_info.face_bbox.x << ", " << alarm_info.face_bbox.y << ", "
+                          << alarm_info.face_bbox.width << ", " << alarm_info.face_bbox.height << "]\n"
+                          << "  Body Patch Size: " << (!alarm_info.latest_body_patch.empty() ?
+                                                       std::to_string(alarm_info.latest_body_patch.cols) + "x" +
+                                                       std::to_string(alarm_info.latest_body_patch.rows) : "empty")
+                          << "\n"
+                          << "  Face Patch Size: " << (!alarm_info.latest_face_patch.empty() ?
+                                                       std::to_string(alarm_info.latest_face_patch.cols) + "x" +
+                                                       std::to_string(alarm_info.latest_face_patch.rows) : "empty")
+                          << "\n"
                           << "-------------------------------------\n";
                 // ======================= 【新增结束】 =======================
                 output.alarms.push_back(alarm_info);
@@ -1689,9 +1716,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AA", std::nullopt};
     }
     if (line_crossing_detectors.count(stream_id)) {
-        for (auto const& [line_name, detector] : line_crossing_detectors.at(stream_id)) {
+        for (auto const &[line_name, detector]: line_crossing_detectors.at(stream_id)) {
             auto alarms = detector->check(dets, stream_id);
-            for (auto const& [tid, geom] : alarms) {
+            for (auto const &[tid, geom]: alarms) {
                 behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AL_" + line_name, geom};
             }
         }
@@ -1746,9 +1773,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     double gid_cooldown_threshold = 0.0;
     if (current_gid_cooldown_ms > 0) {
         if (use_fid_time_) {
-            gid_cooldown_threshold = (double)current_gid_cooldown_ms / 1000.0 * FPS_ESTIMATE;
+            gid_cooldown_threshold = (double) current_gid_cooldown_ms / 1000.0 * FPS_ESTIMATE;
         } else {
-            gid_cooldown_threshold = (double)current_gid_cooldown_ms / 1000.0;
+            gid_cooldown_threshold = (double) current_gid_cooldown_ms / 1000.0;
         }
     }
 
@@ -1793,7 +1820,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 if (fut_reid.wait_for(std::chrono::milliseconds(300)) == std::future_status::ready) {
                     feat_mat_gpu = fut_reid.get();
                 } else {
-                    std::cerr << "Re-ID DLA inference timeout for TID " << det.id << ", cam_id: " << stream_id << std::endl;
+                    std::cerr << "Re-ID DLA inference timeout for TID " << det.id << ", cam_id: " << stream_id
+                              << std::endl;
                     continue; // Skip this detection if DLA hangs
                 }
                 if (feat_mat_gpu.empty()) continue;
@@ -1852,7 +1880,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         // 阶段一：使用宽松的分数阈值收集人脸，为后续严格检查做准备
                         if (face_global_coords.det_score < RELAXED_FACE_SCORE_THR) continue;
                         // 获取姿态标志，但在此阶段不进行过滤
-                        is_frontal = is_frontal_face_pnp(face_global_coords.kps, cpu_frame.size(), m_pose_yaw_th, m_pose_roll_th, m_pose_pitch_ratio_lower_th, m_pose_pitch_ratio_upper_th);
+                        is_frontal = is_frontal_face_pnp(face_global_coords.kps, cpu_frame.size(), m_pose_yaw_th,
+                                                         m_pose_roll_th, m_pose_pitch_ratio_lower_th,
+                                                         m_pose_pitch_ratio_upper_th);
                     } else {
                         // 在混合模式下，保持原有的分数检查逻辑
                         if (face_global_coords.det_score < current_face_det_min_score) continue;
@@ -2015,50 +2045,57 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             state.cand_gid = cand_gid;
             int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f, is_face_only_mode);
             if (state.count >= CANDIDATE_FRAMES && flag_code == 0) {
-                #ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
+#ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
                 if (gid_cooldown_threshold > 0) {
-                     std::cout << "\n[COOLDOWN_DEBUG] TID: " << tid_str << ", GID: " << cand_gid
-                               << ", Cooldown Check ACTIVE (threshold=" << std::fixed << std::setprecision(3) << gid_cooldown_threshold
-                               << (use_fid_time_ ? " frames" : "s") << ")\n";
+                    std::cout << "\n[COOLDOWN_DEBUG] TID: " << tid_str << ", GID: " << cand_gid
+                              << ", Cooldown Check ACTIVE (threshold=" << std::fixed << std::setprecision(3)
+                              << gid_cooldown_threshold
+                              << (use_fid_time_ ? " frames" : "s") << ")\n";
                 }
-                #endif
+#endif
                 // 重置冷却状态，为当前TID的检查做准备
                 on_cooldown = false;
                 if (gid_cooldown_threshold > 0 && gid_last_recognized_time.count(cand_gid)) {
                     double time_since_last_rec = now_stamp - gid_last_recognized_time.at(cand_gid);
 
-                    #ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
-                    std::cout << "                 > Now: " << now_stamp << ", Last Rec @: " << gid_last_recognized_time.at(cand_gid)
+#ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
+                    std::cout << "                 > Now: " << now_stamp << ", Last Rec @: "
+                              << gid_last_recognized_time.at(cand_gid)
                               << ", Delta: " << time_since_last_rec << "\n";
-                    std::cout << "                 > Check: Is Delta (" << time_since_last_rec << ") < Threshold (" << gid_cooldown_threshold << ") ?\n";
-                    #endif
+                    std::cout << "                 > Check: Is Delta (" << time_since_last_rec << ") < Threshold ("
+                              << gid_cooldown_threshold << ") ?\n";
+#endif
 
                     if (time_since_last_rec < gid_cooldown_threshold) {
                         on_cooldown = true;
                     }
                 }
 
-                #ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
+#ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
                 if (gid_cooldown_threshold > 0) {
-                    std::cout << "                 > Result: on_cooldown = " << (on_cooldown ? "true" : "false") << "\n";
+                    std::cout << "                 > Result: on_cooldown = " << (on_cooldown ? "true" : "false")
+                              << "\n";
                 }
-                #endif
+#endif
 
                 // 核心修改：无论是否在冷却期，只要成功识别并绑定，就立即更新其“最后出现时间”。
                 // 这会持续刷新冷却计时器，直到目标消失超过冷却时间为止。
                 gids_recognized_this_frame.insert(cand_gid);
 
                 // 调用 bind 更新原型，但根据冷却状态决定是否增加 n
-                gid_mgr.bind(cand_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "", !on_cooldown); // creation_reason is empty, increment_n is conditional
+                gid_mgr.bind(cand_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "",
+                             !on_cooldown); // creation_reason is empty, increment_n is conditional
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
 
                 if (!on_cooldown) { // 冷却时间已过或首次识别
-                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n, std::nullopt};
+                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n,
+                                                std::nullopt};
                 } else {
                     // 冷却时间内 (n 未增加)，不重置计时器，但在UI上显示特殊状态
-                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid + "_-9_cool", score, n, std::nullopt};
+                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid + "_-9_cool",
+                                                score, n, std::nullopt};
                 }
             } else {
                 std::string flag = (flag_code == -1) ? "_-4_ud_f" : (flag_code == -2) ? "_-4_ud_b" : "_-4_c";
@@ -2082,17 +2119,20 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             gid_last_recognized_time[new_gid] = now_stamp;
             int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
             output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n, std::nullopt};
-        } else if (!cand_gid.empty() && score >= THR_NEW_GID && mode_ == "load") { // Reason 3: Ambiguous, pending for a long time
+        } else if (!cand_gid.empty() && score >= THR_NEW_GID &&
+                   mode_ == "load") { // Reason 3: Ambiguous, pending for a long time
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 std::string new_gid = gid_mgr.new_gid(); // Pure GID
-                gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "similar_pending"); // 默认 increment_n=true
+                gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this,
+                             "similar_pending"); // 默认 increment_n=true
                 tid2gid[tid_str] = new_gid;
                 candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                 new_gid_state[tid_str] = {0, fid, 0};
                 gids_recognized_this_frame.insert(new_gid);
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n, std::nullopt};
+                output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n,
+                                            std::nullopt};
             } else {
                 output.mp[s_id][tid_num] = {tid_str + "_-7", score, 0, std::nullopt};
             }
@@ -2104,18 +2144,22 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     // ======================= 【MODIFIED: 新增高质量人脸检查点】 =======================
                     if (is_face_only_mode) {
                         if (agg.count_high_quality_faces(m_face_det_min_score_face_only) < current_min_face_4_gid) {
-                            output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0, std::nullopt}; // hq: high quality
+                            output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0,
+                                                        std::nullopt}; // hq: high quality
                             continue;
                         }
                     }
                     // ======================= 【修改结束】 =======================
                     std::string new_gid = gid_mgr.new_gid(); // Pure GID
-                    gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "dissimilar"); // 默认 increment_n=true
+                    gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this,
+                                 "dissimilar"); // 默认 increment_n=true
                     tid2gid[tid_str] = new_gid;
                     candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                     new_gid_state[tid_str] = {0, fid, 0};
                     gids_recognized_this_frame.insert(new_gid);
-                    int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;output.mp[s_id][tid_num] = { s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n, std::nullopt };
+                    int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
+                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n,
+                                                std::nullopt};
                 } else {
                     output.mp[s_id][tid_num] = {tid_str + "_-5", -1.0f, 0, std::nullopt};
                 }
@@ -2133,14 +2177,14 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             // 主要的判断逻辑现在封装在 _check_and_process_alarm 函数内部。
             // 我们传递所有相关的上下文信息，由它来决定是否触发报警。
             _check_and_process_alarm(
-                output, config, tid_str, bound_gid, agg, now_stamp, now_stamp_gst,
-                duration, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
-                w_face,
-                current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
-                current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
-                is_face_only_mode, // 模式
-                current_face_feat, // 特征
-                current_match_thr
+                    output, config, tid_str, bound_gid, agg, now_stamp, now_stamp_gst,
+                    duration, dets, stream_id, body_p, face_p, triggered_alarms_this_frame,
+                    w_face,
+                    current_frame_face_scores_.count(tid_str) ? current_frame_face_scores_.at(tid_str) : 0.f,
+                    current_frame_face_clarity_.count(tid_str) ? current_frame_face_clarity_.at(tid_str) : 0.f,
+                    is_face_only_mode, // 模式
+                    current_face_feat, // 特征
+                    current_match_thr
             );
         }
         // ======================= 【NEW: Consolidated Cooldown Timer Reset Logic】 =======================
@@ -2150,14 +2194,17 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         // 1. 对于一个已识别的TID，只要它还在视野中，就持续刷新其GID的冷却时间。
         // 2. 对于一个新识别并绑定的TID，立即为其GID启动冷却计时。
         if (tid2gid.count(tid_str)) {
-            const std::string& bound_gid = tid2gid.at(tid_str);
-            #ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
-            if (gid_cooldown_threshold > 0 && (!gid_last_recognized_time.count(bound_gid) || std::abs(gid_last_recognized_time.at(bound_gid) - now_stamp) > 1e-6)) {
-                 std::cout << "[COOLDOWN_DEBUG] TID: " << tid_str << ", GID: " << bound_gid
-                           << " -> END-OF-LOOP TIMESTAMP REFRESH. Old: " << (gid_last_recognized_time.count(bound_gid) ? std::to_string(gid_last_recognized_time.at(bound_gid)) : "N/A")
-                           << ", New: " << now_stamp << "\n";
+            const std::string &bound_gid = tid2gid.at(tid_str);
+#ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
+            if (gid_cooldown_threshold > 0 && (!gid_last_recognized_time.count(bound_gid) ||
+                                               std::abs(gid_last_recognized_time.at(bound_gid) - now_stamp) > 1e-6)) {
+                std::cout << "[COOLDOWN_DEBUG] TID: " << tid_str << ", GID: " << bound_gid
+                          << " -> END-OF-LOOP TIMESTAMP REFRESH. Old: "
+                          << (gid_last_recognized_time.count(bound_gid) ? std::to_string(
+                                  gid_last_recognized_time.at(bound_gid)) : "N/A")
+                          << ", New: " << now_stamp << "\n";
             }
-            #endif
+#endif
             gid_last_recognized_time[bound_gid] = now_stamp;
         }
         // ======================= 【修改结束】 =======================
@@ -2169,7 +2216,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     {
         std::lock_guard<std::mutex> lock(m_gid_mutex_);
         // 在处理完本帧所有TID后，统一更新所有被识别到的GID的冷却时间戳
-        for (const auto& gid : gids_recognized_this_frame) {
+        for (const auto &gid: gids_recognized_this_frame) {
             gid_last_recognized_time[gid] = now_stamp;
         }
 
@@ -2181,14 +2228,14 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 std::string s_id = full_tid.substr(0, last_underscore);
                 int t_id_int = std::stoi(full_tid.substr(last_underscore + 1));
 
-                 const auto& alarm_type_base = std::get<1>(state_tuple);
-                 const auto& alarm_geom_opt = std::get<2>(state_tuple);
+                const auto &alarm_type_base = std::get<1>(state_tuple);
+                const auto &alarm_geom_opt = std::get<2>(state_tuple);
 
                 // Corrected Logic: Overwrite any existing result with the alarm information, mirroring Python's behavior.
                 std::string bound_gid = tid2gid.count(full_tid) ? tid2gid.at(full_tid) : "";
                 int n_tid = 0;
                 if (!bound_gid.empty() && gid_mgr.tid_hist.count(bound_gid)) {
-                     n_tid = gid_mgr.tid_hist.at(bound_gid).size();
+                    n_tid = gid_mgr.tid_hist.at(bound_gid).size();
                 }
 
                 // Construct the base info string with GID (if available) and alarm type
@@ -2198,12 +2245,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
                 // Append details if available, same as Python
                 if (alarm_geom_opt.has_value()) {
-                    const auto& geom = alarm_geom_opt.value();
+                    const auto &geom = alarm_geom_opt.value();
                     std::stringstream detail_ss;
-                        detail_ss << std::fixed << std::setprecision(0) << "_D" << geom.distance
-                                  << std::setprecision(2) << "_R" << geom.ratio
-                                  << std::setprecision(0) << "_A" << geom.area;
-                        info_str += detail_ss.str();
+                    detail_ss << std::fixed << std::setprecision(0) << "_D" << geom.distance
+                              << std::setprecision(2) << "_R" << geom.ratio
+                              << std::setprecision(0) << "_A" << geom.area;
+                    info_str += detail_ss.str();
                 }
 
                 // Perform the overwrite
@@ -2263,10 +2310,10 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             gid_alarm_business_counts_.erase(gid_del);
 
 #ifdef ENABLE_DISK_IO
-        IoTask task;
-        task.type = IoTaskType::CLEANUP_GID_DIR;
-        task.gid = gid_del;
-        submit_io_task(task);
+            IoTask task;
+            task.type = IoTaskType::CLEANUP_GID_DIR;
+            task.gid = gid_del;
+            submit_io_task(task);
 #endif
         }
     } // 锁在此处自动释放

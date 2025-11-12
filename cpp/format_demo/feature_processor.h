@@ -191,13 +191,13 @@ private:
  */
 class LineCrossingDetectorPlus {
 public:
-    LineCrossingDetectorPlus(const cv::Point& start, const cv::Point& end,
-                             const std::string& direction = "any",
+    LineCrossingDetectorPlus(const cv::Point &start, const cv::Point &end,
+                             const std::string &direction = "any",
                              int projection_depth = 50,
                              int min_intersection_area = 100);
 
     // Returns a map of <tid, details> for each track that triggered an alarm this frame.
-    std::map<uint64, AlarmGeometry> check(const std::vector<Detection>& dets, const std::string& stream_id);
+    std::map<uint64, AlarmGeometry> check(const std::vector<Detection> &dets, const std::string &stream_id);
 
 private:
     float _a, _b, _c;
@@ -208,12 +208,13 @@ private:
     int _min_intersection_area;
 
     struct TrackHistory {
-        cv::Point2f last_point = {0,0};
+        cv::Point2f last_point = {0, 0};
         int last_side = 0;
         bool has_alarmed = false;
     };
     std::map<uint64, TrackHistory> _track_history;
-    int _get_side(const cv::Point2f& point) const;
+
+    int _get_side(const cv::Point2f &point) const;
 };
 
 /**
