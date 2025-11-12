@@ -2184,46 +2184,30 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                  const auto& alarm_type_base = std::get<1>(state_tuple);
                  const auto& alarm_geom_opt = std::get<2>(state_tuple);
 
-                // This part might override GID recognition results, which is intended for alarms.
-                if (output.mp[s_id].count(t_id_int)) {
-                    auto& existing_tuple = output.mp[s_id][t_id_int];
-                    std::string& info_str_ref = std::get<0>(existing_tuple);
+                // Corrected Logic: Overwrite any existing result with the alarm information, mirroring Python's behavior.
+                std::string bound_gid = tid2gid.count(full_tid) ? tid2gid.at(full_tid) : "";
+                int n_tid = 0;
+                if (!bound_gid.empty() && gid_mgr.tid_hist.count(bound_gid)) {
+                     n_tid = gid_mgr.tid_hist.at(bound_gid).size();
+                }
 
-                    // Append alarm type
-                    info_str_ref += alarm_type_base;
+                // Construct the base info string with GID (if available) and alarm type
+                std::string info_str = !bound_gid.empty()
+                                       ? (full_tid + "_" + bound_gid + alarm_type_base)
+                                       : (full_tid + "_-1" + alarm_type_base);
 
-                    // Append details if available
-                    if (alarm_geom_opt.has_value()) {
-                        const auto& geom = alarm_geom_opt.value();
-                        std::stringstream detail_ss;
-                        detail_ss << std::fixed << std::setprecision(0) << "_D" << geom.distance
-                                  << std::setprecision(2) << "_R" << geom.ratio
-                                  << std::setprecision(0) << "_A" << geom.area;
-                        info_str_ref += detail_ss.str();
-                        // Also update the geometry in the output tuple
-                        std::get<3>(existing_tuple) = alarm_geom_opt;
-                    }
-                    // Update score and n_tid for alarm indication
-                    std::get<1>(existing_tuple) = 1.0f;
-                } else {
-            std::string bound_gid = tid2gid.count(full_tid) ? tid2gid.at(full_tid) : "";
-            int n_tid = 0;
-            if (!bound_gid.empty() && gid_mgr.tid_hist.count(bound_gid)) {
-                n_tid = gid_mgr.tid_hist.at(bound_gid).size();
-            }
-            std::string info_str = !bound_gid.empty() ? (full_tid + "_" + bound_gid + std::get<1>(state_tuple)) : (
-                    full_tid + "_-1" + std::get<1>(state_tuple));
-
-                    if (alarm_geom_opt.has_value()) {
-                        const auto& geom = alarm_geom_opt.value();
-                        std::stringstream detail_ss;
+                // Append details if available, same as Python
+                if (alarm_geom_opt.has_value()) {
+                    const auto& geom = alarm_geom_opt.value();
+                    std::stringstream detail_ss;
                         detail_ss << std::fixed << std::setprecision(0) << "_D" << geom.distance
                                   << std::setprecision(2) << "_R" << geom.ratio
                                   << std::setprecision(0) << "_A" << geom.area;
                         info_str += detail_ss.str();
-                    }
-                    output.mp[s_id][t_id_int] = {info_str, 1.0f, n_tid, alarm_geom_opt};
                 }
+
+                // Perform the overwrite
+                output.mp[s_id][t_id_int] = {info_str, 1.0f, n_tid, alarm_geom_opt};
             }
         }
         behavior_alarm_state = active_alarms;
