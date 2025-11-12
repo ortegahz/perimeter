@@ -240,7 +240,7 @@ int main(int argc, char **argv) {
         }
 
         std::ofstream fout(OUTPUT_TXT);
-        fout << "frame_id,cam_id,tid,gid,score,n_tid\n";
+        fout << "frame_id,cam_id,tid,gid,score,n_tid,alarm_type,alarm_direction,alarm_distance,alarm_ratio,alarm_area\n";
         fout << std::fixed << std::setprecision(4);
 
         uint64_t fid = 0;          // 全局递增帧号（无限循环或单次）
@@ -353,8 +353,8 @@ int main(int argc, char **argv) {
                 cv::Mat vis;
                 cv::resize(frame, vis, vis_size);
 
-                const auto &cam_map = proc_output.mp.count(CAM_ID) ? proc_output.mp.at(CAM_ID)
-                                                                   : std::map<int, std::tuple<std::string, float, int>>{};
+                const auto& cam_map = proc_output.mp.count(CAM_ID) ? proc_output.mp.at(CAM_ID)
+                                      : std::map<int, std::tuple<std::string, float, int, std::optional<AlarmGeometry>>>{};
 
                 // ======================= 【可视化部分保持不变】 =======================
                 for (const auto &det: loaded_data.packet.dets) {
@@ -362,6 +362,7 @@ int main(int argc, char **argv) {
                     float score = -1.0f;
                     int n_tid = 0;
                     std::string display_status = "G:-?";
+                    std::string full_gid_str = ""; // For logic that needs the full string
                     int color_id = det.id;
                     cv::Scalar color_override(-1, -1, -1); // 用于强制指定颜色的哨兵值
 
@@ -373,9 +374,51 @@ int main(int argc, char **argv) {
                     // --- 检查此 TID 是否有处理器返回的结果 ---
                     if (cam_map.count(det.id)) {
                         const auto &tpl = cam_map.at(det.id);
-                        const std::string &full_gid_str = std::get<0>(tpl);
+                        full_gid_str = std::get<0>(tpl);
                         score = std::get<1>(tpl);
                         n_tid = std::get<2>(tpl);
+                        const auto& geom_opt = std::get<3>(tpl); // Get optional geometry
+
+                        bool is_alarm = (full_gid_str.find("_AA") != std::string::npos || full_gid_str.find("_AL") != std::string::npos);
+
+                        if (is_alarm) {
+                             color_override = cv::Scalar(0, 255, 255); // Yellow for alarm
+
+                             if (geom_opt.has_value()) {
+                                 const auto& geom = geom_opt.value();
+                                 cv::Mat overlay = vis.clone();
+                                 double alpha = 0.3;
+
+                                 // Draw crossing zone
+                                 if (!geom.crossing_zone_poly.empty()) {
+                                     std::vector<cv::Point> poly_scaled;
+                                     for(const auto& pt : geom.crossing_zone_poly) {
+                                         poly_scaled.emplace_back(pt.x * SHOW_SCALE, pt.y * SHOW_SCALE);
+                                     }
+                                     cv::fillConvexPoly(overlay, poly_scaled, cv::Scalar(0, 255, 255), cv::LINE_AA);
+                                 }
+
+                                 // Draw intersection
+                                 if (!geom.intersection_poly.empty()) {
+                                     std::vector<cv::Point> poly_scaled;
+                                     for(const auto& pt : geom.intersection_poly) {
+                                         poly_scaled.emplace_back(pt.x * SHOW_SCALE, pt.y * SHOW_SCALE);
+                                     }
+                                     cv::fillConvexPoly(overlay, poly_scaled, cv::Scalar(0, 0, 255), cv::LINE_AA);
+                                 }
+
+                                 cv::addWeighted(overlay, alpha, vis, 1 - alpha, 0, vis);
+
+                                 // Draw projection vector
+                                if (geom.line_start != cv::Point2f(0,0) && geom.line_end != cv::Point2f(0,0)) {
+                                    cv::Point2f line_center = (geom.line_start + geom.line_end) * 0.5f;
+                                    cv::Point arr_start(line_center.x * SHOW_SCALE, line_center.y * SHOW_SCALE);
+                                    cv::Point2f proj_end_pt = line_center + geom.projection_vector * 50.f;
+                                    cv::Point arr_end(proj_end_pt.x * SHOW_SCALE, proj_end_pt.y * SHOW_SCALE);
+                                    cv::arrowedLine(vis, arr_start, arr_end, cv::Scalar(255, 255, 0), 2, cv::LINE_8, 0, 0.3);
+                                }
+                            }
+                        }
 
                         // --- 解析 full_gid_str 以生成用于显示的状态文本 ---
                         bool gid_found = false;
@@ -383,6 +426,11 @@ int main(int argc, char **argv) {
                         if (g_pos != std::string::npos) {
                             std::string gid_part = full_gid_str.substr(g_pos + 1);
                             size_t next_underscore = gid_part.find('_');
+                            // Strip alarm details for display
+                            if (gid_part.find("_AL") != std::string::npos) {
+                                gid_part = gid_part.substr(0, gid_part.find("_AL"));
+                             }
+
                             if (next_underscore != std::string::npos) {
                                 gid_part = gid_part.substr(0, next_underscore);
                             }
@@ -396,11 +444,9 @@ int main(int argc, char **argv) {
 
                         // 检查行为告警，它可能附加在 GID 之后
                         if (full_gid_str.find("_AA") != std::string::npos) {
-                            display_status = (gid_found ? display_status + " " : "") + "Intrusion!";
-                            color_override = cv::Scalar(0, 0, 255); // 红色
+                            display_status = (gid_found ? display_status + " " : "") + "Intrusion";
                         } else if (full_gid_str.find("_AL") != std::string::npos) {
-                            display_status = (gid_found ? display_status + " " : "") + "Crossing!";
-                            color_override = cv::Scalar(0, 0, 255); // 红色
+                            display_status = (gid_found ? display_status + " " : "") + "Crossing";
                         } else if (full_gid_str.find("_-9_cool") != std::string::npos) {
                             // 如果 GID 在冷却状态，也附加状态文本
                             display_status = (gid_found ? display_status + " " : "") + "Cooldown";
@@ -449,9 +495,16 @@ int main(int argc, char **argv) {
                                                  {0,   128, 0},
                                                  {0,   0,   128}};
                     cv::Scalar color = (color_override[0] != -1)
-                                       ? color_override
-                                       : colors[color_id % (sizeof(colors) / sizeof(cv::Scalar))];
-
+                                       ? color_override : cv::Scalar(0,0,0);
+                    if (color_override[0] == -1) {
+                         // 在单路视频中，为不同 GID 使用调色板以区分
+                         size_t g_pos = display_status.find('G');
+                         int color_idx_val = det.id;
+                         if (g_pos == 0) {
+                            try { color_idx_val = std::stoi(display_status.substr(1)); } catch (...) {}
+                         }
+                         color = colors[color_idx_val % (sizeof(colors)/sizeof(cv::Scalar))];
+                    }
                     // --- 获取框的坐标 ---
                     int x = static_cast<int>(det.tlwh.x * SHOW_SCALE);
                     int y = static_cast<int>(det.tlwh.y * SHOW_SCALE);
@@ -505,8 +558,73 @@ int main(int argc, char **argv) {
 
                     for (int tid: sorted_tids) {
                         const auto &tpl = proc_output.mp.at(CAM_ID).at(tid);
+                        const std::string& full_str = std::get<0>(tpl);
+                        float score = std::get<1>(tpl);
+                        int n_tid = std::get<2>(tpl);
+                        const auto& geom_opt = std::get<3>(tpl); // Get the optional geometry
+
+                        // --- Parse the full string for output file ---
+                        std::string gid_to_write = "";
+                        std::string alarm_type = "";
+                        std::string alarm_direction = "";
+                        float alarm_distance = 0.0f;
+                        float alarm_ratio = 0.0f;
+                        float alarm_area = 0.0f;
+
+                        size_t al_pos = full_str.find("_AL_");
+                        size_t aa_pos = full_str.find("_AA");
+                        size_t details_pos = full_str.find("_D");
+
+                        std::string base_str_for_gid = full_str;
+
+                        if (al_pos != std::string::npos && details_pos != std::string::npos && details_pos > al_pos) {
+                            // Line crossing alarm with details
+                            std::string base_str = full_str.substr(0, details_pos);
+                            std::string details_str = full_str.substr(details_pos);
+                            base_str_for_gid = base_str;
+
+                             // Extract alarm sub-type (line name)
+                            alarm_type = "crossing_" + base_str.substr(al_pos + 4);
+
+                            // Parse details string like _D123_R0.45_A6789
+                            std::replace(details_str.begin(), details_str.end(), '_', ' ');
+                            std::stringstream ss(details_str);
+                            std::string part;
+                            while (ss >> part) {
+                                if (part.empty()) continue;
+                                char prefix = part[0];
+                                try {
+                                    std::string val_str = part.substr(1);
+                                    if (prefix == 'D') alarm_distance = std::stof(val_str);
+                                    else if (prefix == 'R') alarm_ratio = std::stof(val_str);
+                                    else if (prefix == 'A') alarm_area = std::stof(val_str);
+                                } catch (...) { /* ignore parse errors */ }
+                            }
+
+                            if (geom_opt.has_value()) {
+                                alarm_direction = geom_opt->direction;
+                            }
+
+                        } else if (aa_pos != std::string::npos) {
+                            alarm_type = "intrusion";
+                            base_str_for_gid = full_str.substr(0, aa_pos);
+                        }
+
+                        // Extract base GID from the (possibly-stripped) string
+                        size_t gid_pos = base_str_for_gid.rfind("_G");
+                        if (gid_pos != std::string::npos) {
+                           gid_to_write = base_str_for_gid.substr(gid_pos + 1);
+                            // Strip _AL_... suffix from pure GID for file output
+                           size_t alarm_suffix_pos = gid_to_write.find("_AL_");
+                           if (alarm_suffix_pos != std::string::npos) {
+                               gid_to_write = gid_to_write.substr(0, alarm_suffix_pos);
+                           }
+                        }
+
                         fout << fid << ',' << CAM_ID << ',' << tid << ','
-                             << std::get<0>(tpl) << ',' << std::get<1>(tpl) << ',' << std::get<2>(tpl) << "\n";
+                             << gid_to_write << ',' << std::fixed << std::setprecision(4) << score << ',' << n_tid << ','
+                             << alarm_type << ',' << alarm_direction << ','
+                             << std::setprecision(2) << alarm_distance << ',' << std::setprecision(4) << alarm_ratio << ',' << std::setprecision(2) << alarm_area << "\n";
                     }
                 }
 

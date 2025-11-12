@@ -15,6 +15,7 @@
 #include <ctime>   // For localtime_r and strftime
 #include <sstream>
 #include "cores/face/PoseEstimator.hpp" // 新增头文件
+#include <opencv2/imgproc.hpp> // For cv::intersectConvexConvex
 
 // ======================= 【新增宏：控制冷却逻辑调试打印】 =======================
 // 取消注释此行以启用关于 GID 识别冷却逻辑的详细打印
@@ -259,6 +260,103 @@ main_representation_with_patch_cpp(const T &data_deque, float outlier_thr = 1.5f
             {}};
 }
 
+
+// ======================= 【NEW: LineCrossingDetectorPlus & Helpers】 =======================
+static float polygon_intersect_area(const std::vector<cv::Point2f>& poly1, const std::vector<cv::Point2f>& poly2) {
+    if (poly1.empty() || poly2.empty()) {
+        return 0.0f;
+    }
+    std::vector<cv::Point2f> intersection;
+    // cv::intersectConvexConvex in OpenCV 4.x returns the area directly
+    float area = cv::intersectConvexConvex(poly1, poly2, intersection, true);
+    return area;
+}
+
+LineCrossingDetectorPlus::LineCrossingDetectorPlus(const cv::Point& start, const cv::Point& end,
+                                                   const std::string& direction,
+                                                   int projection_depth,
+                                                   int min_intersection_area)
+    : _p1(start), _p2(end), _direction_policy(direction),
+      _projection_depth(projection_depth), _min_intersection_area(min_intersection_area) {
+    _a = _p1.y - _p2.y;
+    _b = _p2.x - _p1.x;
+    _c = -_a * _p1.x - _b * _p1.y;
+    float norm = std::sqrt(_a * _a + _b * _b) + 1e-6f;
+    _a /= norm;
+    _b /= norm;
+    _c /= norm;
+    _normal_vector = cv::Point2f(_a, _b);
+}
+
+int LineCrossingDetectorPlus::_get_side(const cv::Point2f& point) const {
+    float val = _a * point.x + _b * point.y + _c;
+    if (val > 1e-3f) return 1;
+    if (val < -1e-3f) return -1;
+    return 0;
+}
+
+std::map<uint64, AlarmGeometry> LineCrossingDetectorPlus::check(const std::vector<Detection>& dets, const std::string& stream_id) {
+    std::map<uint64, AlarmGeometry> alarmed_tracks;
+    std::set<uint64> current_tids;
+
+    for (const auto& d : dets) {
+        current_tids.insert(d.id);
+        auto& history = _track_history[d.id];
+        if (history.has_alarmed) continue;
+
+        cv::Rect2f tlwh = d.tlwh;
+        std::vector<cv::Point2f> bbox_poly = {tlwh.tl(), {tlwh.x + tlwh.width, tlwh.y}, tlwh.br(), {tlwh.x, tlwh.y + tlwh.height}};
+        cv::Point2f current_point = get_foot_point(tlwh);
+        float bbox_area = tlwh.area();
+
+        int current_side = _get_side(current_point);
+        bool trajectory_crossed = (history.last_side != 0 && current_side != 0 && current_side != history.last_side);
+
+        std::vector<int> vertex_sides;
+        for (const auto& v : bbox_poly) vertex_sides.push_back(_get_side(v));
+        bool bbox_intersects = (std::find(vertex_sides.begin(), vertex_sides.end(), 1) != vertex_sides.end() &&
+                                std::find(vertex_sides.begin(), vertex_sides.end(), -1) != vertex_sides.end());
+
+        if (!trajectory_crossed && !bbox_intersects) {
+            history.last_point = current_point;
+            history.last_side = current_side;
+            continue;
+        }
+
+        int crossing_direction_sign = 0;
+        if (trajectory_crossed) {
+            crossing_direction_sign = current_side;
+        } else if (bbox_intersects && cv::norm(history.last_point) > 0) {
+            cv::Point2f motion_vector = current_point - history.last_point;
+            if (cv::norm(motion_vector) > 1e-6) {
+                float direction_sign_dot = motion_vector.ddot(_normal_vector);
+                if (std::abs(direction_sign_dot) > 1e-6) crossing_direction_sign = (direction_sign_dot > 0) ? 1 : -1;
+            }
+        }
+
+        if (crossing_direction_sign == 0) continue;
+
+        bool is_in = crossing_direction_sign > 0;
+        if ((_direction_policy == "in" && !is_in) || (_direction_policy == "out" && is_in)) continue;
+
+        cv::Point2f proj_dir = is_in ? _normal_vector : -_normal_vector;
+        std::vector<cv::Point2f> crossing_zone_poly = {_p1, _p2, _p2 + proj_dir * (float)_projection_depth, _p1 + proj_dir * (float)_projection_depth};
+        std::vector<cv::Point2f> intersection_poly_vec;
+        float intersection_area = cv::intersectConvexConvex(bbox_poly, crossing_zone_poly, intersection_poly_vec, true);
+
+        if (intersection_area >= _min_intersection_area) {
+            alarmed_tracks[d.id] = {crossing_zone_poly, intersection_poly_vec, _p1, _p2, proj_dir, is_in ? "in" : "out", static_cast<float>((current_point - _p1).ddot(_normal_vector)), intersection_area / (bbox_area + 1e-6f), intersection_area};
+            history.has_alarmed = true;
+        }
+        history.last_point = current_point;
+        history.last_side = current_side;
+    }
+
+    for (auto it = _track_history.cbegin(); it != _track_history.cend(); ) {
+        if (current_tids.find(it->first) == current_tids.end()) it = _track_history.erase(it); else ++it;
+    }
+    return alarmed_tracks;
+}
 /* ================= TrackAgg ================= */
 bool TrackAgg::check_consistency(const std::deque<std::vector<float>> &feats, float thr) {
     if (feats.size() < 2) return true;
@@ -637,13 +735,17 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
                 intrusion_detectors[stream_id] = std::make_unique<IntrusionDetector>(poly);
                 std::cout << "Initialized IntrusionDetector for stream '" << stream_id << "'." << std::endl;
             }
-            if (config.contains("crossing_line")) {
-                const auto &line_cfg = config["crossing_line"];
-                cv::Point start(line_cfg["start"][0].get<int>(), line_cfg["start"][1].get<int>());
-                cv::Point end(line_cfg["end"][0].get<int>(), line_cfg["end"][1].get<int>());
-                std::string direction = line_cfg.value("direction", "any");
-                line_crossing_detectors[stream_id] = std::make_unique<LineCrossingDetector>(start, end, direction);
-                std::cout << "Initialized LineCrossingDetector for stream '" << stream_id << "'." << std::endl;
+            if (config.contains("crossing_lines")) {
+                for (const auto& line_cfg : config["crossing_lines"]) {
+                    std::string line_name = line_cfg.value("name", "line_default");
+                    cv::Point start(line_cfg["start"][0].get<int>(), line_cfg["start"][1].get<int>());
+                    cv::Point end(line_cfg["end"][0].get<int>(), line_cfg["end"][1].get<int>());
+                    std::string direction = line_cfg.value("direction", "any");
+                    int proj_depth = line_cfg.value("projection_depth", 50);
+                    int min_area = line_cfg.value("min_intersection_area", 100);
+                    line_crossing_detectors[stream_id][line_name] = std::make_unique<LineCrossingDetectorPlus>(start, end, direction, proj_depth, min_area);
+                    std::cout << "Initialized LineCrossingDetectorPlus '" << line_name << "' for stream '" << stream_id << "'." << std::endl;
+                }
             }
         }
     }
@@ -1581,11 +1683,15 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
     if (intrusion_detectors.count(stream_id)) {
         for (int tid: intrusion_detectors.at(stream_id)->check(dets, stream_id))
-            behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AA"};
+            behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AA", std::nullopt};
     }
     if (line_crossing_detectors.count(stream_id)) {
-        for (int tid: line_crossing_detectors.at(stream_id)->check(dets, stream_id))
-            behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AL"};
+        for (auto const& [line_name, detector] : line_crossing_detectors.at(stream_id)) {
+            auto alarms = detector->check(dets, stream_id);
+            for (auto const& [tid, geom] : alarms) {
+                behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AL_" + line_name, geom};
+            }
+        }
     }
 
     // --- 核心修改：超时逻辑 ---
@@ -1840,19 +1946,19 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
         // 【修改】检查是否满足徘徊时间
         if (current_alarm_duration_ms > 0 && duration < alarmDuration_threshold and mode_ == "load") {
-            output.mp[s_id][tid_num] = {tid_str + "_-8_wait_d", -1.f, 0};
+            output.mp[s_id][tid_num] = {tid_str + "_-8_wait_d", -1.f, 0, std::nullopt};
             continue;
         }
 
         // 如果不是纯人脸模式，则检查body特征数量
         if (!is_face_only_mode && (int) agg.body.size() < MIN_BODY4GID) {
             std::string gid_str = tid_str + "_-1_b_" + std::to_string(agg.body.size());
-            output.mp[s_id][tid_num] = {gid_str, -1.f, 0};
+            output.mp[s_id][tid_num] = {gid_str, -1.f, 0, std::nullopt};
             continue;
         }
         if (face_enabled && (int) agg.face.size() < current_min_face_4_gid) {
             std::string gid_str = tid_str + "_-1_f_" + std::to_string(agg.face.size());
-            output.mp[s_id][tid_num] = {gid_str, -1.f, 0};
+            output.mp[s_id][tid_num] = {gid_str, -1.f, 0, std::nullopt};
             continue;
         }
 
@@ -1860,12 +1966,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         auto [body_f, body_p] = agg.main_body_feat_and_patch();
         // 如果启用了人脸但特征为空，则认为是不稳定状态
         if (face_enabled && face_f.empty()) {
-            output.mp[s_id][tid_num] = {tid_str + "_-2_f", -1.f, 0};
+            output.mp[s_id][tid_num] = {tid_str + "_-2_f", -1.f, 0, std::nullopt};
             continue;
         }
         // 如果不是纯人脸模式，则ReID特征是必须的
         if (!is_face_only_mode && body_f.empty()) {
-            output.mp[s_id][tid_num] = {tid_str + "_-2_b", -1.f, 0};
+            output.mp[s_id][tid_num] = {tid_str + "_-2_b", -1.f, 0, std::nullopt};
             continue;
         }
 
@@ -1895,7 +2001,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             if (!cand_gid.empty() && cand_gid != bound_gid && score >= current_match_thr &&
                 (fid - state.last_bind_fid) < BIND_LOCK_FRAMES) {
                 int n_tid = gid_mgr.tid_hist.count(bound_gid) ? (int) gid_mgr.tid_hist.at(bound_gid).size() : 0;
-                output.mp[s_id][tid_num] = {tid_str + "_-3", score, n_tid};
+                output.mp[s_id][tid_num] = {tid_str + "_-3", score, n_tid, std::nullopt};
                 continue;
             }
         }
@@ -1946,21 +2052,21 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
 
                 if (!on_cooldown) { // 冷却时间已过或首次识别
-                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n};
+                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid, score, n, std::nullopt};
                 } else {
                     // 冷却时间内 (n 未增加)，不重置计时器，但在UI上显示特殊状态
-                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid + "_-9_cool", score, n};
+                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + cand_gid + "_-9_cool", score, n, std::nullopt};
                 }
             } else {
                 std::string flag = (flag_code == -1) ? "_-4_ud_f" : (flag_code == -2) ? "_-4_ud_b" : "_-4_c";
-                output.mp[s_id][tid_num] = {tid_str + flag, -1.0f, 0};
+                output.mp[s_id][tid_num] = {tid_str + flag, -1.0f, 0, std::nullopt};
             }
         } else if (gid_mgr.bank_faces.empty()) {
             // Reason 1: The very first GID
             // ======================= 【MODIFIED: 新增高质量人脸检查点】 =======================
             if (is_face_only_mode) {
                 if (agg.count_high_quality_faces(m_face_det_min_score_face_only) < current_min_face_4_gid) {
-                    output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0}; // hq: high quality
+                    output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0, std::nullopt}; // hq: high quality
                     continue;
                 }
             }
@@ -1972,7 +2078,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             new_gid_state[tid_str].last_new_fid = fid;
             gid_last_recognized_time[new_gid] = now_stamp;
             int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-            output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
+            output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n, std::nullopt};
         } else if (!cand_gid.empty() && score >= THR_NEW_GID && mode_ == "load") { // Reason 3: Ambiguous, pending for a long time
             ng_state.ambig_count++;
             if (ng_state.ambig_count >= WAIT_FRAMES_AMBIGUOUS && time_since_last_new >= NEW_GID_TIME_WINDOW) {
@@ -1983,9 +2089,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 new_gid_state[tid_str] = {0, fid, 0};
                 gids_recognized_this_frame.insert(new_gid);
                 int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
+                output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n, std::nullopt};
             } else {
-                output.mp[s_id][tid_num] = {tid_str + "_-7", score, 0};
+                output.mp[s_id][tid_num] = {tid_str + "_-7", score, 0, std::nullopt};
             }
         } else if (score < THR_NEW_GID) { // score < THR_NEW_GID (Reason 2: Clearly dissimilar)
             ng_state.ambig_count = 0;
@@ -1995,7 +2101,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     // ======================= 【MODIFIED: 新增高质量人脸检查点】 =======================
                     if (is_face_only_mode) {
                         if (agg.count_high_quality_faces(m_face_det_min_score_face_only) < current_min_face_4_gid) {
-                            output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0}; // hq: high quality
+                            output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0, std::nullopt}; // hq: high quality
                             continue;
                         }
                     }
@@ -2006,13 +2112,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     candidate_state[tid_str] = {new_gid, CANDIDATE_FRAMES, fid};
                     new_gid_state[tid_str] = {0, fid, 0};
                     gids_recognized_this_frame.insert(new_gid);
-                    int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;
-                    output.mp[s_id][tid_num] = {s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n};
+                    int n = gid_mgr.tid_hist.count(new_gid) ? (int) gid_mgr.tid_hist[new_gid].size() : 0;output.mp[s_id][tid_num] = { s_id + "_" + std::to_string(tid_num) + "_" + new_gid, score, n, std::nullopt };
                 } else {
-                    output.mp[s_id][tid_num] = {tid_str + "_-5", -1.0f, 0};
+                    output.mp[s_id][tid_num] = {tid_str + "_-5", -1.0f, 0, std::nullopt};
                 }
             } else {
-                output.mp[s_id][tid_num] = {tid_str + "_-6", -1.0f, 0};
+                output.mp[s_id][tid_num] = {tid_str + "_-6", -1.0f, 0, std::nullopt};
             }
         }
 
@@ -2055,7 +2160,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         // ======================= 【修改结束】 =======================
     }
 
-    std::map<std::string, std::tuple<uint64_t, std::string>> active_alarms;
+    std::map<std::string, std::tuple<uint64_t, std::string, std::optional<AlarmGeometry>>> active_alarms;
 
     // 行为告警状态的更新也需要放在锁内，因为它可能与GID状态有关联
     {
@@ -2069,9 +2174,35 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             if (fid - std::get<0>(state_tuple) <= BEHAVIOR_ALARM_DURATION_FRAMES) {
                 active_alarms[full_tid] = state_tuple;
 
-            size_t last_underscore = full_tid.find_last_of('_');
-            std::string s_id = full_tid.substr(0, last_underscore);
-            int t_id_int = std::stoi(full_tid.substr(last_underscore + 1));
+                size_t last_underscore = full_tid.find_last_of('_');
+                std::string s_id = full_tid.substr(0, last_underscore);
+                int t_id_int = std::stoi(full_tid.substr(last_underscore + 1));
+
+                 const auto& alarm_type_base = std::get<1>(state_tuple);
+                 const auto& alarm_geom_opt = std::get<2>(state_tuple);
+
+                // This part might override GID recognition results, which is intended for alarms.
+                if (output.mp[s_id].count(t_id_int)) {
+                    auto& existing_tuple = output.mp[s_id][t_id_int];
+                    std::string& info_str_ref = std::get<0>(existing_tuple);
+
+                    // Append alarm type
+                    info_str_ref += alarm_type_base;
+
+                    // Append details if available
+                    if (alarm_geom_opt.has_value()) {
+                        const auto& geom = alarm_geom_opt.value();
+                        std::stringstream detail_ss;
+                        detail_ss << std::fixed << std::setprecision(0) << "_D" << geom.distance
+                                  << std::setprecision(2) << "_R" << geom.ratio
+                                  << std::setprecision(0) << "_A" << geom.area;
+                        info_str_ref += detail_ss.str();
+                        // Also update the geometry in the output tuple
+                        std::get<3>(existing_tuple) = alarm_geom_opt;
+                    }
+                    // Update score and n_tid for alarm indication
+                    std::get<1>(existing_tuple) = 1.0f;
+                } else {
             std::string bound_gid = tid2gid.count(full_tid) ? tid2gid.at(full_tid) : "";
             int n_tid = 0;
             if (!bound_gid.empty() && gid_mgr.tid_hist.count(bound_gid)) {
@@ -2079,7 +2210,17 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             }
             std::string info_str = !bound_gid.empty() ? (full_tid + "_" + bound_gid + std::get<1>(state_tuple)) : (
                     full_tid + "_-1" + std::get<1>(state_tuple));
-            output.mp[s_id][t_id_int] = {info_str, 1.0f, n_tid};
+
+                    if (alarm_geom_opt.has_value()) {
+                        const auto& geom = alarm_geom_opt.value();
+                        std::stringstream detail_ss;
+                        detail_ss << std::fixed << std::setprecision(0) << "_D" << geom.distance
+                                  << std::setprecision(2) << "_R" << geom.ratio
+                                  << std::setprecision(0) << "_A" << geom.area;
+                        info_str += detail_ss.str();
+                    }
+                    output.mp[s_id][t_id_int] = {info_str, 1.0f, n_tid, alarm_geom_opt};
+                }
             }
         }
         behavior_alarm_state = active_alarms;

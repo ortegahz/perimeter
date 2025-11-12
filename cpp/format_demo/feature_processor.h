@@ -104,6 +104,22 @@ struct ProcessConfig {
     std::optional<long long> gid_recognition_cooldown_s;
 };
 
+// ======================= 【NEW: AlarmGeometry】 =======================
+/**
+ * @brief Holds detailed geometric information for a crossing alarm, used for visualization.
+ */
+struct AlarmGeometry {
+    std::vector<cv::Point2f> crossing_zone_poly;
+    std::vector<cv::Point2f> intersection_poly;
+    cv::Point2f line_start;
+    cv::Point2f line_end;
+    cv::Point2f projection_vector;
+    std::string direction; // "in" or "out"
+    float distance = 0.0f; // Perpendicular distance from line
+    float ratio = 0.0f;    // Intersection area / bbox area ratio
+    float area = 0.0f;     // Intersection area
+};
+
 /* ---------- 数据结构定义 ---------- */
 struct Detection {
     cv::Rect2f tlwh;
@@ -170,59 +186,34 @@ private:
     std::set<uint64> alarmed_tids_;
 };
 
-static int get_point_side(const cv::Point2f &p, const cv::Point2f &a, const cv::Point2f &b) {
-    float val = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
-    if (val > 0) return 1;
-    if (val < 0) return -1;
-    return 0;
-}
-
-class LineCrossingDetector {
+/**
+ * @brief Enhanced line crossing detector with direction, depth, and area calculation.
+ */
+class LineCrossingDetectorPlus {
 public:
-    LineCrossingDetector(const cv::Point &start, const cv::Point &end, const std::string &direction = "any")
-            : line_start_(start), line_end_(end), direction_(direction) {}
+    LineCrossingDetectorPlus(const cv::Point& start, const cv::Point& end,
+                             const std::string& direction = "any",
+                             int projection_depth = 50,
+                             int min_intersection_area = 100);
 
-    std::set<uint64> check(const std::vector<Detection> &dets, const std::string &stream_id) {
-        std::set<uint64> newly_alarmed_tids;
-        std::set<uint64> current_tids;
-        for (const auto &d: dets) {
-            current_tids.insert(d.id);
-            if (alarmed_tids_.count(d.id)) continue;
-            cv::Point2f current_point = get_foot_point(d.tlwh);
-            int current_side = get_point_side(current_point, line_start_, line_end_);
-            auto it = track_side_history_.find(d.id);
-            if (it != track_side_history_.end()) {
-                int last_side = it->second;
-                if (last_side != 0 && current_side != 0 && current_side != last_side) {
-                    bool crossed = (direction_ == "any") ||
-                                   (direction_ == "in" && last_side < 0 && current_side > 0) ||
-                                   (direction_ == "out" && last_side > 0 && current_side < 0);
-                    if (crossed) {
-                        alarmed_tids_.insert(d.id);
-                        newly_alarmed_tids.insert(d.id);
-                    }
-                }
-            }
-            track_side_history_[d.id] = current_side;
-        }
-        std::vector<int> disappeared_tids;
-        for (const auto &pair: track_side_history_) {
-            if (current_tids.find(pair.first) == current_tids.end()) {
-                disappeared_tids.push_back(pair.first);
-            }
-        }
-        for (int tid: disappeared_tids) {
-            track_side_history_.erase(tid);
-            alarmed_tids_.erase(tid);
-        }
-        return newly_alarmed_tids;
-    }
+    // Returns a map of <tid, details> for each track that triggered an alarm this frame.
+    std::map<uint64, AlarmGeometry> check(const std::vector<Detection>& dets, const std::string& stream_id);
 
 private:
-    cv::Point2f line_start_, line_end_;
-    std::string direction_;
-    std::map<uint64, int> track_side_history_;
-    std::set<uint64> alarmed_tids_;
+    float _a, _b, _c;
+    cv::Point2f _normal_vector;
+    cv::Point2f _p1, _p2;
+    std::string _direction_policy;
+    int _projection_depth;
+    int _min_intersection_area;
+
+    struct TrackHistory {
+        cv::Point2f last_point = {0,0};
+        int last_side = 0;
+        bool has_alarmed = false;
+    };
+    std::map<uint64, TrackHistory> _track_history;
+    int _get_side(const cv::Point2f& point) const;
 };
 
 /**
@@ -358,7 +349,7 @@ struct ProcessInput {
 
 struct ProcessOutput {
     // 原有的实时匹配结果
-    std::map<std::string, std::map<int, std::tuple<std::string, float, int>>> mp;
+    std::map<std::string, std::map<int, std::tuple<std::string, float, int, std::optional<AlarmGeometry>>>> mp;
     // 新增的告警信息列表 (通常为空，仅在触发新告警的帧中包含元素)
     std::vector<AlarmTriggerInfo> alarms;
     // 新增：TID 可见时长 (秒)，用于UI显示
@@ -501,9 +492,9 @@ private:
     std::unordered_map<std::string, NewGidState> new_gid_state;
     std::set<std::string> alarmed;
     std::map<std::string, std::vector<float>> alarm_reprs;
-    std::map<std::string, std::tuple<uint64_t, std::string>> behavior_alarm_state;
+    std::map<std::string, std::tuple<uint64_t, std::string, std::optional<AlarmGeometry>>> behavior_alarm_state;
     std::map<std::string, std::unique_ptr<IntrusionDetector>> intrusion_detectors;
-    std::map<std::string, std::unique_ptr<LineCrossingDetector>> line_crossing_detectors;
+    std::map<std::string, std::map<std::string, std::unique_ptr<LineCrossingDetectorPlus>>> line_crossing_detectors;
     std::map<std::string, cv::Rect2d> current_frame_face_boxes_; // 临时存储TID-FaceBbox映射
     std::map<std::string, double> gid_last_recognized_time; // 新增: 记录每个 GID 最后一次被有效识别的时间戳
     // 新增：临时存储本帧每个 TID 对应的人脸检测置信度
