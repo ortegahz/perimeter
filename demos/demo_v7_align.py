@@ -245,7 +245,7 @@ def main():
         processor.face_app = face_searcher.app
 
     f_res = open(OUTPUT_TXT, "w", encoding="utf-8")
-    f_res.write("frame_id,cam_id,tid,gid,score,n_tid\n")
+    f_res.write("frame_id,cam_id,tid,gid,score,n_tid,alarm_type,alarm_direction,alarm_distance,alarm_ratio,alarm_area\n")
 
     fid = 0
     pbar = tqdm(total=total_frames, desc="Processing", unit="frame")
@@ -339,8 +339,50 @@ def main():
             # 按 tid 升序写 txt
             sorted_keys = sorted(cam_map.keys())
             for tid in sorted_keys:
-                gid, score, n_tid, _ = cam_map[tid]
-                f_res.write(f"{fid},{CAM_ID},{tid},{gid},{score:.4f},{n_tid}\n")
+                gid, score, n_tid, alarm_geometry = cam_map[tid]
+
+                alarm_type = ''
+                alarm_direction = ''
+                alarm_distance = 0.0
+                alarm_ratio = 0.0
+                alarm_area = 0.0
+                gid_to_write = str(gid)
+
+                # 查找报警详情字符串的起始位置 (e.g., _D123_R0.45_A6789)
+                # 只有当 AL 报警类型存在时才解析详情
+                details_start_index = gid_to_write.find('_D')
+                if details_start_index != -1 and '_AL_' in gid_to_write:
+                    base_gid = gid_to_write[:details_start_index]
+                    details_str = gid_to_write[details_start_index:]
+                    gid_to_write = base_gid
+
+                    try:
+                        # 提取报警子类型，如 line_1
+                        alarm_type_full = gid_to_write.split('_AL_')[1]
+                        alarm_type = 'crossing_' + alarm_type_full
+                    except IndexError:
+                        alarm_type = 'crossing'
+
+                    # 从详情字符串中解析具体数值
+                    parts = details_str.split('_')
+                    for part in parts:
+                        if not part: continue
+                        if part.startswith('D'):
+                            try: alarm_distance = float(part[1:])
+                            except ValueError: pass
+                        elif part.startswith('R'):
+                            try: alarm_ratio = float(part[1:])
+                            except ValueError: pass
+                        elif part.startswith('A'):
+                            try: alarm_area = float(part[1:])
+                            except ValueError: pass
+                    if alarm_geometry:  # 从原始接口获取方向信息
+                        alarm_direction = alarm_geometry.get('direction', '')
+                elif '_AA' in gid_to_write:
+                    alarm_type = 'intrusion'
+
+                f_res.write(f"{fid},{CAM_ID},{tid},{gid_to_write},{score:.4f},{n_tid},"
+                            f"{alarm_type},{alarm_direction},{alarm_distance:.2f},{alarm_ratio:.4f},{alarm_area:.2f}\n")
 
             # ------------- 可视化 -------------
             vis = cv2.resize(frame, (vis_W, vis_H))
