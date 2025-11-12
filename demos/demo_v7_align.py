@@ -67,8 +67,8 @@ CAM_ID = "cam1"
 # ---- 缓存相关 ----
 SAVE_RAW = False
 LOAD_RAW = not SAVE_RAW
-RAW_DIR = "/home/manu/tmp/cache_v2"
-CACHE_PATH = '/home/manu/tmp/features_cache_v2.json'
+RAW_DIR = "/home/manu/tmp/cache_v4"
+CACHE_PATH = '/home/manu/tmp/features_cache_v4.json'
 OVERWRITE = SAVE_RAW
 
 # --- 报警检测相关常量和配置 ---
@@ -78,21 +78,21 @@ MIN_INTERSECTION_AREA = 4096 * 2
 # Define intrusion zones and crossing lines here.
 # Coordinates are based on the original full resolution of the video (e.g., 1920x1080 2560x1440).
 BOUNDARY_CONFIG = {
-    # "cam1": {
-    #     # "intrusion_poly": [
-    #     #     (50, 1400), (1200, 1400), (1100, 500), (50, 500)  # Example: bottom-left area
-    #     # ],
-    #     "crossing_lines": [
-    #         {
-    #             "name": "Line_1",
-    #             "start": (1200, 60),  # Example: a vertical line in the middle
-    #             "end": (1400, 1280),
-    #             "direction": "any",
-    #             "projection_depth": PROJECTION_DEPTH,  # 沿法线方向延伸的深度（像素）
-    #             "min_intersection_area": MIN_INTERSECTION_AREA  # 新增：触发报警所需的最小相交像素面积
-    #         },
-    #     ]
-    # },
+    "cam1": {
+        # "intrusion_poly": [
+        #     (50, 1400), (1200, 1400), (1100, 500), (50, 500)  # Example: bottom-left area
+        # ],
+        "crossing_lines": [
+            {
+                "name": "Line_1",
+                "start": (1200, 60),  # Example: a vertical line in the middle
+                "end": (1400, 1280),
+                "direction": "any",
+                "projection_depth": PROJECTION_DEPTH,  # 沿法线方向延伸的深度（像素）
+                "min_intersection_area": MIN_INTERSECTION_AREA  # 新增：触发报警所需的最小相交像素面积
+            },
+        ]
+    },
 }
 
 

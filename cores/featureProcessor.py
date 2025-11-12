@@ -36,7 +36,7 @@ SENTINEL = None
 
 MATCH_THR = 0.5
 THR_NEW_GID = 0.3
-FACE_DET_MIN_SCORE = 0.40  # 0.9 for face only mode && 0.8 for mix mode
+FACE_DET_MIN_SCORE = 0.60  # 0.9 for face only mode && 0.8 for mix mode
 
 SAVE_DIR = "/home/manu/tmp/perimeter"
 ALARM_DIR = "/home/manu/tmp/perimeter_alarm"
@@ -797,7 +797,7 @@ class FeatureProcessor:
                 x, y, w, h = det['tlwh']
                 patch = full_frame[max(int(y), 0):min(int(y + h), H), max(int(x), 0):min(int(x + w), W)].copy()
 
-                # if not is_long_patch(patch): continue
+                if not is_long_patch(patch) and not _is_face_only_mode: continue
 
                 tensors.append(prep_patch(patch))
                 metas.append((f"{stream_id}_{det['id']}", det.get("score", 0.0)))
