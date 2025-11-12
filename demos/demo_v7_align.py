@@ -1,6 +1,6 @@
 # FILE: demo_v7_align.py
 
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 单路离线 + 全局 GID  (Deterministic 版本)
@@ -23,10 +23,14 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+cv2.imshow("__init__", np.zeros((1, 1, 3), np.uint8))
+cv2.waitKey(1)
+
 from cores.byteTrackPipeline import ByteTrackPipeline
 from cores.faceSearcher import FaceSearcher  # 假设 FaceSearcher 在此
 # MODIFIED HERE: 路径和类名可能需要根据你的项目结构调整
 from cores.featureProcessor import FeatureProcessor
+from demos.demo_v7 import draw_boundaries
 
 # ------------------ 确定性设置 ------------------
 SEED = 0  # 你可以改其他整数
@@ -66,6 +70,30 @@ LOAD_RAW = not SAVE_RAW
 RAW_DIR = "/home/manu/tmp/cache_v2"
 CACHE_PATH = '/home/manu/tmp/features_cache_v2.json'
 OVERWRITE = SAVE_RAW
+
+# --- 报警检测相关常量和配置 ---
+PROJECTION_DEPTH = 1024
+MIN_INTERSECTION_AREA = 4096 * 4
+
+# Define intrusion zones and crossing lines here.
+# Coordinates are based on the original full resolution of the video (e.g., 1920x1080 2560x1440).
+BOUNDARY_CONFIG = {
+    "cam1": {
+        # "intrusion_poly": [
+        #     (50, 1400), (1200, 1400), (1100, 500), (50, 500)  # Example: bottom-left area
+        # ],
+        "crossing_lines": [
+            {
+                "name": "Line_1",
+                "start": (1200, 60),  # Example: a vertical line in the middle
+                "end": (1400, 1280),
+                "direction": "any",
+                "projection_depth": PROJECTION_DEPTH,  # 沿法线方向延伸的深度（像素）
+                "min_intersection_area": MIN_INTERSECTION_AREA  # 新增：触发报警所需的最小相交像素面积
+            },
+        ]
+    },
+}
 
 
 # -------------------------------------------------
@@ -206,6 +234,7 @@ def main():
     processor = FeatureProcessor(
         device=DEVICE,
         use_fid_time=True,
+        boundary_config=BOUNDARY_CONFIG,
         # MODIFIED HERE: 缓存文件名根据您的要求修改
         # 如果是 realtime 模式，则会提取特征并在此路径下生成缓存；如果是 load 模式，则从此路径加载特征。
         mode='load' if LOAD_RAW else 'realtime',
@@ -315,19 +344,50 @@ def main():
 
             # ------------- 可视化 -------------
             vis = cv2.resize(frame, (vis_W, vis_H))
+            draw_boundaries(vis, CAM_ID, simple_display=False)
 
             for d in dets:  # dets 已按 id 排序
                 tid = d["id"]
                 x, y, w, h = [int(c * SHOW_SCALE) for c in d["tlwh"]]
-                gid, score, n_tid, _ = cam_map.get(tid, (f"{CAM_ID}_{tid}_-?", -1.0, 0, None))
+                gid, score, n_tid, alarm_geometry = cam_map.get(tid, (f"{CAM_ID}_{tid}_-?", -1.0, 0, None))
                 color_id = int(str(gid).split('_')[-1].replace('G', '').lstrip('0')) if str(gid).startswith(
                     'G') else tid
                 color = _COMMON_COLORS[color_id % len(_COMMON_COLORS)]
 
                 # behavior alarm (入侵/穿越) 的特殊显示
                 if str(gid).endswith(('_AA', '_AL')):
-                    color = (0, 0, 255)  # 红色
+                    color = (0, 255, 255)  # 黄色
                     display_text = f"T:{tid} G:{gid}"
+
+                    # --- 新增：绘制报警几何图形 ---
+                    if alarm_geometry:
+                        overlay = vis.copy()
+                        alpha_blend = 0.3
+
+                        # 绘制报警时计算的投射区域
+                        zone_poly_orig = alarm_geometry.get("crossing_zone_poly")
+                        if zone_poly_orig:
+                            zone_poly_scaled = (np.array(zone_poly_orig) * SHOW_SCALE).astype(np.int32)
+                            cv2.fillPoly(overlay, [zone_poly_scaled], color=(0, 255, 255), lineType=cv2.LINE_AA)
+
+                        # 绘制实际相交区域
+                        intersection_poly_orig = alarm_geometry.get("intersection_poly")
+                        if intersection_poly_orig:
+                            intersection_poly_scaled = (np.array(intersection_poly_orig) * SHOW_SCALE).astype(np.int32)
+                            cv2.fillPoly(overlay, [intersection_poly_scaled], color=(0, 0, 255), lineType=cv2.LINE_AA)
+
+                        cv2.addWeighted(overlay, alpha_blend, vis, 1 - alpha_blend, 0, vis)
+
+                        # 绘制报警时的投射方向向量（法向量）
+                        line_start_orig = alarm_geometry.get("line_start")
+                        line_end_orig = alarm_geometry.get("line_end")
+                        proj_vec_orig = alarm_geometry.get("projection_vector")
+                        if line_start_orig and line_end_orig and proj_vec_orig:
+                            line_center_orig = (np.array(line_start_orig) + np.array(line_end_orig)) / 2
+                            proj_vec = np.array(proj_vec_orig)
+                            arrow_start_pt = tuple((line_center_orig * SHOW_SCALE).astype(int))
+                            arrow_end_pt = tuple(((line_center_orig + proj_vec * 50) * SHOW_SCALE).astype(int))
+                            cv2.arrowedLine(vis, arrow_start_pt, arrow_end_pt, (255, 255, 0), 2, tipLength=0.3)
                 else:
                     display_text = f"T:{tid} G:{gid}"  # 正常显示
 
