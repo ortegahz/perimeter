@@ -72,8 +72,8 @@ CACHE_PATH = '/home/manu/tmp/features_cache_v4.json'
 OVERWRITE = SAVE_RAW
 
 # --- 报警检测相关常量和配置 ---
-PROJECTION_DEPTH = 1024
-MIN_INTERSECTION_AREA = 4096 * 2
+# PROJECTION_DEPTH = 1024
+# MIN_INTERSECTION_AREA = 4096 * 2
 
 # Define intrusion zones and crossing lines here.
 # Coordinates are based on the original full resolution of the video (e.g., 1920x1080 2560x1440).

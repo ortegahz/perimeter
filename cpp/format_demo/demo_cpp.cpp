@@ -557,74 +557,59 @@ int main(int argc, char **argv) {
                     std::sort(sorted_tids.begin(), sorted_tids.end());
 
                     for (int tid: sorted_tids) {
-                        const auto &tpl = proc_output.mp.at(CAM_ID).at(tid);
+                        const auto& tpl = proc_output.mp.at(CAM_ID).at(tid);
                         const std::string& full_str = std::get<0>(tpl);
                         float score = std::get<1>(tpl);
                         int n_tid = std::get<2>(tpl);
                         const auto& geom_opt = std::get<3>(tpl); // Get the optional geometry
 
-                        // --- Parse the full string for output file ---
-                        std::string gid_to_write = "";
+                        // --- NEW LOGIC TO MATCH PYTHON ---
+                        std::string gid_to_write = full_str; // Step 1: Initialize with full string
                         std::string alarm_type = "";
                         std::string alarm_direction = "";
                         float alarm_distance = 0.0f;
                         float alarm_ratio = 0.0f;
                         float alarm_area = 0.0f;
 
-                        size_t al_pos = full_str.find("_AL_");
-                        size_t aa_pos = full_str.find("_AA");
-                        size_t details_pos = full_str.find("_D");
-
-                        std::string base_str_for_gid = full_str;
-
-                        if (al_pos != std::string::npos && details_pos != std::string::npos && details_pos > al_pos) {
+                        size_t details_pos = gid_to_write.find("_D");
+                        if (details_pos != std::string::npos && gid_to_write.find("_AL_") != std::string::npos) {
                             // Line crossing alarm with details
-                            std::string base_str = full_str.substr(0, details_pos);
-                            std::string details_str = full_str.substr(details_pos);
-                            base_str_for_gid = base_str;
+                            std::string base_gid_str = gid_to_write.substr(0, details_pos);
+                            std::string details_str = gid_to_write.substr(details_pos);
+                            gid_to_write = base_gid_str; // Step 2: Re-assign, stripping details
 
-                             // Extract alarm sub-type (line name)
-                            alarm_type = "crossing_" + base_str.substr(al_pos + 4);
+                            // Extract alarm sub-type (line name)
+                            size_t al_pos = base_gid_str.find("_AL_");
+                            if (al_pos != std::string::npos) {
+                                alarm_type = "crossing_" + base_gid_str.substr(al_pos + 4);
+                            } else {
+                                alarm_type = "crossing";
+                            }
 
                             // Parse details string like _D123_R0.45_A6789
                             std::replace(details_str.begin(), details_str.end(), '_', ' ');
                             std::stringstream ss(details_str);
                             std::string part;
                             while (ss >> part) {
-                                if (part.empty()) continue;
-                                char prefix = part[0];
                                 try {
-                                    std::string val_str = part.substr(1);
-                                    if (prefix == 'D') alarm_distance = std::stof(val_str);
-                                    else if (prefix == 'R') alarm_ratio = std::stof(val_str);
-                                    else if (prefix == 'A') alarm_area = std::stof(val_str);
+                                    if (part.rfind('D', 0) == 0) alarm_distance = std::stof(part.substr(1));
+                                    else if (part.rfind('R', 0) == 0) alarm_ratio = std::stof(part.substr(1));
+                                    else if (part.rfind('A', 0) == 0) alarm_area = std::stof(part.substr(1));
                                 } catch (...) { /* ignore parse errors */ }
                             }
 
                             if (geom_opt.has_value()) {
                                 alarm_direction = geom_opt->direction;
                             }
-
-                        } else if (aa_pos != std::string::npos) {
-                            alarm_type = "intrusion";
-                            base_str_for_gid = full_str.substr(0, aa_pos);
-                        }
-
-                        // Extract base GID from the (possibly-stripped) string
-                        size_t gid_pos = base_str_for_gid.rfind("_G");
-                        if (gid_pos != std::string::npos) {
-                           gid_to_write = base_str_for_gid.substr(gid_pos + 1);
-                            // Strip _AL_... suffix from pure GID for file output
-                           size_t alarm_suffix_pos = gid_to_write.find("_AL_");
-                           if (alarm_suffix_pos != std::string::npos) {
-                               gid_to_write = gid_to_write.substr(0, alarm_suffix_pos);
-                           }
+                        } else if (gid_to_write.find("_AA") != std::string::npos) {
+                           alarm_type = "intrusion";
+                           // For intrusion, gid_to_write is NOT modified, which matches python.
                         }
 
                         fout << fid << ',' << CAM_ID << ',' << tid << ','
                              << gid_to_write << ',' << std::fixed << std::setprecision(4) << score << ',' << n_tid << ','
-                             << alarm_type << ',' << alarm_direction << ','
-                             << std::setprecision(2) << alarm_distance << ',' << std::setprecision(4) << alarm_ratio << ',' << std::setprecision(2) << alarm_area << "\n";
+                             << alarm_type << ',' << alarm_direction << ',' << std::setprecision(2) << alarm_distance << ','
+                             << std::setprecision(4) << alarm_ratio << ',' << std::setprecision(2) << alarm_area << "\n";
                     }
                 }
 
