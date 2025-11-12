@@ -36,7 +36,7 @@ SENTINEL = None
 
 MATCH_THR = 0.5
 THR_NEW_GID = 0.3
-FACE_DET_MIN_SCORE = 0.60  # 0.9 for face only mode && 0.8 for mix mode
+FACE_DET_MIN_SCORE = 0.40  # 0.9 for face only mode && 0.8 for mix mode
 
 SAVE_DIR = "/home/manu/tmp/perimeter"
 ALARM_DIR = "/home/manu/tmp/perimeter_alarm"
@@ -716,6 +716,8 @@ class FeatureProcessor:
         w_face = pkt.get("w_face", 0.6)
         w_body = pkt.get("w_body", 0.4)
 
+        _is_face_only_mode = w_face > 0.99999
+
         # 更新 GID 管理器的权重
         self.gid_mgr.w_face = w_face
         self.gid_mgr.w_body = w_body
@@ -844,7 +846,7 @@ class FeatureProcessor:
                         kps = np.array(face_det['kps'], dtype=np.float32) if face_det.get('kps') else None
                         face = Face(bbox=bbox, kps=kps, det_score=face_det.get('score', 0.99))
 
-                        if kps is None or not is_frontal_face_2d(kps):
+                        if kps is None or (not is_frontal_face_2d(kps) and _is_face_only_mode):
                             continue
 
                         x1, y1, x2, y2 = map(int, bbox)
