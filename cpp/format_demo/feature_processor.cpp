@@ -1663,6 +1663,8 @@ void FeatureProcessor::_check_and_process_alarm(
                 alarm_info.latest_body_patch = !is_face_only_mode ? body_p.clone() : alarm_info.latest_body_patch;
                 alarm_info.latest_face_patch = face_p.clone();
                 // ======================= 【新增：打印待上报的报警详细信息】 =======================
+                alarm_info.alarm_types.insert("recognition"); // 新增: 标记为识别告警
+
                 std::cout << "\n--- [Preparing to Report Alarm] ---\n"
                           << "  GID: " << alarm_info.gid << "\n"
                           << "  TID: " << alarm_info.tid_str << "\n"
@@ -2290,6 +2292,67 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
                 const auto &alarm_type_base = std::get<1>(state_tuple);
                 const auto &alarm_geom_opt = std::get<2>(state_tuple);
+
+                // ======================= 【新增: 创建或更新行为告警的AlarmTriggerInfo】 =======================
+                std::string simple_alarm_type;
+                if (alarm_type_base.find("_AA") != std::string::npos) {
+                    simple_alarm_type = "intrusion";
+                } else if (alarm_type_base.find("_AL") != std::string::npos) {
+                    simple_alarm_type = "crossing";
+                }
+
+                if (!simple_alarm_type.empty()) {
+                    auto it = std::find_if(output.alarms.begin(), output.alarms.end(),
+                                           [&](const AlarmTriggerInfo &a) { return a.tid_str == full_tid; });
+
+                    if (it != output.alarms.end()) {
+                        // 已存在识别告警, 添加行为告警类型
+                        it->alarm_types.insert(simple_alarm_type);
+                    } else {
+                        // 不存在识别告警, 为行为告警创建新的 AlarmTriggerInfo
+                        AlarmTriggerInfo boundary_alarm_info;
+                        boundary_alarm_info.tid_str = full_tid;
+                        boundary_alarm_info.alarm_types.insert(simple_alarm_type);
+
+                        std::string bound_gid = tid2gid.count(full_tid) ? tid2gid.at(full_tid) : "";
+                        boundary_alarm_info.gid = bound_gid;
+
+                        if (!bound_gid.empty()) {
+                            boundary_alarm_info.n = gid_alarm_business_counts_.count(bound_gid) ? gid_alarm_business_counts_.at(
+                                    bound_gid) : 0;
+                            if (boundary_alarm_info.n == 0) { // Fallback
+                                boundary_alarm_info.n = gid_mgr.tid_hist.count(bound_gid) ? (int) gid_mgr.tid_hist.at(
+                                        bound_gid).size() : 0;
+                            }
+                            boundary_alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(bound_gid)
+                                                                       ? gid_mgr.first_seen_ts.at(bound_gid)
+                                                                       : now_stamp_gst;
+                            boundary_alarm_info.last_seen_timestamp = now_stamp_gst;
+                        }
+
+                        if (agg_pool.count(full_tid)) {
+                            const auto &agg = agg_pool.at(full_tid);
+                            auto [face_f, face_p] = agg.main_face_feat_and_patch();
+                            auto [body_f, body_p] = agg.main_body_feat_and_patch();
+                            boundary_alarm_info.latest_body_patch = body_p;
+                            boundary_alarm_info.latest_face_patch = face_p;
+                        }
+
+                        auto det_it = std::find_if(dets.begin(), dets.end(), [&](const Detection &d) {
+                            return (stream_id + "_" + std::to_string(d.id)) == full_tid;
+                        });
+                        if (det_it != dets.end()) {
+                            boundary_alarm_info.person_bbox = det_it->tlwh;
+                        }
+
+                        if (current_frame_face_boxes_.count(full_tid))
+                            boundary_alarm_info.face_bbox = current_frame_face_boxes_.at(full_tid);
+                        if (current_frame_face_clarity_.count(full_tid))
+                            boundary_alarm_info.face_clarity_score = current_frame_face_clarity_.at(full_tid);
+
+                        output.alarms.push_back(boundary_alarm_info);
+                    }
+                }
 
                 // Corrected Logic: Overwrite any existing result with the alarm information, mirroring Python's behavior.
                 std::string bound_gid = tid2gid.count(full_tid) ? tid2gid.at(full_tid) : "";

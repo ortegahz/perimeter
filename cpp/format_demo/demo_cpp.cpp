@@ -358,6 +358,14 @@ int main(int argc, char **argv) {
                     for (const auto &alarm: proc_output.alarms) {
                         std::cout << "  - GID: " << alarm.gid << "\n";
                         std::cout << "  - Recognition Count (n): " << alarm.n << "\n";
+                        // 新增: 打印告警类型
+                        std::cout << "  - Alarm Types: ";
+                        std::string types_str;
+                        for (const auto& type : alarm.alarm_types) {
+                            if (!types_str.empty()) types_str += ", ";
+                            types_str += type;
+                        }
+                        std::cout << (types_str.empty() ? "N/A" : types_str) << "\n";
                         std::cout << "  - First Seen Time: " << format_ntp_timestamp(alarm.first_seen_timestamp)
                                   << "\n";
                         std::cout << "  - Last Seen Time: " << format_ntp_timestamp(alarm.last_seen_timestamp)

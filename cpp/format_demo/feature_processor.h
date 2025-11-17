@@ -251,6 +251,7 @@ struct AlarmTriggerInfo {
     cv::Mat latest_face_patch;      // GID库中最新的（或最具代表性的）人脸图块
     float face_clarity_score = 0.0f; // 新增：人脸清晰度分数 (0-100)
     int n = 0;                      // n（识别次数）
+    std::set<std::string> alarm_types; // 新增: 告警类型集合, e.g., {"recognition", "crossing", "intrusion"}
 };
 
 struct TrackAgg {
