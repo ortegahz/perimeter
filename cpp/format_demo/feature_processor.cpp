@@ -340,7 +340,11 @@ LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::s
         if (crossing_direction_sign == 0) continue;
 
         bool is_in = crossing_direction_sign > 0;
-        if ((_direction_policy == "in" && !is_in) || (_direction_policy == "out" && is_in)) continue;
+        if (_direction_policy != "any") {
+            if ((_direction_policy == "in" && !is_in) || (_direction_policy == "out" && is_in)) {
+                continue;
+            }
+        }
 
         cv::Point2f proj_dir = is_in ? _normal_vector : -_normal_vector;
         std::vector<cv::Point2f> crossing_zone_poly = {_p1, _p2, _p2 + proj_dir * (float) _projection_depth,
