@@ -293,6 +293,21 @@ int main(int argc, char **argv) {
                 proc_config.sensitivity_by_cam[CAM_ID] = 5; // 示例: 设置为较高灵敏度 (1-10级, 1为最高, 对应阈值0.3)
                 proc_config.alarm_record_thresh = 3; // 新增：设置报警记录阈值, n>3时才记录GID用于去重
 
+                // ======================= 【NEW: Example of Real-time Boundary Config】 =======================
+                // 在实际应用中，这些规则可以从外部（如Web接口）动态加载和修改。
+                // 这里我们为'cam1'硬编码了两条越界线规则。
+                proc_config.line_rules[CAM_ID]["Line_1"] = LineRule{
+                        {1200, 60}, {1400, 1280}, "any", 1024, 8192
+                };
+                proc_config.line_rules[CAM_ID]["Line_2"] = LineRule{
+                        {1000, 700}, {2000, 700}, "any", 1024, 8192
+                };
+                // 示例：定义一个入侵区域 (注意：当前C++实现仅支持每路视频一个入侵检测器)
+                // proc_config.intrusion_rules[CAM_ID]["Zone_1"] = {
+                //      {{{100, 100}, {1800, 100}, {1800, 1000}, {100, 1000}}}
+                // };
+                // ======================= 【NEW END】 =======================
+
                 // 新增：人脸/ReID权重配置
                 proc_config.face_switch_by_cam[CAM_ID] = true;
                 proc_config.face_weight_by_cam[CAM_ID] = 0.6f;

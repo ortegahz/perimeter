@@ -77,6 +77,21 @@ constexpr float FACE_DET_MIN_SCORE = 0.6f;  // 0.60f
 //#define DB_PATH "/home/nvidia/perimeter_data.db"
 //#define CONFIG_FILE_PATH "/home/nvidia/config.json"
 
+// ======================= 【NEW: Boundary Rule Structs】 =======================
+struct LineRule {
+    cv::Point p1;
+    cv::Point p2;
+    std::string direction = "any";
+    int projection_depth = 1024;
+    int min_intersection_area = 8192;
+};
+
+struct IntrusionRule {
+    std::vector<cv::Point> polygon;
+    // Future parameters for intrusion can be added here
+};
+// ======================= 【NEW END】 =======================
+
 /* ---------- 可调参数结构体 ---------- */
 struct ProcessConfig {
     // Key: cam_id, Value: match_thr for that camera.
@@ -102,6 +117,11 @@ struct ProcessConfig {
     std::set<std::string> whitelist_gids;
     // 新增: 实时配置参数 (秒)。如果此值被设置, 它将覆盖本帧的默认配置。
     std::optional<long long> gid_recognition_cooldown_s;
+
+    // ======================= 【NEW: Real-time Boundary Rules】 =======================
+    std::map<std::string, std::map<std::string, LineRule>> line_rules;
+    std::map<std::string, std::map<std::string, IntrusionRule>> intrusion_rules;
+    // ======================= 【NEW END】 =======================
 };
 
 // ======================= 【NEW: AlarmGeometry】 =======================
@@ -436,6 +456,10 @@ private:
     void _load_state_from_db();
     // ======================= 【修改结束】 =======================
 
+    // ======================= 【NEW: Helper for dynamic boundary config】 =======================
+    void _update_detectors_from_config(const std::string &cam_id, const ProcessConfig &config);
+    // ======================= 【NEW END】 =======================
+
     nlohmann::json _load_or_create_config();
 
     void _close_db();
@@ -494,6 +518,9 @@ private:
     std::set<std::string> alarmed;
     std::map<std::string, std::vector<float>> alarm_reprs;
     std::map<std::string, std::tuple<uint64_t, std::string, std::optional<AlarmGeometry>>> behavior_alarm_state;
+
+    // ======================= 【MODIFIED: Added cache for boundary config】 =======================
+    std::map<std::string, std::string> m_last_boundary_config_str;
     std::map<std::string, std::unique_ptr<IntrusionDetector>> intrusion_detectors;
     std::map<std::string, std::map<std::string, std::unique_ptr<LineCrossingDetectorPlus>>> line_crossing_detectors;
     std::map<std::string, cv::Rect2d> current_frame_face_boxes_; // 临时存储TID-FaceBbox映射

@@ -764,7 +764,6 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
         }
         // Intrusion poly is commented out in the Python reference, so it's not added here.
     }
-
     // ======================= 【MODIFIED: 初始化逻辑变更】 =======================
     if (m_clear_db_on_startup && std::filesystem::exists(DB_PATH)) {
         std::cout << "Switch 'clear_db_on_startup' is ON. Removing existing database: " << DB_PATH << std::endl;
@@ -1259,9 +1258,62 @@ void FeatureProcessor::_load_state_from_db() {
     gid_mgr.gid_next = max_gid_num + 1;
 
     std::cout << "Successfully loaded " << loaded_prototypes << " prototypes for " << all_gids.size()
-              << " GIDs from DB and re-created filesystem cache. Next GID is set to: " << gid_mgr.gid_next << std::endl;
+              << " GIDs from DB and re-created filesystem cache. Next GID is set to: " << gid_mgr.gid_next
+              << std::endl;
 }
 // ======================= 【修改结束】 =======================
+
+// ======================= 【NEW: Helper for dynamic boundary config】 =======================
+void FeatureProcessor::_update_detectors_from_config(const std::string &cam_id, const ProcessConfig &config) {
+    std::stringstream current_config_ss;
+
+    // Serialize line rules using a map to ensure sorted order for consistent serialization
+    if (config.line_rules.count(cam_id)) {
+        const auto &rules = config.line_rules.at(cam_id);
+        for (const auto &[name, rule]: rules) {
+            current_config_ss << "L:" << name << ":" << rule.p1.x << "," << rule.p1.y << ","
+                              << rule.p2.x << "," << rule.p2.y << "," << rule.direction << ";";
+        }
+    }
+
+    // Serialize intrusion rules
+    if (config.intrusion_rules.count(cam_id)) {
+        const auto &rules = config.intrusion_rules.at(cam_id);
+        for (const auto &[name, rule]: rules) {
+            current_config_ss << "I:" << name << ":";
+            for (const auto &pt: rule.polygon) {
+                current_config_ss << pt.x << "," << pt.y << ",";
+            }
+            current_config_ss << ";";
+        }
+    }
+
+    std::string current_config_str = current_config_ss.str();
+
+    if (!m_last_boundary_config_str.count(cam_id) || m_last_boundary_config_str.at(cam_id) != current_config_str) {
+        if (!current_config_str.empty()) {
+            std::cout << "\nBoundary configuration for camera '" << cam_id
+                      << "' has changed. Re-initializing detectors..." << std::endl;
+        } else if (m_last_boundary_config_str.count(cam_id) && !m_last_boundary_config_str.at(cam_id).empty()) {
+            std::cout << "\nBoundary configuration for camera '" << cam_id << "' has been cleared." << std::endl;
+        }
+
+        // Clear existing detectors for this camera
+        line_crossing_detectors.erase(cam_id);
+        intrusion_detectors.erase(cam_id);
+
+        // Re-create line crossing detectors
+        if (config.line_rules.count(cam_id)) {
+            for (const auto &[name, rule]: config.line_rules.at(cam_id)) {
+                line_crossing_detectors[cam_id][name] = std::make_unique<LineCrossingDetectorPlus>(
+                        rule.p1, rule.p2, rule.direction, rule.projection_depth, rule.min_intersection_area);
+            }
+        }
+
+        m_last_boundary_config_str[cam_id] = current_config_str;
+    }
+}
+// ======================= 【NEW END】 =======================
 
 // MODIFIED HERE: 整个函数被重构以使用 GpuMat
 void
@@ -1654,6 +1706,10 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     const std::vector<Detection> &dets = input.dets;
     const ProcessConfig &config = input.config;
     // ======================= 【修改结束】 =======================
+
+    // ======================= 【NEW: Dynamically update boundary detectors】 =======================
+    _update_detectors_from_config(cam_id, config);
+    // ======================= 【NEW END】 =======================
 
     // 根据配置确定当前相机是否启用人脸处理
     bool face_enabled = true; // 默认为启用
