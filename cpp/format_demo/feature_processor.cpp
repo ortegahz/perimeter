@@ -110,6 +110,52 @@ static bool is_frontal_face_pnp(const std::vector<cv::Point2f> &kps, cv::Size im
            result.pitch_score > pitch_ratio_lower_th && result.pitch_score < pitch_ratio_upper_th;
 }
 
+// ======================= 【新增: 内部辅助数据结构和函数】 =======================
+namespace { // Anonymous namespace for internal helpers
+    struct InternalLineRule {
+        cv::Point p1;
+        cv::Point p2;
+        std::string direction;
+        int projection_depth;
+        int min_intersection_area;
+    };
+
+    /**
+     * @brief 根据产品定义的规格(无序两点,方向,灵敏度等级)来创建内部使用的LineRule。
+     *        该函数会自动判断点的左右/上下顺序，并将 "AB", "BA" 映射到 "out", "in"。
+     *        同时，根据灵敏度等级 (1-10) 映射到具体的 `min_intersection_area`。
+     * @param spec 包含产品规格的 LineRuleSpec 结构体。
+     * @return 配置好的内部 InternalLineRule 结构体。
+     */
+    static InternalLineRule create_line_rule_from_product_spec(const LineRuleSpec& spec)
+    {
+        cv::Point pA, pB;
+
+        // 1. 自动排序：根据坐标确定哪个点是 A (左/上)，哪个是 B (右/下)。
+        double dx = static_cast<double>(spec.p_unordered2.x) - spec.p_unordered1.x;
+        double dy = static_cast<double>(spec.p_unordered2.y) - spec.p_unordered1.y;
+
+        if (std::abs(dx) >= std::abs(dy)) { // 优先按 x 坐标（水平方向）排序
+            if (spec.p_unordered1.x < spec.p_unordered2.x) { pA = spec.p_unordered1; pB = spec.p_unordered2; } else { pA = spec.p_unordered2; pB = spec.p_unordered1; }
+        } else { // 否则按 y 坐标（垂直方向）排序
+            if (spec.p_unordered1.y < spec.p_unordered2.y) { pA = spec.p_unordered1; pB = spec.p_unordered2; } else { pA = spec.p_unordered2; pB = spec.p_unordered1; }
+        }
+
+        // 2. 策略映射：将产品方向映射到内部使用的 "in", "out", "any"。
+        std::string internal_policy = "any";
+        if (spec.product_direction == "AB") { internal_policy = "out"; } else if (spec.product_direction == "BA") { internal_policy = "in"; }
+
+        // 3. 灵敏度映射: 将1-10级的灵敏度映射到最小触发面积 (1=最高灵敏度=最小面积, 10=最低灵敏度=最大面积)
+        const int MIN_AREA = 2048; const int MAX_AREA = 20480;
+        int level = std::max(1, std::min(10, spec.level)); // 将等级限制在1-10
+        int area = static_cast<int>(MIN_AREA + (static_cast<double>(level - 1) * (MAX_AREA - MIN_AREA)) / 9.0);
+
+        // 4. 返回最终的 InternalLineRule
+        return InternalLineRule{pA, pB, internal_policy, 1024, area}; // projection_depth can be parameterized later if needed
+    }
+} // end anonymous namespace
+// ======================= 【新增结束】 =======================
+
 const int REID_INPUT_WIDTH = 128;
 const int REID_INPUT_HEIGHT = 256;
 
@@ -1272,11 +1318,12 @@ void FeatureProcessor::_update_detectors_from_config(const std::string &cam_id, 
     std::stringstream current_config_ss;
 
     // Serialize line rules using a map to ensure sorted order for consistent serialization
-    if (config.line_rules.count(cam_id)) {
-        const auto &rules = config.line_rules.at(cam_id);
-        for (const auto &[name, rule]: rules) {
-            current_config_ss << "L:" << name << ":" << rule.p1.x << "," << rule.p1.y << ","
-                              << rule.p2.x << "," << rule.p2.y << "," << rule.direction << ";";
+    if (config.line_rules_spec.count(cam_id)) {
+        const auto &rules_spec = config.line_rules_spec.at(cam_id);
+        for (const auto &[name, spec]: rules_spec) {
+            current_config_ss << "L:" << name << ":" << spec.p_unordered1.x << "," << spec.p_unordered1.y << ","
+                              << spec.p_unordered2.x << "," << spec.p_unordered2.y << "," << spec.product_direction
+                              << "," << spec.level << ";";
         }
     }
 
@@ -1307,11 +1354,13 @@ void FeatureProcessor::_update_detectors_from_config(const std::string &cam_id, 
         intrusion_detectors.erase(cam_id);
 
         // Re-create line crossing detectors
-        if (config.line_rules.count(cam_id)) {
-            for (const auto &[name, rule]: config.line_rules.at(cam_id)) {
+        if (config.line_rules_spec.count(cam_id)) {
+            for (const auto &[name, spec]: config.line_rules_spec.at(cam_id)) {
+                auto internal_rule = create_line_rule_from_product_spec(spec);
                 line_crossing_detectors[cam_id][name] = std::make_unique<LineCrossingDetectorPlus>(
-                        rule.p1, rule.p2, rule.direction, rule.projection_depth, rule.min_intersection_area);
-            }
+                        internal_rule.p1, internal_rule.p2, internal_rule.direction,
+                        internal_rule.projection_depth,
+                        internal_rule.min_intersection_area);            }
         }
 
         m_last_boundary_config_str[cam_id] = current_config_str;

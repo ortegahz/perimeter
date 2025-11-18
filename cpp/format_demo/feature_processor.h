@@ -78,12 +78,11 @@ constexpr float FACE_DET_MIN_SCORE = 0.6f;  // 0.60f
 //#define CONFIG_FILE_PATH "/home/nvidia/config.json"
 
 // ======================= 【NEW: Boundary Rule Structs】 =======================
-struct LineRule {
-    cv::Point p1;
-    cv::Point p2;
-    std::string direction = "any";
-    int projection_depth = 1024;
-    int min_intersection_area = 8192;
+struct LineRuleSpec {
+    cv::Point p_unordered1;
+    cv::Point p_unordered2;
+    std::string product_direction;
+    int level = 5; // Sensitivity level 1-10. 1 is highest, 10 is lowest.
 };
 
 struct IntrusionRule {
@@ -119,8 +118,8 @@ struct ProcessConfig {
     std::optional<long long> gid_recognition_cooldown_s;
 
     // ======================= 【NEW: Real-time Boundary Rules】 =======================
-    std::map<std::string, std::map<std::string, LineRule>> line_rules;
     std::map<std::string, std::map<std::string, IntrusionRule>> intrusion_rules;
+    std::map<std::string, std::map<std::string, LineRuleSpec>> line_rules_spec;
     // ======================= 【NEW END】 =======================
 };
 
