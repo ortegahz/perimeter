@@ -152,6 +152,57 @@ LoadedData load_packet_from_cache(const std::string &cam_id, uint64_t fid, const
     return data;
 }
 
+// ======================= 【新增: 辅助函数以匹配产品接口】 =======================
+/**
+ * @brief 根据产品定义的“无序两点”和“方向”来创建 LineRule。
+ *        该函数会自动判断点的左右/上下顺序，并将 "AB", "BA" 映射到 "out", "in"。
+ * @param p_unordered1 越界线的第一个点（无序）。
+ * @param p_unordered2 越界线的第二个点（无序）。
+ * @param product_direction 产品的方向定义 ("AB", "BA", or "any")。
+ * @return 配置好的 LineRule 结构体。
+ */
+static LineRule create_line_rule_from_product_spec(
+    const cv::Point& p_unordered1,
+    const cv::Point& p_unordered2,
+    const std::string& product_direction)
+{
+    cv::Point pA, pB;
+
+    // 1. 自动排序：根据坐标确定哪个点是 A (左/上)，哪个是 B (右/下)。
+    //    这为我们的 C++ 检测器提供了一个统一的坐标基准。
+    double dx = static_cast<double>(p_unordered2.x) - p_unordered1.x;
+    double dy = static_cast<double>(p_unordered2.y) - p_unordered1.y;
+
+    if (std::abs(dx) >= std::abs(dy)) { // 优先按 x 坐标（水平方向）排序
+        if (p_unordered1.x < p_unordered2.x) {
+            pA = p_unordered1; pB = p_unordered2;
+        } else {
+            pA = p_unordered2; pB = p_unordered1;
+        }
+    } else { // 否则按 y 坐标（垂直方向）排序
+        if (p_unordered1.y < p_unordered2.y) {
+            pA = p_unordered1; pB = p_unordered2;
+        } else {
+            pA = p_unordered2; pB = p_unordered1;
+        }
+    }
+
+    // 2. 策略映射：将产品方向映射到内部使用的 "in", "out", "any"。
+    //    - "AB" (A->B, 左->右) 对应 "out" (离开法线方向)
+    //    - "BA" (B->A, 右->左) 对应 "in"  (进入法线方向)
+    std::string internal_policy = "any";
+    if (product_direction == "AB") {
+        internal_policy = "out";
+    } else if (product_direction == "BA") {
+        internal_policy = "in";
+    }
+
+    // 3. 返回最终的 LineRule
+    //    注意：点pA, pB的顺序始终是固定的（左/上 -> 右/下），方向由 internal_policy 控制。
+    return LineRule{pA, pB, internal_policy, 1024, 8192};
+}
+// ======================= 【新增结束】 =======================
+
 int main(int argc, char **argv) {
     // --- 可调参数 ---
     std::string VIDEO_PATH = "/mnt/nfs/64.mp4";
@@ -294,14 +345,16 @@ int main(int argc, char **argv) {
                 proc_config.alarm_record_thresh = 3; // 新增：设置报警记录阈值, n>3时才记录GID用于去重
 
                 // ======================= 【NEW: Example of Real-time Boundary Config】 =======================
-                // 在实际应用中，这些规则可以从外部（如Web接口）动态加载和修改。
-                // 这里我们为'cam1'硬编码了两条越界线规则。
-                proc_config.line_rules[CAM_ID]["Line_1"] = LineRule{
-                        {1200, 60}, {1400, 1280}, "any", 1024, 8192
-                };
-                proc_config.line_rules[CAM_ID]["Line_2"] = LineRule{
-                        {1000, 700}, {2000, 700}, "any", 1024, 8192
-                };
+                // 【修改】使用新的辅助函数，从产品接口（无序两点+方向）创建规则。
+                // 示例1：一条竖线，AB方向（从左到右）报警。注意点是无序的。
+                cv::Point line1_p1 = {1400, 1280};
+                cv::Point line1_p2 = {1200, 60};
+                proc_config.line_rules[CAM_ID]["Line_1_AB"] = create_line_rule_from_product_spec(line1_p1, line1_p2, "AB");
+
+                // 示例2：一条横线，BA方向（从右到左）报警。
+                cv::Point line2_p1 = {2000, 700};
+                cv::Point line2_p2 = {1000, 700};
+                proc_config.line_rules[CAM_ID]["Line_2_BA"] = create_line_rule_from_product_spec(line2_p1, line2_p2, "BA");
                 // 示例：定义一个入侵区域 (注意：当前C++实现仅支持每路视频一个入侵检测器)
                 // proc_config.intrusion_rules[CAM_ID]["Zone_1"] = {
                 //      {{{100, 100}, {1800, 100}, {1800, 1000}, {100, 1000}}}
