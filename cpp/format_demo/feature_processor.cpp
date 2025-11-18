@@ -2035,6 +2035,65 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         }
         output.tid_durations_sec[tid_str] = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
 
+        // ======================= 【新增: 独立的徘徊报警逻辑】 =======================
+        if (alarmDuration_threshold > 0 && duration >= alarmDuration_threshold) {
+            // 只有当这个 TID 之前没有触发过徘徊警报时，才处理
+            if (loitering_alarm_triggered_tids_.find(tid_str) == loitering_alarm_triggered_tids_.end()) {
+                double duration_s = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
+                double threshold_s = use_fid_time_ ? (alarmDuration_threshold / FPS_ESTIMATE) : alarmDuration_threshold;
+
+                std::cout << "\n[LOITERING ALARM] TID: " << tid_str << " has been tracked for "
+                          << std::fixed << std::setprecision(2) << duration_s << "s, exceeding threshold of "
+                          << threshold_s << "s."
+                          << std::endl;
+
+                loitering_alarm_triggered_tids_.insert(tid_str);
+
+                // 检查是否已为此TID创建了报警信息 (例如，由识别或行为触发)
+                auto it = std::find_if(output.alarms.begin(), output.alarms.end(),
+                                       [&](const AlarmTriggerInfo &a) { return a.tid_str == tid_str; });
+
+                if (it != output.alarms.end()) {
+                    // 已存在报警，只需添加类型
+                    it->alarm_types.insert("loitering");
+                } else {
+                    // 不存在报警，创建一个新的
+                    AlarmTriggerInfo loitering_alarm_info;
+                    loitering_alarm_info.tid_str = tid_str;
+                    loitering_alarm_info.alarm_types.insert("loitering");
+
+                    // 填充尽可能多的公共信息
+                    std::string bound_gid = tid2gid.count(tid_str) ? tid2gid.at(tid_str) : "";
+                    loitering_alarm_info.gid = bound_gid;
+                    loitering_alarm_info.last_seen_timestamp = now_stamp_gst;
+
+                    if (!bound_gid.empty()) {
+                         loitering_alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(bound_gid)
+                                                                  ? gid_mgr.first_seen_ts.at(bound_gid)
+                                                                  : now_stamp_gst;
+                        loitering_alarm_info.n = gid_alarm_business_counts_.count(bound_gid) ? gid_alarm_business_counts_.at(bound_gid) : 0;
+                    }
+
+                    // 查找行人框
+                    auto det_it = std::find_if(dets.begin(), dets.end(), [&](const Detection &d) {
+                        return (stream_id + "_" + std::to_string(d.id)) == tid_str;
+                    });
+                    if (det_it != dets.end()) {
+                        loitering_alarm_info.person_bbox = det_it->tlwh;
+                    }
+
+                    // 查找人脸框和清晰度
+                    if (current_frame_face_boxes_.count(tid_str))
+                        loitering_alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
+                    if (current_frame_face_clarity_.count(tid_str))
+                        loitering_alarm_info.face_clarity_score = current_frame_face_clarity_.at(tid_str);
+
+                    output.alarms.push_back(loitering_alarm_info);
+                }
+            }
+        }
+        // ======================= 【新增结束】 =======================
+
         size_t last_underscore = tid_str.find_last_of('_');
         std::string s_id = tid_str.substr(0, last_underscore);
         int tid_num = std::stoi(tid_str.substr(last_underscore + 1));
@@ -2392,6 +2451,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             if (now_stamp - it->second >= max_tid_idle) {
                 agg_pool.erase(it->first);
                 saved_alarm_tids_.erase(it->first); // 清理已保存报警的TID记录
+                loitering_alarm_triggered_tids_.erase(it->first); // 新增: 清理徘徊报警状态
                 tid_to_business_n_.erase(it->first); // 清理已分配的业务n值
                 tid_last_gid_for_n_.erase(it->first); // 清理TID与其n值关联的GID记录
                 first_seen_tid.erase(it->first);

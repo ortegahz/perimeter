@@ -513,6 +513,7 @@ private:
     std::map<std::string, std::string> tid2gid;
     std::unordered_map<std::string, double> last_seen;
     std::set<std::string> saved_alarm_tids_; // 新增：记录已保存过报警的TID
+    std::set<std::string> loitering_alarm_triggered_tids_; // 新增: 记录已触发过徘徊报警的TID
     std::unordered_map<std::string, double> first_seen_tid; // 新增：记录TID首次出现的时间戳
     std::unordered_map<std::string, CandidateState> candidate_state;
     std::unordered_map<std::string, NewGidState> new_gid_state;
