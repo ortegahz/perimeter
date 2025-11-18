@@ -1319,17 +1319,19 @@ void FeatureProcessor::_load_state_from_db() {
 void FeatureProcessor::_update_detectors_from_config(const std::string &cam_id, const ProcessConfig &config) {
     std::stringstream current_config_ss;
 
-    // Serialize line rules using a map to ensure sorted order for consistent serialization
+    // Serialize line rules from the vector
     if (config.line_rules_spec.count(cam_id)) {
-        const auto &rules_spec = config.line_rules_spec.at(cam_id);
-        for (const auto &[name, spec]: rules_spec) {
+        const auto &rules_spec_vec = config.line_rules_spec.at(cam_id);
+        int line_idx = 1;
+        for (const auto &spec: rules_spec_vec) {
+            std::string name = "Line_" + std::to_string(line_idx++);
             current_config_ss << "L:" << name << ":" << spec.p_unordered1.x << "," << spec.p_unordered1.y << ","
                               << spec.p_unordered2.x << "," << spec.p_unordered2.y << "," << spec.product_direction
                               << "," << spec.level << ";";
         }
     }
 
-    // Serialize intrusion rules
+    // Serialize intrusion rules (unchanged)
     if (config.intrusion_rules.count(cam_id)) {
         const auto &rules = config.intrusion_rules.at(cam_id);
         for (const auto &[name, rule]: rules) {
@@ -1357,12 +1359,16 @@ void FeatureProcessor::_update_detectors_from_config(const std::string &cam_id, 
 
         // Re-create line crossing detectors
         if (config.line_rules_spec.count(cam_id)) {
-            for (const auto &[name, spec]: config.line_rules_spec.at(cam_id)) {
+            const auto &rules_spec_vec = config.line_rules_spec.at(cam_id);
+            int line_idx = 1;
+            for (const auto &spec: rules_spec_vec) {
+                std::string name = "Line_" + std::to_string(line_idx++);
                 auto internal_rule = create_line_rule_from_product_spec(spec);
                 line_crossing_detectors[cam_id][name] = std::make_unique<LineCrossingDetectorPlus>(
                         internal_rule.p1, internal_rule.p2, internal_rule.direction,
                         internal_rule.projection_depth,
-                        internal_rule.min_intersection_area);            }
+                        internal_rule.min_intersection_area);
+            }
         }
 
         m_last_boundary_config_str[cam_id] = current_config_str;

@@ -119,7 +119,7 @@ struct ProcessConfig {
 
     // ======================= 【NEW: Real-time Boundary Rules】 =======================
     std::map<std::string, std::map<std::string, IntrusionRule>> intrusion_rules;
-    std::map<std::string, std::map<std::string, LineRuleSpec>> line_rules_spec;
+    std::map<std::string, std::vector<LineRuleSpec>> line_rules_spec;
     // ======================= 【NEW END】 =======================
 };
 
