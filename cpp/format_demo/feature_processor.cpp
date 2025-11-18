@@ -150,6 +150,8 @@ namespace { // Anonymous namespace for internal helpers
         int level = std::max(1, std::min(10, spec.level)); // 将等级限制在1-10
         int area = static_cast<int>(MIN_AREA + (static_cast<double>(level - 1) * (MAX_AREA - MIN_AREA)) / 9.0);
 
+        area = spec.level < 0 ? 8192 : area;
+
         // 4. 返回最终的 InternalLineRule
         return InternalLineRule{pA, pB, internal_policy, 1024, area}; // projection_depth can be parameterized later if needed
     }
