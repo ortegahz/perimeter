@@ -1822,10 +1822,23 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     // 确保灵敏度在 1 到 10 的范围内
     sensitivity = std::max(1, std::min(10, sensitivity));
 
-    // 10级灵敏度映射：1(最高) -> 0.1, ..., 10(最低) -> 1.0
-    // 公式: T = 0.1f + (S - 1) * 0.1f
-    float base_match_thr = 0.1f + static_cast<float>(sensitivity - 1) * 0.1f;
+    // ======================= 【MODIFIED: 灵敏度映射逻辑】 =======================
+    // 灵敏度 1 (最宽松/高灵敏度) -> 灵敏度 10 (最严格/低灵敏度)
+    // 使用线性插值计算各项参数
+    float ratio = (static_cast<float>(sensitivity) - 1.0f) / 9.0f; // 0.0 ~ 1.0
 
+    // 1. 识别匹配阈值: 0.35 (Lev 1) -> 0.60 (Lev 10)
+    float base_match_thr   = 0.35f + ratio * (0.60f - 0.35f);
+    // 2. 人脸检测阈值 (FaceOnly模式): 0.75 (Lev 1) -> 0.85 (Lev 10)
+    float current_det_thr  = 0.75f + ratio * (0.85f - 0.75f);
+    // 3. 姿态 Yaw/Roll 阈值: 50.0 (Lev 1) -> 25.0 (Lev 10)
+    double current_yaw_th  = 50.0  + ratio * (25.0  - 50.0);
+    double current_roll_th = 50.0  + ratio * (25.0  - 50.0);
+    // 4. 姿态 Pitch 比例区间: [0.4, 1.5] (Lev 1) -> [0.8, 1.2] (Lev 10)
+    double current_pitch_low  = 0.4 + ratio * (0.8 - 0.4);
+    double current_pitch_high = 1.5 + ratio * (1.2 - 1.5);
+    // ======================= 【修改结束】 =======================
+    
     // 2. 允许使用具体的浮点数值覆盖基于灵敏度的设置，提供更精细的控制
     float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id)
                                                                        : base_match_thr;
@@ -2283,7 +2296,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             // Reason 1: The very first GID
             // ======================= 【MODIFIED: 新增高质量人脸检查点】 =======================
             if (is_face_only_mode) {
-                if (agg.count_high_quality_faces(m_face_det_min_score_face_only) < current_min_face_4_gid) {
+                // 使用基于灵敏度计算出的动态检测阈值
+                if (agg.count_high_quality_faces(current_det_thr) < current_min_face_4_gid) {
                     output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0, std::nullopt}; // hq: high quality
                     continue;
                 }
@@ -2321,7 +2335,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 if (ng_state.count >= NEW_GID_MIN_FRAMES) {
                     // ======================= 【MODIFIED: 新增高质量人脸检查点】 =======================
                     if (is_face_only_mode) {
-                        if (agg.count_high_quality_faces(m_face_det_min_score_face_only) < current_min_face_4_gid) {
+                        // 使用基于灵敏度计算出的动态检测阈值
+                        if (agg.count_high_quality_faces(current_det_thr) < current_min_face_4_gid) {
                             output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0,
                                                         std::nullopt}; // hq: high quality
                             continue;
