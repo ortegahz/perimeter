@@ -1828,7 +1828,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     float ratio = (static_cast<float>(sensitivity) - 1.0f) / 9.0f; // 0.0 ~ 1.0
 
     // 1. 识别匹配阈值: 0.35 (Lev 1) -> 0.60 (Lev 10)
-    float base_match_thr   = 0.35f + ratio * (0.60f - 0.35f);
+    float base_match_thr   = mode_ == "realtime" ? 0.35f + ratio * (0.60f - 0.35f) : 0.5f;
     // 2. 人脸检测阈值 (FaceOnly模式): 0.75 (Lev 1) -> 0.85 (Lev 10)
     float current_det_thr  = 0.75f + ratio * (0.85f - 0.75f);
     // 3. 姿态 Yaw/Roll 阈值: 50.0 (Lev 1) -> 25.0 (Lev 10)
