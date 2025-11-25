@@ -312,6 +312,7 @@ int main(int argc, char **argv) {
                 proc_config.face_weight_by_cam[CAM_ID] = 0.6f;
                 proc_config.reid_weight_by_cam[CAM_ID] = 0.4f;
                 proc_config.alarmDuration_ms_by_cam[CAM_ID] = 0;
+                proc_config.loitering_sensitivity_by_cam[CAM_ID] = 8; // 新增：为徘徊报警设置独立的灵敏度等级 (1-10)。8级为较低灵敏度，要求行人框较大。
 
                 proc_config.new_gid_time_window = 50;
 

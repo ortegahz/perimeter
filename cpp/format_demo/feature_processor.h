@@ -63,6 +63,11 @@ constexpr int BEHAVIOR_ALARM_DURATION_FRAMES = 256;
 constexpr float MIN_HW_RATIO = 1.5f;
 constexpr float FACE_DET_MIN_SCORE = 0.6f;  // 0.60f
 
+// 新增: 徘徊报警基于行人框面积的灵敏度阈值
+// 灵敏度1级(最高)对应最小面积，10级(最低)对应最大面积
+constexpr float MIN_LOITERING_PERSON_AREA = 40000.0f;  // e.g. 200*200, for far targets
+constexpr float MAX_LOITERING_PERSON_AREA = 250000.0f; // e.g. 500*500, for close targets
+
 //const std::string SAVE_DIR = "/mnt/nfs/perimeter_cpp";
 //const std::string ALARM_DIR = "/mnt/nfs/perimeter_alarm_cpp";
 //const std::string DB_PATH = "/mnt/nfs/perimeter_data.db";
@@ -108,6 +113,8 @@ struct ProcessConfig {
     // 新增: Key: cam_id, Value: 匹配灵敏度 (1-10级, 1为最高灵敏度, 10为最低)。
     // 1(最高) -> 0.1阈值, ..., 10(最低) -> 1.0阈值。
     std::map<std::string, int> sensitivity_by_cam;
+    // 新增: 专门用于徘徊报警的灵敏度 (1-10级)，基于行人框面积。1级(最高)要求面积最小, 10级(最低)要求面积最大。
+    std::map<std::string, int> loitering_sensitivity_by_cam;
     // 新增: 同一TID两次创建新GID之间的最小帧数间隔，默认值非常大以避免频繁创建
     int new_gid_time_window = 25 * 60 * 60 * 24;
     // 新增: 只有当 n > alarm_record_thresh 时，才将 GID 记录用于去重。

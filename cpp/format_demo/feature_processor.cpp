@@ -2109,56 +2109,88 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         if (alarmDuration_threshold > 0 && duration >= alarmDuration_threshold) {
             // 只有当这个 TID 之前没有触发过徘徊警报时，才处理
             if (loitering_alarm_triggered_tids_.find(tid_str) == loitering_alarm_triggered_tids_.end()) {
-                double duration_s = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
-                double threshold_s = use_fid_time_ ? (alarmDuration_threshold / FPS_ESTIMATE) : alarmDuration_threshold;
+                // ======================= 【修改：使用独立的徘徊报警灵敏度】 =======================
+                // 1. 获取专门为徘徊报警配置的灵敏度
+                int loitering_sensitivity = 5; // 默认中等灵敏度
+                if (config.loitering_sensitivity_by_cam.count(stream_id)) {
+                    loitering_sensitivity = config.loitering_sensitivity_by_cam.at(stream_id);
+                }
+                loitering_sensitivity = std::max(1, std::min(10, loitering_sensitivity)); // 确保在1-10范围内
 
-                std::cout << "\n[LOITERING ALARM] TID: " << tid_str << " has been tracked for "
-                          << std::fixed << std::setprecision(2) << duration_s << "s, exceeding threshold of "
-                          << threshold_s << "s."
-                          << std::endl;
+                // 2. 执行基于行人框面积的灵敏度校验
+                bool size_check_passed = false;
+                auto det_it = std::find_if(dets.begin(), dets.end(), [&](const Detection &d) {
+                    return (stream_id + "_" + std::to_string(d.id)) == tid_str;
+                });
 
-                loitering_alarm_triggered_tids_.insert(tid_str);
+                if (det_it != dets.end()) {
+                    float person_area = det_it->tlwh.area();
+                    // 2a. 使用新的 loitering_sensitivity 来映射所需面积
+                    float ratio = (static_cast<float>(loitering_sensitivity) - 1.0f) / 9.0f;
+                    float required_area = MIN_LOITERING_PERSON_AREA + ratio * (MAX_LOITERING_PERSON_AREA - MIN_LOITERING_PERSON_AREA);
 
-                // 检查是否已为此TID创建了报警信息 (例如，由识别或行为触发)
-                auto it = std::find_if(output.alarms.begin(), output.alarms.end(),
-                                       [&](const AlarmTriggerInfo &a) { return a.tid_str == tid_str; });
-
-                if (it != output.alarms.end()) {
-                    // 已存在报警，只需添加类型
-                    it->alarm_types.insert("loitering");
+                    if (person_area >= required_area) {
+                        size_check_passed = true;
+                    } else {
+                        std::cout << "\n[LOITERING ALARM SUPPRESSED BY SIZE] TID: " << tid_str << " person area "
+                                  << person_area << " < required area " << required_area << " for loitering sensitivity level "
+                                  << loitering_sensitivity << "." << std::endl;
+                    }
                 } else {
-                    // 不存在报警，创建一个新的
-                    AlarmTriggerInfo loitering_alarm_info;
-                    loitering_alarm_info.tid_str = tid_str;
-                    loitering_alarm_info.alarm_types.insert("loitering");
+                    // 如果找不到对应的检测框，则默认通过检查，以防意外丢弃报警
+                    size_check_passed = true;
+                }
 
-                    // 填充尽可能多的公共信息
-                    std::string bound_gid = tid2gid.count(tid_str) ? tid2gid.at(tid_str) : "";
-                    loitering_alarm_info.gid = bound_gid;
-                    loitering_alarm_info.last_seen_timestamp = now_stamp_gst;
+                if (size_check_passed) {
+                    // ======================= 【修改结束】 =======================
+                    double duration_s = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
+                    double threshold_s = use_fid_time_ ? (alarmDuration_threshold / FPS_ESTIMATE) : alarmDuration_threshold;
 
-                    if (!bound_gid.empty()) {
-                         loitering_alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(bound_gid)
-                                                                  ? gid_mgr.first_seen_ts.at(bound_gid)
-                                                                  : now_stamp_gst;
-                        loitering_alarm_info.n = gid_alarm_business_counts_.count(bound_gid) ? gid_alarm_business_counts_.at(bound_gid) : 0;
+                    std::cout << "\n[LOITERING ALARM] TID: " << tid_str << " has been tracked for "
+                              << std::fixed << std::setprecision(2) << duration_s << "s, exceeding threshold of "
+                              << threshold_s << "s."
+                              << std::endl;
+
+                    loitering_alarm_triggered_tids_.insert(tid_str);
+
+                    // 检查是否已为此TID创建了报警信息 (例如，由识别或行为触发)
+                    auto it = std::find_if(output.alarms.begin(), output.alarms.end(),
+                                           [&](const AlarmTriggerInfo &a) { return a.tid_str == tid_str; });
+
+                    if (it != output.alarms.end()) {
+                        // 已存在报警，只需添加类型
+                        it->alarm_types.insert("loitering");
+                    } else {
+                        // 不存在报警，创建一个新的
+                        AlarmTriggerInfo loitering_alarm_info;
+                        loitering_alarm_info.tid_str = tid_str;
+                        loitering_alarm_info.alarm_types.insert("loitering");
+
+                        // 填充尽可能多的公共信息
+                        std::string bound_gid = tid2gid.count(tid_str) ? tid2gid.at(tid_str) : "";
+                        loitering_alarm_info.gid = bound_gid;
+                        loitering_alarm_info.last_seen_timestamp = now_stamp_gst;
+
+                        if (!bound_gid.empty()) {
+                            loitering_alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(bound_gid)
+                                                                        ? gid_mgr.first_seen_ts.at(bound_gid)
+                                                                        : now_stamp_gst;
+                            loitering_alarm_info.n = gid_alarm_business_counts_.count(bound_gid) ? gid_alarm_business_counts_.at(bound_gid) : 0;
+                        }
+
+                        // 查找行人框
+                        if (det_it != dets.end()) {
+                            loitering_alarm_info.person_bbox = det_it->tlwh;
+                        }
+
+                        // 查找人脸框和清晰度
+                        if (current_frame_face_boxes_.count(tid_str))
+                            loitering_alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
+                        if (current_frame_face_clarity_.count(tid_str))
+                            loitering_alarm_info.face_clarity_score = current_frame_face_clarity_.at(tid_str);
+
+                        output.alarms.push_back(loitering_alarm_info);
                     }
-
-                    // 查找行人框
-                    auto det_it = std::find_if(dets.begin(), dets.end(), [&](const Detection &d) {
-                        return (stream_id + "_" + std::to_string(d.id)) == tid_str;
-                    });
-                    if (det_it != dets.end()) {
-                        loitering_alarm_info.person_bbox = det_it->tlwh;
-                    }
-
-                    // 查找人脸框和清晰度
-                    if (current_frame_face_boxes_.count(tid_str))
-                        loitering_alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
-                    if (current_frame_face_clarity_.count(tid_str))
-                        loitering_alarm_info.face_clarity_score = current_frame_face_clarity_.at(tid_str);
-
-                    output.alarms.push_back(loitering_alarm_info);
                 }
             }
         }
