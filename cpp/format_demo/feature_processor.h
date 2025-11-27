@@ -144,6 +144,7 @@ struct AlarmGeometry {
     float distance = 0.0f; // Perpendicular distance from line
     float ratio = 0.0f;    // Intersection area / bbox area ratio
     float area = 0.0f;     // Intersection area
+    float threshold_area = 0.0f; // Threshold area used for triggering
 };
 
 /* ---------- 数据结构定义 ---------- */

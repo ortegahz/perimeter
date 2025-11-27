@@ -403,7 +403,7 @@ LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::s
         if (intersection_area >= _min_intersection_area) {
             alarmed_tracks[d.id] = {crossing_zone_poly, intersection_poly_vec, _p1, _p2, proj_dir, is_in ? "in" : "out",
                                     static_cast<float>((current_point - _p1).ddot(_normal_vector)),
-                                    intersection_area / (bbox_area + 1e-6f), intersection_area};
+                                    intersection_area / (bbox_area + 1e-6f), intersection_area, (float)_min_intersection_area};
             history.has_alarmed = true;
         }
         history.last_point = current_point;
@@ -2522,6 +2522,26 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                             boundary_alarm_info.face_clarity_score = current_frame_face_clarity_.at(full_tid);
 
                         output.alarms.push_back(boundary_alarm_info);
+
+                        // 【新增】打印越界报警的线信息用于调试
+                        if (simple_alarm_type == "crossing" && alarm_geom_opt.has_value()) {
+                            const auto& geom = alarm_geom_opt.value();
+                            std::string line_name = "Unknown";
+                            size_t al_pos = alarm_type_base.find("_AL_");
+                            if (al_pos != std::string::npos) {
+                                line_name = alarm_type_base.substr(al_pos + 4);
+                            }
+
+                            std::cout << "\n>>> [CROSSING ALARM] TID: " << full_tid 
+                                      << " | GID: " << (bound_gid.empty() ? "N/A" : bound_gid) << "\n"
+                                      << "    Line Name: " << line_name << "\n"
+                                      << "    Line segment: (" << geom.line_start.x << ", " << geom.line_start.y << ") -> "
+                                      << "(" << geom.line_end.x << ", " << geom.line_end.y << ")\n"
+                                      << "    Cross Dir: " << geom.direction << "\n";
+
+                            std::cout << "    Intersect Area: " << geom.area << " (Threshold: " << geom.threshold_area << ")\n"
+                                      << "-------------------------------------\n";
+                        }
                     }
                 }
 
