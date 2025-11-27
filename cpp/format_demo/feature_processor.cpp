@@ -2552,6 +2552,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                           << ")";
                                 if (i < geom.crossing_zone_poly.size() - 1) std::cout << ", ";
                             }
+                            std::cout << "    Intersect Poly: [";
+                            for (size_t i = 0; i < geom.intersection_poly.size(); ++i) {
+                                std::cout << "(" << geom.intersection_poly[i].x << ", " << geom.intersection_poly[i].y << ")";
+                                if (i < geom.intersection_poly.size() - 1) std::cout << ", ";
+                            }
                             std::cout << "]\n";
                             std::cout << "    Intersect Area: " << geom.area << " (Threshold: " << geom.threshold_area
                                       << ")\n"
