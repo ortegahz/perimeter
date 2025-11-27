@@ -2464,13 +2464,24 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     simple_alarm_type = "crossing";
                 }
 
-                if (!simple_alarm_type.empty()) {
+                // 【修改】仅在告警触发的当前帧（start_fid == current_fid）上报到 alarms 列表，实现“只报一次”。
+                // behavior_alarm_state 中的 start_fid 是由检测器在触发瞬间记录的。
+                if (!simple_alarm_type.empty() && std::get<0>(state_tuple) == fid) {
                     auto it = std::find_if(output.alarms.begin(), output.alarms.end(),
                                            [&](const AlarmTriggerInfo &a) { return a.tid_str == full_tid; });
+
+                    // 提前查找检测框
+                    auto det_it = std::find_if(dets.begin(), dets.end(), [&](const Detection &d) {
+                        return (stream_id + "_" + std::to_string(d.id)) == full_tid;
+                    });
 
                     if (it != output.alarms.end()) {
                         // 已存在识别告警, 添加行为告警类型
                         it->alarm_types.insert(simple_alarm_type);
+                        // 强制更新行人框
+                        if (det_it != dets.end()) {
+                            it->person_bbox = det_it->tlwh;
+                        }
                     } else {
                         // 不存在识别告警, 为行为告警创建新的 AlarmTriggerInfo
                         AlarmTriggerInfo boundary_alarm_info;
@@ -2501,9 +2512,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                             boundary_alarm_info.latest_face_patch = face_p;
                         }
 
-                        auto det_it = std::find_if(dets.begin(), dets.end(), [&](const Detection &d) {
-                            return (stream_id + "_" + std::to_string(d.id)) == full_tid;
-                        });
                         if (det_it != dets.end()) {
                             boundary_alarm_info.person_bbox = det_it->tlwh;
                         }
