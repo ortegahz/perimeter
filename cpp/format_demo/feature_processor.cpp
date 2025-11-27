@@ -2476,15 +2476,20 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         return (stream_id + "_" + std::to_string(d.id)) == full_tid;
                     });
 
+                    // 【修改】统一计算最终使用的行人框：优先使用 Geometry 快照，其次使用当前检测框
+                    cv::Rect2f final_person_bbox(0, 0, 0, 0);
+                    if (det_it != dets.end()) {
+                        final_person_bbox = det_it->tlwh; // 默认回退
+                    }
+                    if (simple_alarm_type == "crossing" && alarm_geom_opt.has_value()) {
+                        final_person_bbox = alarm_geom_opt->person_bbox; // 越界报警使用快照
+                    }
+
                     if (it != output.alarms.end()) {
                         // 已存在识别告警, 添加行为告警类型
                         it->alarm_types.insert(simple_alarm_type);
-                        // 【修改】如果是越界报警，直接使用几何信息中快照的准确框，不再使用 det_it (fallback)
-                        if (simple_alarm_type == "crossing" && alarm_geom_opt.has_value()) {
-                            it->person_bbox = alarm_geom_opt->person_bbox;
-                        } else if (det_it != dets.end()) {
-                            it->person_bbox = det_it->tlwh;
-                        }
+                        // 【修改】更新行人框
+                        it->person_bbox = final_person_bbox;
                     } else {
                         // 不存在识别告警, 为行为告警创建新的 AlarmTriggerInfo
                         AlarmTriggerInfo boundary_alarm_info;
@@ -2515,13 +2520,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                             boundary_alarm_info.latest_face_patch = face_p;
                         }
 
-                        // 【修改】优先使用AlarmGeometry中的快照框，这是最准确的
-                        if (simple_alarm_type == "crossing" && alarm_geom_opt.has_value()) {
-                            boundary_alarm_info.person_bbox = alarm_geom_opt->person_bbox;
-                        } else if (det_it != dets.end()) {
-                            // 对于 Intrusion 或其他没有 Geometry 快照的情况，回退到查找结果
-                            boundary_alarm_info.person_bbox = det_it->tlwh;
-                        }
+                        // 【修改】使用统一计算的框
+                        boundary_alarm_info.person_bbox = final_person_bbox;
 
                         if (current_frame_face_boxes_.count(full_tid))
                             boundary_alarm_info.face_bbox = current_frame_face_boxes_.at(full_tid);
@@ -2529,39 +2529,43 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                             boundary_alarm_info.face_clarity_score = current_frame_face_clarity_.at(full_tid);
 
                         output.alarms.push_back(boundary_alarm_info);
+                    }
 
-                        // 【新增】打印越界报警的线信息用于调试
-                        if (simple_alarm_type == "crossing" && alarm_geom_opt.has_value()) {
-                            const auto& geom = alarm_geom_opt.value();
-                            std::string line_name = "Unknown";
-                            size_t al_pos = alarm_type_base.find("_AL_");
-                            if (al_pos != std::string::npos) {
-                                line_name = alarm_type_base.substr(al_pos + 4);
-                            }
-
-                            std::cout << "\n>>> [CROSSING ALARM] TID: " << full_tid
-                                      << " | GID: " << (bound_gid.empty() ? "N/A" : bound_gid) << "\n"
-                                      << "    Line Name: " << line_name << "\n"
-                                      << "    Line segment: (" << geom.line_start.x << ", " << geom.line_start.y
-                                      << ") -> "
-                                      << "(" << geom.line_end.x << ", " << geom.line_end.y << ")\n"
-                                      << "    Cross Dir: " << geom.direction << "\n";
-                            std::cout << "    Crossing Zone: [";
-                            for (size_t i = 0; i < geom.crossing_zone_poly.size(); ++i) {
-                                std::cout << "(" << geom.crossing_zone_poly[i].x << ", " << geom.crossing_zone_poly[i].y
-                                          << ")";
-                                if (i < geom.crossing_zone_poly.size() - 1) std::cout << ", ";
-                            }
-                            std::cout << "    Intersect Poly: [";
-                            for (size_t i = 0; i < geom.intersection_poly.size(); ++i) {
-                                std::cout << "(" << geom.intersection_poly[i].x << ", " << geom.intersection_poly[i].y << ")";
-                                if (i < geom.intersection_poly.size() - 1) std::cout << ", ";
-                            }
-                            std::cout << "]\n";
-                            std::cout << "    Intersect Area: " << geom.area << " (Threshold: " << geom.threshold_area
-                                      << ")\n"
-                                      << "-------------------------------------\n";
+                    // 【修改】将打印逻辑移出 else 分支，使其对“合并”和“新建”两种情况都生效
+                    if (simple_alarm_type == "crossing" && alarm_geom_opt.has_value()) {
+                        const auto& geom = alarm_geom_opt.value();
+                        std::string line_name = "Unknown";
+                        size_t al_pos = alarm_type_base.find("_AL_");
+                        if (al_pos != std::string::npos) {
+                            line_name = alarm_type_base.substr(al_pos + 4);
                         }
+
+                        std::cout << "\n>>> [CROSSING ALARM] TID: " << full_tid << "\n"
+                                  << "    Line Name: " << line_name << "\n"
+                                  << "    Line segment: (" << geom.line_start.x << ", " << geom.line_start.y
+                                  << ") -> "
+                                  << "(" << geom.line_end.x << ", " << geom.line_end.y << ")\n"
+                                  << "    Cross Dir: " << geom.direction << "\n";
+                        std::cout << "    Crossing Zone: [";
+                        for (size_t i = 0; i < geom.crossing_zone_poly.size(); ++i) {
+                            std::cout << "(" << geom.crossing_zone_poly[i].x << ", " << geom.crossing_zone_poly[i].y
+                                      << ")";
+                            if (i < geom.crossing_zone_poly.size() - 1) std::cout << ", ";
+                        }
+                        std::cout << "]\n";
+                        std::cout << "    Intersect Poly: [";
+                        for (size_t i = 0; i < geom.intersection_poly.size(); ++i) {
+                            std::cout << "(" << geom.intersection_poly[i].x << ", " << geom.intersection_poly[i].y << ")";
+                            if (i < geom.intersection_poly.size() - 1) std::cout << ", ";
+                        }
+                        std::cout << "]\n";
+                        std::cout << "    Person Bbox: [" << final_person_bbox.x << ", "
+                                  << final_person_bbox.y << ", "
+                                  << final_person_bbox.width << ", "
+                                  << final_person_bbox.height << "]\n";
+                        std::cout << "    Intersect Area: " << geom.area << " (Threshold: " << geom.threshold_area
+                                  << ")\n"
+                                  << "-------------------------------------\n";
                     }
                 }
 
