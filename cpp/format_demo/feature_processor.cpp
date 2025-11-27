@@ -2532,14 +2532,22 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                                 line_name = alarm_type_base.substr(al_pos + 4);
                             }
 
-                            std::cout << "\n>>> [CROSSING ALARM] TID: " << full_tid 
+                            std::cout << "\n>>> [CROSSING ALARM] TID: " << full_tid
                                       << " | GID: " << (bound_gid.empty() ? "N/A" : bound_gid) << "\n"
                                       << "    Line Name: " << line_name << "\n"
-                                      << "    Line segment: (" << geom.line_start.x << ", " << geom.line_start.y << ") -> "
+                                      << "    Line segment: (" << geom.line_start.x << ", " << geom.line_start.y
+                                      << ") -> "
                                       << "(" << geom.line_end.x << ", " << geom.line_end.y << ")\n"
                                       << "    Cross Dir: " << geom.direction << "\n";
-
-                            std::cout << "    Intersect Area: " << geom.area << " (Threshold: " << geom.threshold_area << ")\n"
+                            std::cout << "    Crossing Zone: [";
+                            for (size_t i = 0; i < geom.crossing_zone_poly.size(); ++i) {
+                                std::cout << "(" << geom.crossing_zone_poly[i].x << ", " << geom.crossing_zone_poly[i].y
+                                          << ")";
+                                if (i < geom.crossing_zone_poly.size() - 1) std::cout << ", ";
+                            }
+                            std::cout << "]\n";
+                            std::cout << "    Intersect Area: " << geom.area << " (Threshold: " << geom.threshold_area
+                                      << ")\n"
                                       << "-------------------------------------\n";
                         }
                     }
