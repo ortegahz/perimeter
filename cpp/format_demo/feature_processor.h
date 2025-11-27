@@ -145,6 +145,7 @@ struct AlarmGeometry {
     float ratio = 0.0f;    // Intersection area / bbox area ratio
     float area = 0.0f;     // Intersection area
     float threshold_area = 0.0f; // Threshold area used for triggering
+    cv::Rect2f person_bbox;      // 【修改】检测时的原始框快照
 };
 
 /* ---------- 数据结构定义 ---------- */

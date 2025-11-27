@@ -403,7 +403,8 @@ LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::s
         if (intersection_area >= _min_intersection_area) {
             alarmed_tracks[d.id] = {crossing_zone_poly, intersection_poly_vec, _p1, _p2, proj_dir, is_in ? "in" : "out",
                                     static_cast<float>((current_point - _p1).ddot(_normal_vector)),
-                                    intersection_area / (bbox_area + 1e-6f), intersection_area, (float)_min_intersection_area};
+                                    intersection_area / (bbox_area + 1e-6f), intersection_area, (float)_min_intersection_area,
+                                    d.tlwh}; // 【修改】快照当前的检测框
             history.has_alarmed = true;
         }
         history.last_point = current_point;
@@ -2478,8 +2479,10 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     if (it != output.alarms.end()) {
                         // 已存在识别告警, 添加行为告警类型
                         it->alarm_types.insert(simple_alarm_type);
-                        // 强制更新行人框
-                        if (det_it != dets.end()) {
+                        // 【修改】如果是越界报警，直接使用几何信息中快照的准确框，不再使用 det_it (fallback)
+                        if (simple_alarm_type == "crossing" && alarm_geom_opt.has_value()) {
+                            it->person_bbox = alarm_geom_opt->person_bbox;
+                        } else if (det_it != dets.end()) {
                             it->person_bbox = det_it->tlwh;
                         }
                     } else {
@@ -2512,7 +2515,11 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                             boundary_alarm_info.latest_face_patch = face_p;
                         }
 
-                        if (det_it != dets.end()) {
+                        // 【修改】优先使用AlarmGeometry中的快照框，这是最准确的
+                        if (simple_alarm_type == "crossing" && alarm_geom_opt.has_value()) {
+                            boundary_alarm_info.person_bbox = alarm_geom_opt->person_bbox;
+                        } else if (det_it != dets.end()) {
+                            // 对于 Intrusion 或其他没有 Geometry 快照的情况，回退到查找结果
                             boundary_alarm_info.person_bbox = det_it->tlwh;
                         }
 
