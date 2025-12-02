@@ -121,8 +121,9 @@ namespace { // Anonymous namespace for internal helpers
     };
 
     /**
-     * @brief 根据产品定义的规格(无序两点,方向,灵敏度等级)来创建内部使用的LineRule。
-     *        该函数会自动判断点的左右/上下顺序，并将 "AB", "BA" 映射到 "out", "in"。
+     * @brief 根据产品定义的规格(两点,方向,灵敏度等级)来创建内部使用的LineRule。
+     *        该函数以p1为起点，p2为终点确定方向，逆时针方向为A，顺时针方向为B。
+     *        并将 "AB", "BA" 映射到 "out", "in"。
      *        同时，根据灵敏度等级 (1-10) 映射到具体的 `min_intersection_area`。
      * @param spec 包含产品规格的 LineRuleSpec 结构体。
      * @return 配置好的内部 InternalLineRule 结构体。
@@ -131,15 +132,10 @@ namespace { // Anonymous namespace for internal helpers
     {
         cv::Point pA, pB;
 
-        // 1. 自动排序：根据坐标确定哪个点是 A (左/上)，哪个是 B (右/下)。
-        double dx = static_cast<double>(spec.p_unordered2.x) - spec.p_unordered1.x;
-        double dy = static_cast<double>(spec.p_unordered2.y) - spec.p_unordered1.y;
-
-        if (std::abs(dx) >= std::abs(dy)) { // 优先按 x 坐标（水平方向）排序
-            if (spec.p_unordered1.x < spec.p_unordered2.x) { pA = spec.p_unordered1; pB = spec.p_unordered2; } else { pA = spec.p_unordered2; pB = spec.p_unordered1; }
-        } else { // 否则按 y 坐标（垂直方向）排序
-            if (spec.p_unordered1.y < spec.p_unordered2.y) { pA = spec.p_unordered1; pB = spec.p_unordered2; } else { pA = spec.p_unordered2; pB = spec.p_unordered1; }
-        }
+        // 1. 直接指定：p1为起点，p2为终点，确定线的方向(p1->p2)。
+        // 按照 LineCrossingDetectorPlus 的逻辑 (-dy, dx)，左侧/逆时针方向(CCW)为A区，右侧/顺时针方向(CW)为B区。
+        pA = spec.p_unordered1;
+        pB = spec.p_unordered2;
 
         // 2. 策略映射：将产品方向映射到内部使用的 "in", "out", "any"。
         std::string internal_policy = "any";
