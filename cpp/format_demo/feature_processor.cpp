@@ -2104,8 +2104,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
 
         // ======================= 【新增: 独立的徘徊报警逻辑】 =======================
         if (alarmDuration_threshold > 0 && duration >= alarmDuration_threshold) {
-            // 只有当这个 TID 之前没有触发过徘徊警报时，才处理
-            if (loitering_alarm_triggered_tids_.find(tid_str) == loitering_alarm_triggered_tids_.end()) {
+            // 只有当这个 TID 之前没有触发过徘徊警报时，才处理 (Modified: Limit removed as requested)
+            // if (loitering_alarm_triggered_tids_.find(tid_str) == loitering_alarm_triggered_tids_.end())
+            {
                 // ======================= 【修改：使用独立的徘徊报警灵敏度】 =======================
                 // 1. 获取专门为徘徊报警配置的灵敏度
                 int loitering_sensitivity = 5; // 默认中等灵敏度
@@ -2148,7 +2149,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                               << threshold_s << "s."
                               << std::endl;
 
-                    loitering_alarm_triggered_tids_.insert(tid_str);
+                    // loitering_alarm_triggered_tids_.insert(tid_str);
 
                     // 检查是否已为此TID创建了报警信息 (例如，由识别或行为触发)
                     auto it = std::find_if(output.alarms.begin(), output.alarms.end(),
