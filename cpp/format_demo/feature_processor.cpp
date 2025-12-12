@@ -120,6 +120,32 @@ namespace { // Anonymous namespace for internal helpers
         int min_intersection_area;
     };
 
+    // ======================= 【NEW: ROI Filter Implementation】 =======================
+    // 用于计算哪些检测框落在了多边形区域内 (替代 common.h 接口)
+    static std::vector<int> contoursInterestLogic(const std::vector<std::vector<cv::Point>> &contours,
+                                                  const std::vector<cv::Rect2d> &rects,
+                                                  int srcWidth, int srcHeight)
+    {
+        cv::Mat mask = cv::Mat::zeros(cv::Size(srcWidth, srcHeight), CV_8UC1);
+
+        // 绘制所有感兴趣区域 (ROI)
+        for (const auto& contour : contours) {
+            cv::drawContours(mask, std::vector<std::vector<cv::Point>>{contour}, -1, cv::Scalar(255), cv::FILLED);
+        }
+
+        std::vector<int> indices;
+        for (int i = 0; i < (int)rects.size(); i++) {
+            // 取交集，防止越界
+            cv::Rect roi = rects[i] & cv::Rect2d(0, 0, srcWidth, srcHeight);
+            if (roi.area() > 0) {
+                if (cv::countNonZero(mask(roi)) > 0) {
+                    indices.push_back(i);
+                }
+            }
+        }
+        return indices;
+    }
+
     /**
      * @brief 根据产品定义的规格(两点,方向,灵敏度等级)来创建内部使用的LineRule。
      *        该函数以p1为起点，p2为终点确定方向，逆时针方向为A，顺时针方向为B。
@@ -139,6 +165,7 @@ namespace { // Anonymous namespace for internal helpers
 
         // 2. 策略映射：将产品方向映射到内部使用的 "in", "out", "any"。
         std::string internal_policy = "any";
+        // 【修改】修正方向映射：AB (AtoB) 一般对应进入(in), BA (BtoA) 一般对应离开(out) - 实际上取决于法向量方向
         if (spec.product_direction == "AB") { internal_policy = "in"; } else if (spec.product_direction == "BA") { internal_policy = "out"; }
 
         // 3. 灵敏度映射: 将1-10级的灵敏度映射到最小触发面积 (1=最高灵敏度=最小面积, 10=最低灵敏度=最大面积)
@@ -2084,6 +2111,33 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         _load_features_from_cache(cam_id, fid, full_frame, dets, now_stamp);
     }
 
+    // ======================= 【NEW: Pre-calculate Loitering ROI】 =======================
+    // 1. 预计算哪些 TID 此时此刻位于徘徊 ROI 内
+    std::set<uint64> tids_inside_loitering_roi;
+    if (config.loitering_roi_contours_by_cam.count(stream_id)) {
+        const auto& contours = config.loitering_roi_contours_by_cam.at(stream_id);
+        if (!contours.empty() && !dets.empty()) {
+            // 将 Detection 的 Rect2f 转换为 Rect2d 以适配接口
+            std::vector<cv::Rect2d> rects_d;
+            rects_d.reserve(dets.size());
+            for(const auto& d : dets) {
+                rects_d.push_back(d.tlwh);
+            }
+
+            // 调用 helper 函数计算
+            std::vector<int> valid_indices = contoursInterestLogic(contours, rects_d,
+                                                                   full_frame.cols, full_frame.rows);
+
+            // 存入 Set 以便后续 O(1) 查询
+            for(int idx : valid_indices) {
+                if(idx >= 0 && idx < (int)dets.size()) {
+                    tids_inside_loitering_roi.insert(dets[idx].id);
+                }
+            }
+        }
+    }
+    // ======================= 【NEW END】 =======================
+
     // ======================= 【FIXED】 =======================
     // 关键修复：在主循环入口处增加过滤器，确保只处理属于当前摄像头(stream_id)的轨迹。
     // 这从根本上解决了跨摄像头上下文污染的问题，且改动极小。
@@ -2101,6 +2155,27 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             duration = now_stamp - first_seen_tid.at(tid_str);
         }
         output.tid_durations_sec[tid_str] = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
+
+        // ======================= 【NEW: ROI Reset Logic】 =======================
+        // 如果配置了 ROI 且当前 TID 不在 ROI 内，强制清空计数（重置起始时间）
+        if (config.loitering_roi_contours_by_cam.count(stream_id) &&
+            !config.loitering_roi_contours_by_cam.at(stream_id).empty())
+        {
+            size_t last_underscore = tid_str.find_last_of('_');
+            uint64_t tid_num = std::stoull(tid_str.substr(last_underscore + 1));
+
+            // 如果此人不在 ROI 集合中
+            if (tids_inside_loitering_roi.find(tid_num) == tids_inside_loitering_roi.end()) {
+                // 1. 重置首次出现时间为“现在” -> 持续时长变为 0
+                first_seen_tid[tid_str] = now_stamp;
+                duration = 0.0;
+
+                // 2. 更新输出状态，确保前端看到的是也就是 0
+                output.tid_durations_sec[tid_str] = 0.0;
+                // 本次循环后续若有基于 duration 的判断都会失效(因为duration=0)
+            }
+        }
+        // ======================= 【NEW END】 =======================
 
         // ======================= 【新增: 独立的徘徊报警逻辑】 =======================
         if (alarmDuration_threshold > 0 && duration >= alarmDuration_threshold) {

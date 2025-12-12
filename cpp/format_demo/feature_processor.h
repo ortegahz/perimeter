@@ -127,6 +127,9 @@ struct ProcessConfig {
     // ======================= 【NEW: Real-time Boundary Rules】 =======================
     std::map<std::string, std::map<std::string, IntrusionRule>> intrusion_rules;
     std::map<std::string, std::vector<LineRuleSpec>> line_rules_spec;
+
+    // 新增：徘徊报警的感兴趣区域 (ROI)，支持多个多边形轮廓。每个 Point 代表 (x, y)
+    std::map<std::string, std::vector<std::vector<cv::Point>>> loitering_roi_contours_by_cam;
     // ======================= 【NEW END】 =======================
 };
 
