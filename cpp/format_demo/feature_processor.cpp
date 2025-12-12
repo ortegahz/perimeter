@@ -139,7 +139,7 @@ namespace { // Anonymous namespace for internal helpers
 
         // 2. 策略映射：将产品方向映射到内部使用的 "in", "out", "any"。
         std::string internal_policy = "any";
-        if (spec.product_direction == "AB") { internal_policy = "out"; } else if (spec.product_direction == "BA") { internal_policy = "in"; }
+        if (spec.product_direction == "AB") { internal_policy = "in"; } else if (spec.product_direction == "BA") { internal_policy = "out"; }
 
         // 3. 灵敏度映射: 将1-10级的灵敏度映射到最小触发面积 (1=最高灵敏度=最小面积, 10=最低灵敏度=最大面积)
         const int MIN_AREA = 2048; const int MAX_AREA = 20480;
