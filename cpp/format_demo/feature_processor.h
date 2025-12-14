@@ -124,6 +124,10 @@ struct ProcessConfig {
     // 新增: 实时配置参数 (秒)。如果此值被设置, 它将覆盖本帧的默认配置。
     std::optional<long long> gid_recognition_cooldown_s;
 
+    // ======================= 【新增: 徘徊复位信号】 =======================
+    // 集合中包含的 TID 字符串 (格式: "camId_trackId") 将在当前帧被重置徘徊起始时间。
+    std::set<std::string> loitering_reset_tids;
+
     // ======================= 【NEW: Real-time Boundary Rules】 =======================
     std::map<std::string, std::map<std::string, IntrusionRule>> intrusion_rules;
     std::map<std::string, std::vector<LineRuleSpec>> line_rules_spec;

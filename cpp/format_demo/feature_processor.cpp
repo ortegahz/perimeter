@@ -2156,6 +2156,21 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         }
         output.tid_durations_sec[tid_str] = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
 
+        // ======================= 【NEW: Manual Loitering Reset Logic】 =======================
+        // 如果配置中包含针对该 TID 的复位信号，则重置其起始时间
+        if (config.loitering_reset_tids.count(tid_str)) {
+            std::cout << "[LOITERING RESET] Manual reset triggered for TID: " << tid_str
+                      << " (Prev duration: " << std::fixed << std::setprecision(2)
+                      << (use_fid_time_ ? (duration / FPS_ESTIMATE) : duration) << "s)" << std::endl;
+
+            // 1. 重置首次可见时间为当前时间戳 -> Duration 归零
+            first_seen_tid[tid_str] = now_stamp;
+            duration = 0.0;
+            output.tid_durations_sec[tid_str] = 0.0;
+
+            // 2. 清除已触发状态，允许重新达到阈值时再次报警
+            loitering_alarm_triggered_tids_.erase(tid_str);
+        }
         // ======================= 【NEW: ROI Reset Logic】 =======================
         // 如果配置了 ROI 且当前 TID 不在 ROI 内，强制清空计数（重置起始时间）
         if (config.loitering_roi_contours_by_cam.count(stream_id) &&
