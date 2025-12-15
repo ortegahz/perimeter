@@ -169,7 +169,7 @@ namespace { // Anonymous namespace for internal helpers
         if (spec.product_direction == "AB") { internal_policy = "in"; } else if (spec.product_direction == "BA") { internal_policy = "out"; }
 
         // 3. 灵敏度映射: 将1-10级的灵敏度映射到最小触发面积 (1=最高灵敏度=最小面积, 10=最低灵敏度=最大面积)
-        const int MIN_AREA = 2048; const int MAX_AREA = 20480;
+        const int MIN_AREA = 5; const int MAX_AREA = 50; // Modified: 映射为 5% 到 50% 的覆盖率
         int level = std::max(1, std::min(10, spec.level)); // 将等级限制在1-10
         int area = static_cast<int>(MIN_AREA + (static_cast<double>(level - 1) * (MAX_AREA - MIN_AREA)) / 9.0);
 
@@ -423,7 +423,8 @@ LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::s
         std::vector<cv::Point2f> intersection_poly_vec;
         float intersection_area = cv::intersectConvexConvex(bbox_poly, crossing_zone_poly, intersection_poly_vec, true);
 
-        if (intersection_area >= _min_intersection_area) {
+        // Modified: 判断重叠面积占行人框面积的百分比是否达到阈值 (阈值 _min_intersection_area 已改为百分比整数)
+        if ((intersection_area / (bbox_area + 1e-6f)) * 100.0f >= _min_intersection_area) {
             alarmed_tracks[d.id] = {crossing_zone_poly, intersection_poly_vec, _p1, _p2, proj_dir, is_in ? "in" : "out",
                                     static_cast<float>((current_point - _p1).ddot(_normal_vector)),
                                     intersection_area / (bbox_area + 1e-6f), intersection_area, (float)_min_intersection_area,
