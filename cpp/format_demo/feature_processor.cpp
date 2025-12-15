@@ -424,7 +424,9 @@ LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::s
         float intersection_area = cv::intersectConvexConvex(bbox_poly, crossing_zone_poly, intersection_poly_vec, true);
 
         // Modified: 判断重叠面积占行人框面积的百分比是否达到阈值 (阈值 _min_intersection_area 已改为百分比整数)
-        if ((intersection_area / (bbox_area + 1e-6f)) * 100.0f >= _min_intersection_area) {
+        // Modified: 如果阈值>1024则判定为绝对面积(兼容8192)，否则判定为相对占比(5-50)
+        if ((_min_intersection_area > 1024 ? intersection_area : (intersection_area / (bbox_area + 1e-6f) * 100.0f)) >= _min_intersection_area) {
+        // if ((intersection_area / (bbox_area + 1e-6f)) * 100.0f >= _min_intersection_area) {
             alarmed_tracks[d.id] = {crossing_zone_poly, intersection_poly_vec, _p1, _p2, proj_dir, is_in ? "in" : "out",
                                     static_cast<float>((current_point - _p1).ddot(_normal_vector)),
                                     intersection_area / (bbox_area + 1e-6f), intersection_area, (float)_min_intersection_area,
