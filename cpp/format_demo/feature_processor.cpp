@@ -2193,7 +2193,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         // ======================= 【NEW END】 =======================
 
         // ======================= 【新增: 独立的徘徊报警逻辑】 =======================
-        if (alarmDuration_threshold > 0 && duration >= alarmDuration_threshold) {
+        if (true) {
             // 只有当这个 TID 之前没有触发过徘徊警报时，才处理 (Modified: Limit removed as requested)
             // if (loitering_alarm_triggered_tids_.find(tid_str) == loitering_alarm_triggered_tids_.end())
             {
