@@ -2251,6 +2251,10 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     if (it != output.alarms.end()) {
                         // 已存在报警，只需添加类型
                         it->alarm_types.insert("loitering");
+                        // 【修改】即使报警已存在，也必须更新为当前检测到的最新行人框
+                        if (det_it != dets.end()) {
+                            it->person_bbox = det_it->tlwh;
+                        }
                     } else {
                         // 不存在报警，创建一个新的
                         AlarmTriggerInfo loitering_alarm_info;
