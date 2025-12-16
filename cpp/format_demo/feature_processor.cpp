@@ -1968,7 +1968,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 cv::Mat patch;
                 gpu_patch.download(patch);
 
-                if (!is_long_patch(patch)) continue;
+                // if (!is_long_patch(patch)) continue;
 
                 // --- HANG FIX: Wrap Re-ID DLA call with a timeout ---
                 cv::cuda::GpuMat feat_mat_gpu;
