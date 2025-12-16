@@ -2114,33 +2114,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         _load_features_from_cache(cam_id, fid, full_frame, dets, now_stamp);
     }
 
-    // ======================= 【NEW: Pre-calculate Loitering ROI】 =======================
-    // 1. 预计算哪些 TID 此时此刻位于徘徊 ROI 内
-    std::set<uint64> tids_inside_loitering_roi;
-    if (config.loitering_roi_contours_by_cam.count(stream_id)) {
-        const auto& contours = config.loitering_roi_contours_by_cam.at(stream_id);
-        if (!contours.empty() && !dets.empty()) {
-            // 将 Detection 的 Rect2f 转换为 Rect2d 以适配接口
-            std::vector<cv::Rect2d> rects_d;
-            rects_d.reserve(dets.size());
-            for(const auto& d : dets) {
-                rects_d.push_back(d.tlwh);
-            }
-
-            // 调用 helper 函数计算
-            std::vector<int> valid_indices = contoursInterestLogic(contours, rects_d,
-                                                                   full_frame.cols, full_frame.rows);
-
-            // 存入 Set 以便后续 O(1) 查询
-            for(int idx : valid_indices) {
-                if(idx >= 0 && idx < (int)dets.size()) {
-                    tids_inside_loitering_roi.insert(dets[idx].id);
-                }
-            }
-        }
-    }
-    // ======================= 【NEW END】 =======================
-
     // ======================= 【FIXED】 =======================
     // 关键修复：在主循环入口处增加过滤器，确保只处理属于当前摄像头(stream_id)的轨迹。
     // 这从根本上解决了跨摄像头上下文污染的问题，且改动极小。
@@ -2158,138 +2131,6 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             duration = now_stamp - first_seen_tid.at(tid_str);
         }
         output.tid_durations_sec[tid_str] = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
-
-        // ======================= 【NEW: Manual Loitering Reset Logic】 =======================
-        // 如果配置中包含针对该 TID 的复位信号，则重置其起始时间
-        if (config.loitering_reset_tids.count(tid_str)) {
-            std::cout << "[LOITERING RESET] Manual reset triggered for TID: " << tid_str
-                      << " (Prev duration: " << std::fixed << std::setprecision(2)
-                      << (use_fid_time_ ? (duration / FPS_ESTIMATE) : duration) << "s)" << std::endl;
-
-            // 1. 重置首次可见时间为当前时间戳 -> Duration 归零
-            first_seen_tid[tid_str] = now_stamp;
-            duration = 0.0;
-            output.tid_durations_sec[tid_str] = 0.0;
-
-            // 2. 清除已触发状态，允许重新达到阈值时再次报警
-            loitering_alarm_triggered_tids_.erase(tid_str);
-        }
-        // ======================= 【NEW: ROI Reset Logic】 =======================
-        // 如果配置了 ROI 且当前 TID 不在 ROI 内，强制清空计数（重置起始时间）
-        if (config.loitering_roi_contours_by_cam.count(stream_id) &&
-            !config.loitering_roi_contours_by_cam.at(stream_id).empty())
-        {
-            size_t last_underscore = tid_str.find_last_of('_');
-            uint64_t tid_num = std::stoull(tid_str.substr(last_underscore + 1));
-
-            // 如果此人不在 ROI 集合中
-            if (tids_inside_loitering_roi.find(tid_num) == tids_inside_loitering_roi.end()) {
-                // 1. 重置首次出现时间为“现在” -> 持续时长变为 0
-                first_seen_tid[tid_str] = now_stamp;
-                duration = 0.0;
-
-                // 2. 更新输出状态，确保前端看到的是也就是 0
-                output.tid_durations_sec[tid_str] = 0.0;
-                // 本次循环后续若有基于 duration 的判断都会失效(因为duration=0)
-            }
-        }
-        // ======================= 【NEW END】 =======================
-
-        // ======================= 【新增: 独立的徘徊报警逻辑】 =======================
-        if (true) {
-            // 只有当这个 TID 之前没有触发过徘徊警报时，才处理 (Modified: Limit removed as requested)
-            // if (loitering_alarm_triggered_tids_.find(tid_str) == loitering_alarm_triggered_tids_.end())
-            {
-                // ======================= 【修改：使用独立的徘徊报警灵敏度】 =======================
-                // 1. 获取专门为徘徊报警配置的灵敏度
-                int loitering_sensitivity = 5; // 默认中等灵敏度
-                if (config.loitering_sensitivity_by_cam.count(stream_id)) {
-                    loitering_sensitivity = config.loitering_sensitivity_by_cam.at(stream_id);
-                }
-                loitering_sensitivity = std::max(1, std::min(10, loitering_sensitivity)); // 确保在1-10范围内
-
-                // 2. 执行基于行人框面积的灵敏度校验
-                bool size_check_passed = false;
-                auto det_it = std::find_if(dets.begin(), dets.end(), [&](const Detection &d) {
-                    return (stream_id + "_" + std::to_string(d.id)) == tid_str;
-                });
-
-                if (det_it != dets.end()) {
-                    float person_area = det_it->tlwh.area();
-                    // 2a. 使用新的 loitering_sensitivity 来映射所需面积
-                    float ratio = (static_cast<float>(loitering_sensitivity) - 1.0f) / 9.0f;
-                    float required_area = MIN_LOITERING_PERSON_AREA + ratio * (MAX_LOITERING_PERSON_AREA - MIN_LOITERING_PERSON_AREA);
-
-                    if (person_area >= required_area) {
-                        size_check_passed = true;
-                    } else {
-                        std::cout << "\n[LOITERING ALARM SUPPRESSED BY SIZE] TID: " << tid_str << " person area "
-                                  << person_area << " < required area " << required_area << " for loitering sensitivity level "
-                                  << loitering_sensitivity << "." << std::endl;
-                    }
-                } else {
-                    // 如果找不到对应的检测框，则默认通过检查，以防意外丢弃报警
-                    size_check_passed = true;
-                }
-
-                if (size_check_passed) {
-                    // ======================= 【修改结束】 =======================
-                    double duration_s = use_fid_time_ ? (duration / FPS_ESTIMATE) : duration;
-                    double threshold_s = use_fid_time_ ? (alarmDuration_threshold / FPS_ESTIMATE) : alarmDuration_threshold;
-
-                    std::cout << "\n[LOITERING ALARM] TID: " << tid_str << " has been tracked for "
-                              << std::fixed << std::setprecision(2) << duration_s << "s, exceeding threshold of "
-                              << threshold_s << "s."
-                              << std::endl;
-
-                    // loitering_alarm_triggered_tids_.insert(tid_str);
-
-                    // 检查是否已为此TID创建了报警信息 (例如，由识别或行为触发)
-                    auto it = std::find_if(output.alarms.begin(), output.alarms.end(),
-                                           [&](const AlarmTriggerInfo &a) { return a.tid_str == tid_str; });
-
-                    if (it != output.alarms.end()) {
-                        // 已存在报警，只需添加类型
-                        it->alarm_types.insert("loitering");
-                        // 【修改】即使报警已存在，也必须更新为当前检测到的最新行人框
-                        if (det_it != dets.end()) {
-                            it->person_bbox = det_it->tlwh;
-                        }
-                    } else {
-                        // 不存在报警，创建一个新的
-                        AlarmTriggerInfo loitering_alarm_info;
-                        loitering_alarm_info.tid_str = tid_str;
-                        loitering_alarm_info.alarm_types.insert("loitering");
-
-                        // 填充尽可能多的公共信息
-                        std::string bound_gid = tid2gid.count(tid_str) ? tid2gid.at(tid_str) : "";
-                        loitering_alarm_info.gid = bound_gid;
-                        loitering_alarm_info.last_seen_timestamp = now_stamp_gst;
-
-                        if (!bound_gid.empty()) {
-                            loitering_alarm_info.first_seen_timestamp = gid_mgr.first_seen_ts.count(bound_gid)
-                                                                        ? gid_mgr.first_seen_ts.at(bound_gid)
-                                                                        : now_stamp_gst;
-                            loitering_alarm_info.n = gid_alarm_business_counts_.count(bound_gid) ? gid_alarm_business_counts_.at(bound_gid) : 0;
-                        }
-
-                        // 查找行人框
-                        if (det_it != dets.end()) {
-                            loitering_alarm_info.person_bbox = det_it->tlwh;
-                        }
-
-                        // 查找人脸框和清晰度
-                        if (current_frame_face_boxes_.count(tid_str))
-                            loitering_alarm_info.face_bbox = current_frame_face_boxes_.at(tid_str);
-                        if (current_frame_face_clarity_.count(tid_str))
-                            loitering_alarm_info.face_clarity_score = current_frame_face_clarity_.at(tid_str);
-
-                        output.alarms.push_back(loitering_alarm_info);
-                    }
-                }
-            }
-        }
-        // ======================= 【新增结束】 =======================
 
         size_t last_underscore = tid_str.find_last_of('_');
         std::string s_id = tid_str.substr(0, last_underscore);
@@ -2751,29 +2592,15 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         }
     } // 锁在此处自动释放
 
-    // 收集当前帧实际检测到的 TIDs，用于严格过滤
-    std::set<std::string> current_frame_det_tids;
-    for (const auto &det : dets) {
-        current_frame_det_tids.insert(stream_id + "_" + std::to_string(det.id));
-    }
-
-
     // 【修改】在最终输出前进行统一过滤：确保 alarms 列表中只包含属于当前流(stream_id + "_")的报警
     // 这可以同时解决徘徊报警和行为报警可能出现的跨流(如 cam1 和 cam10)污染问题
     const std::string prefix_filter = stream_id + "_";
     output.alarms.erase(std::remove_if(output.alarms.begin(), output.alarms.end(),
                                        [&](const AlarmTriggerInfo &a) {
-                                          // 1. 如果 tid_str 不是以 "stream_id_" 开头，则移除
-                                           if (a.tid_str.rfind(prefix_filter, 0) != 0) return true;
-                                           // 2. 对 loitering 类型进行严格过滤：只有当前帧检测到的 TID 才输出徘徊报警
-                                           // 防止目标消失但跟踪器(agg_pool)未超时前持续误报
-                                           if (a.alarm_types.count("loitering") &&
-                                               current_frame_det_tids.find(a.tid_str) == current_frame_det_tids.end()) {
-                                               return true;
-                                           }
-                                           return false;
-                                        }),
-                         output.alarms.end());
+                                           // 如果 tid_str 不是以 "stream_id_" 开头，则移除
+                                           return a.tid_str.rfind(prefix_filter, 0) != 0;
+                                       }),
+                        output.alarms.end());
 
     // 仅当功能开关打开且确实有报警时才执行保存逻辑
     if (m_enable_alarm_saving && !triggered_alarms_this_frame.empty()) {
