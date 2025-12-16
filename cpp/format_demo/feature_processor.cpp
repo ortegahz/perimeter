@@ -2747,6 +2747,16 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         }
     } // 锁在此处自动释放
 
+    // 【修改】在最终输出前进行统一过滤：确保 alarms 列表中只包含属于当前流(stream_id + "_")的报警
+    // 这可以同时解决徘徊报警和行为报警可能出现的跨流(如 cam1 和 cam10)污染问题
+    const std::string prefix_filter = stream_id + "_";
+    output.alarms.erase(std::remove_if(output.alarms.begin(), output.alarms.end(),
+                                       [&](const AlarmTriggerInfo &a) {
+                                           // 如果 tid_str 不是以 "stream_id_" 开头，则移除
+                                           return a.tid_str.rfind(prefix_filter, 0) != 0;
+                                       }),
+                        output.alarms.end());
+
     // 仅当功能开关打开且确实有报警时才执行保存逻辑
     if (m_enable_alarm_saving && !triggered_alarms_this_frame.empty()) {
         // --- 新增：识别出本帧中首次需要保存上下文的报警集合 ---
