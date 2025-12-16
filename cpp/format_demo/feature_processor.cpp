@@ -2751,15 +2751,29 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         }
     } // 锁在此处自动释放
 
+    // 收集当前帧实际检测到的 TIDs，用于严格过滤
+    std::set<std::string> current_frame_det_tids;
+    for (const auto &det : dets) {
+        current_frame_det_tids.insert(stream_id + "_" + std::to_string(det.id));
+    }
+
+
     // 【修改】在最终输出前进行统一过滤：确保 alarms 列表中只包含属于当前流(stream_id + "_")的报警
     // 这可以同时解决徘徊报警和行为报警可能出现的跨流(如 cam1 和 cam10)污染问题
     const std::string prefix_filter = stream_id + "_";
     output.alarms.erase(std::remove_if(output.alarms.begin(), output.alarms.end(),
                                        [&](const AlarmTriggerInfo &a) {
-                                           // 如果 tid_str 不是以 "stream_id_" 开头，则移除
-                                           return a.tid_str.rfind(prefix_filter, 0) != 0;
-                                       }),
-                        output.alarms.end());
+                                          // 1. 如果 tid_str 不是以 "stream_id_" 开头，则移除
+                                           if (a.tid_str.rfind(prefix_filter, 0) != 0) return true;
+                                           // 2. 对 loitering 类型进行严格过滤：只有当前帧检测到的 TID 才输出徘徊报警
+                                           // 防止目标消失但跟踪器(agg_pool)未超时前持续误报
+                                           if (a.alarm_types.count("loitering") &&
+                                               current_frame_det_tids.find(a.tid_str) == current_frame_det_tids.end()) {
+                                               return true;
+                                           }
+                                           return false;
+                                        }),
+                         output.alarms.end());
 
     // 仅当功能开关打开且确实有报警时才执行保存逻辑
     if (m_enable_alarm_saving && !triggered_alarms_this_frame.empty()) {
