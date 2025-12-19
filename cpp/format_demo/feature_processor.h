@@ -233,7 +233,7 @@ public:
                              int min_intersection_area = 100);
 
     // Returns a map of <tid, details> for each track that triggered an alarm this frame.
-    std::map<uint64, AlarmGeometry> check(const std::vector<Detection> &dets, const std::string &stream_id);
+    std::map<uint64, AlarmGeometry> check(const std::vector<Detection> &dets, const std::string &stream_id, const std::string &mode);
 
 private:
     float _a, _b, _c;

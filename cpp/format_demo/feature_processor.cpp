@@ -368,14 +368,14 @@ int LineCrossingDetectorPlus::_get_side(const cv::Point2f &point) const {
 }
 
 std::map<uint64, AlarmGeometry>
-LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::string &stream_id) {
+LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::string &stream_id, const std::string &mode) {
     std::map<uint64, AlarmGeometry> alarmed_tracks;
     std::set<uint64> current_tids;
 
     for (const auto &d: dets) {
         current_tids.insert(d.id);
         auto &history = _track_history[d.id];
-        // if (history.has_alarmed) continue; // 【修改】注释掉此行，允许同一TID多次触发越界报警
+        if (mode == "load" && history.has_alarmed) continue;
 
         cv::Rect2f tlwh = d.tlwh;
         std::vector<cv::Point2f> bbox_poly = {tlwh.tl(), {tlwh.x + tlwh.width, tlwh.y}, tlwh.br(),
@@ -431,7 +431,7 @@ LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::s
                                     static_cast<float>((current_point - _p1).ddot(_normal_vector)),
                                     intersection_area / (bbox_area + 1e-6f), intersection_area, (float)_min_intersection_area,
                                     d.tlwh}; // 【修改】快照当前的检测框
-            // history.has_alarmed = true;   // 【修改】注释掉此行，不锁定报警状态
+            history.has_alarmed = true;
         }
         history.last_point = current_point;
         history.last_side = current_side;
@@ -1831,6 +1831,8 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     std::vector<std::tuple<std::string, std::string, std::string, int, bool>> triggered_alarms_this_frame; // <gid, tid_str, timestamp, n, was_newly_saved>
     // 新增：延迟更新冷却时间戳，以保证单帧内状态一致性
     std::set<std::string> gids_recognized_this_frame;
+    // 新增：用于本帧内的 GID 互斥，防止同一个流中多个 TID 同时识别为同一个 GID
+    std::set<std::string> gids_claimed_this_frame;
 
     current_frame_face_boxes_.clear(); // 每帧开始时清空
     current_frame_face_scores_.clear(); // 清空人脸置信度表
@@ -1876,7 +1878,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     }
     if (line_crossing_detectors.count(stream_id)) {
         for (auto const &[line_name, detector]: line_crossing_detectors.at(stream_id)) {
-            auto alarms = detector->check(dets, stream_id);
+            auto alarms = detector->check(dets, stream_id, mode_);
             for (auto const &[tid, geom]: alarms) {
                 behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AL_" + line_name, geom};
             }
@@ -2199,6 +2201,17 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         }
 
         if (!cand_gid.empty() && score >= current_match_thr) {
+            // ======================= 【空间互斥检查】 =======================
+            // 只有当分数达标，确认为有效匹配时，才检查是否冲突。
+            // 防止同一帧内多个 TID 抢占同一个 GID。
+            if (gids_claimed_this_frame.count(cand_gid)) {
+                // 标记为重复占用的特殊状态，不进行后续绑定
+                output.mp[s_id][tid_num] = {tid_str + "_-10_dup", score, 0, std::nullopt};
+                continue;
+            }
+            gids_claimed_this_frame.insert(cand_gid);
+            // ======================= 【检查结束】 =======================
+
             ng_state.ambig_count = 0;
             state.count = (state.cand_gid == cand_gid) ? state.count + 1 : 1;
             state.cand_gid = cand_gid;
