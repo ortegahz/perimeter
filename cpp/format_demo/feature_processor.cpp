@@ -375,7 +375,7 @@ LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::s
     for (const auto &d: dets) {
         current_tids.insert(d.id);
         auto &history = _track_history[d.id];
-        if (history.has_alarmed) continue;
+        // if (history.has_alarmed) continue; // 【修改】注释掉此行，允许同一TID多次触发越界报警
 
         cv::Rect2f tlwh = d.tlwh;
         std::vector<cv::Point2f> bbox_poly = {tlwh.tl(), {tlwh.x + tlwh.width, tlwh.y}, tlwh.br(),
@@ -431,7 +431,7 @@ LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::s
                                     static_cast<float>((current_point - _p1).ddot(_normal_vector)),
                                     intersection_area / (bbox_area + 1e-6f), intersection_area, (float)_min_intersection_area,
                                     d.tlwh}; // 【修改】快照当前的检测框
-            history.has_alarmed = true;
+            // history.has_alarmed = true;   // 【修改】注释掉此行，不锁定报警状态
         }
         history.last_point = current_point;
         history.last_side = current_side;
