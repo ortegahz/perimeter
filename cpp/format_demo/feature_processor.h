@@ -30,6 +30,7 @@ using GstClockTime = uint64_t;
 // ======================= 【修改结束】 =======================
 #include "cores/face/FaceAnalyzer.hpp"
 
+
 /* ---------- 常量定义 ---------- */
 constexpr int MIN_BODY4GID = 8;
 constexpr int MIN_FACE4GID = 8;
