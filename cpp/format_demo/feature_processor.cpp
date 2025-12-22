@@ -169,7 +169,7 @@ namespace { // Anonymous namespace for internal helpers
         if (spec.product_direction == "AB") { internal_policy = "in"; } else if (spec.product_direction == "BA") { internal_policy = "out"; }
 
         // 3. 灵敏度映射: 将1-10级的灵敏度映射到最小触发面积 (1=最高灵敏度=最小面积, 10=最低灵敏度=最大面积)
-        const int MIN_AREA = 1; const int MAX_AREA = 50; // Modified: 映射为 5% 到 50% 的覆盖率
+        const int MIN_AREA = 1; const int MAX_AREA = 100; // Modified: 映射为 5% 到 50% 的覆盖率
         int level = std::max(1, std::min(10, spec.level)); // 将等级限制在1-10
         int area = static_cast<int>(MIN_AREA + (static_cast<double>(level - 1) * (MAX_AREA - MIN_AREA)) / 9.0);
 
