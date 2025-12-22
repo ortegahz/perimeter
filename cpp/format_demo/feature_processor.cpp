@@ -1872,6 +1872,15 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id)
                                                                        : base_match_thr;
 
+    if (sensitivity == 5) {
+        current_match_thr = 0.35;
+        current_det_thr = 0.8;
+        current_yaw_th = 50.0;
+        current_roll_th = 50.0;
+        current_pitch_low = 0.6;
+        current_pitch_high = 1.0;
+    }
+
     if (intrusion_detectors.count(stream_id)) {
         for (int tid: intrusion_detectors.at(stream_id)->check(dets, stream_id))
             behavior_alarm_state[stream_id + "_" + std::to_string(tid)] = {fid, "_AA", std::nullopt};
