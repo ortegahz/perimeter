@@ -121,6 +121,8 @@ struct ProcessConfig {
     int alarm_record_thresh = 3;
     // 新增: 实时白名单，此集合中的 GID 将不会触发报警。
     std::set<std::string> whitelist_gids;
+    // 【新增】实时删除名单，此集合中的 GID 将被标记为删除并清理 DB
+    std::set<std::string> gids_to_delete;
     // 新增: 实时配置参数 (秒)。如果此值被设置, 它将覆盖本帧的默认配置。
     std::optional<long long> gid_recognition_cooldown_s;
 
@@ -309,6 +311,7 @@ struct GlobalID {
     std::map<std::string, std::vector<std::string>> tid_hist;
     std::map<std::string, double> last_update;
     std::map<std::string, GstClockTime> first_seen_ts; // 新增：记录每个 GID 首次出现的时间戳
+    std::set<std::string> deleted_gids; // 【新增】内存中被标记为删除的 GID 集合
 };
 
 struct CandidateState {
@@ -421,6 +424,9 @@ public:
     // 新增：用于调试和验证的函数
     void save_final_state_to_file(const std::string &filepath);
     // ======================= 【修改结束】 =======================
+
+    // 新增：删除指定 GID 接口
+    void delete_gid(const std::string &gid);
 
 private:
 

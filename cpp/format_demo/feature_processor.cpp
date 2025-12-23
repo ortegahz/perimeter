@@ -640,6 +640,9 @@ GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &fac
 
 void GlobalID::bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst,
                     const TrackAgg &agg, FeatureProcessor *fp, const std::string &creation_reason, bool increment_n) {
+    // 【修改】如果 GID 已被标记为删除，则不再进行任何更新操作
+    if (deleted_gids.count(gid)) return;
+
     auto [face_f, face_p] = agg.main_face_feat_and_patch();
     auto [body_f, body_p] = agg.main_body_feat_and_patch();
 
@@ -663,6 +666,9 @@ std::pair<std::string, float> GlobalID::probe(const std::vector<float> &face_f, 
     std::string best_gid;
     float best_score = -1.f;
     for (auto const &[gid, face_pool]: bank_faces) {
+        // 【修改】如果 GID 已被标记为删除，则跳过比对
+        if (deleted_gids.count(gid)) continue;
+
         // 如果需要人脸特征进行比对(w_face > 0)，但当前GID的人脸库为空，则跳过
         if (w_face > 1e-6f && face_pool.empty()) continue;
         // 如果需要人体特征进行比对(w_body > 0)，但当前GID的人体库为空，则跳过
@@ -1173,17 +1179,18 @@ void FeatureProcessor::_io_worker() {
                     auto dir_to_del = std::filesystem::path(SAVE_DIR) / task.gid;
                     if (std::filesystem::exists(dir_to_del)) {
                         std::filesystem::remove_all(dir_to_del);
+                    }
 
-                        if (db_) {
-                            sqlite3_stmt *stmt;
-                            const char *sql = "DELETE FROM prototypes WHERE gid = ?;";
-                            if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
-                                sqlite3_bind_text(stmt, 1, task.gid.c_str(), -1, SQLITE_STATIC);
-                                if (sqlite3_step(stmt) != SQLITE_DONE) {
-                                    std::cerr << "\nDB Error (CLEANUP_GID_DIR): " << sqlite3_errmsg(db_) << std::endl;
-                                }
-                                sqlite3_finalize(stmt);
+                    // 【修改】将数据库删除逻辑移出文件检查块，确保即使文件夹不存在也能删除DB记录
+                    if (db_) {
+                        sqlite3_stmt *stmt;
+                        const char *sql = "DELETE FROM prototypes WHERE gid = ?;";
+                        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                            sqlite3_bind_text(stmt, 1, task.gid.c_str(), -1, SQLITE_STATIC);
+                            if (sqlite3_step(stmt) != SQLITE_DONE) {
+                                std::cerr << "\nDB Error (CLEANUP_GID_DIR): " << sqlite3_errmsg(db_) << std::endl;
                             }
+                            sqlite3_finalize(stmt);
                         }
                     }
                     break;
@@ -1796,6 +1803,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     const std::vector<Detection> &dets = input.dets;
     const ProcessConfig &config = input.config;
     // ======================= 【修改结束】 =======================
+
+    // 【新增】处理实时传入的删除名单
+    // 遍历配置中的 GID 集合，执行删除操作
+    for (const auto &gid_to_del : config.gids_to_delete) {
+        delete_gid(gid_to_del);
+    }
 
     // ======================= 【NEW: Dynamically update boundary detectors】 =======================
     _update_detectors_from_config(cam_id, config);
@@ -2758,3 +2771,22 @@ void FeatureProcessor::save_final_state_to_file(const std::string &filepath) {
     std::cout << "In-memory state successfully written to " << filepath << std::endl;
 }
 // ======================= 【修改结束】 =======================
+
+// ======================= 【NEW: 删除指定 GID 接口】 =======================
+void FeatureProcessor::delete_gid(const std::string &gid) {
+    std::lock_guard<std::mutex> lock(m_gid_mutex_);
+
+    // 【防重判断】如果该 GID 已经在删除列表中，直接返回，防止每帧重复提交 IO 任务
+    if (gid_mgr.deleted_gids.count(gid)) return;
+
+    std::cout << "[FeatureProcessor] Marking GID for deletion (ignore in memory, remove from DB): " << gid << std::endl;
+
+    // 1. 在内存中标记为已删除（GlobalID::probe 和 bind 会跳过它）
+    gid_mgr.deleted_gids.insert(gid);
+
+    // 2. 提交任务从数据库和磁盘中物理删除
+    IoTask task;
+    task.type = IoTaskType::CLEANUP_GID_DIR;
+    task.gid = gid;
+    submit_io_task(task);
+}
