@@ -1885,7 +1885,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id)
                                                                        : base_match_thr;
 
-    if (sensitivity == 5) {
+    if (sensitivity == 5 && mode_ == "realtime") {
         current_match_thr = 0.35;
         current_det_thr = 0.8;
         current_yaw_th = 50.0;

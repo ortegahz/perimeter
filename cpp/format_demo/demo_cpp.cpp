@@ -324,7 +324,7 @@ int main(int argc, char **argv) {
                 proc_config.whitelist_gids = {"G00001", "G00005"};
                 // ======================= 【新增结束】 =======================
 
-                proc_config.gids_to_delete = {"G00001"};
+//                proc_config.gids_to_delete = {"G00001"};
 
                 // ---- 计时 ----
                 auto t1 = std::chrono::high_resolution_clock::now();
