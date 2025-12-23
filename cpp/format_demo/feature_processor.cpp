@@ -618,6 +618,17 @@ std::string GlobalID::new_gid() {
     tid_hist[gid] = {};
     last_update[gid] = 0;
     std::cout << "[GlobalID] new " << gid << std::endl;
+
+    // 【新增】将 next_gid 写入 config.json，防止重启后 ID 重复
+    try {
+        nlohmann::json j;
+        std::ifstream i(CONFIG_FILE_PATH);
+        if (i.is_open()) { i >> j; i.close(); }
+        j["next_gid"] = gid_next;
+        std::ofstream o(CONFIG_FILE_PATH);
+        o << j.dump(4);
+    } catch (...) {}
+
     return gid;
 }
 
@@ -1342,6 +1353,19 @@ void FeatureProcessor::_load_state_from_db() {
         }
     }
     gid_mgr.gid_next = max_gid_num + 1;
+
+    // 【新增】从 config.json 读取 next_gid，取最大值
+    try {
+        std::ifstream i(CONFIG_FILE_PATH);
+        if (i.is_open()) {
+            nlohmann::json j;
+            i >> j;
+            if (j.contains("next_gid")) {
+                int cfg_next = j["next_gid"];
+                if (cfg_next > gid_mgr.gid_next) gid_mgr.gid_next = cfg_next;
+            }
+        }
+    } catch (...) {}
 
     std::cout << "Successfully loaded " << loaded_prototypes << " prototypes for " << all_gids.size()
               << " GIDs from DB and re-created filesystem cache. Next GID is set to: " << gid_mgr.gid_next
