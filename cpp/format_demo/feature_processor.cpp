@@ -1834,6 +1834,15 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         delete_gid(gid_to_del);
     }
 
+    // 【新增调试】打印完整的 deleted_gids 列表
+    if (!gid_mgr.deleted_gids.empty()) {
+        std::cout << "[Debug] Current deleted_gids list: ";
+        for (const auto& d_gid : gid_mgr.deleted_gids) {
+            std::cout << d_gid << " ";
+        }
+        std::cout << std::endl;
+    }
+
     // ======================= 【NEW: Dynamically update boundary detectors】 =======================
     _update_detectors_from_config(cam_id, config);
     // ======================= 【NEW END】 =======================
@@ -2323,13 +2332,16 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
         } else if (gid_mgr.bank_faces.empty()) {
             // Reason 1: The very first GID
             // ======================= 【MODIFIED: 新增高质量人脸检查点】 =======================
+            // 使用基于灵敏度计算出的动态检测阈值
+            int hq_val = agg.count_high_quality_faces(current_det_thr);
             if (is_face_only_mode) {
-                // 使用基于灵敏度计算出的动态检测阈值
-                if (agg.count_high_quality_faces(current_det_thr) < current_min_face_4_gid) {
+                if (hq_val < current_min_face_4_gid) {
                     output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0, std::nullopt}; // hq: high quality
                     continue;
                 }
             }
+            std::cout << "[NewGID Reason1] Creating first GID. HQ Faces: " << hq_val
+                      << " (Threshold: " << current_min_face_4_gid << ")" << std::endl;
             // ======================= 【修改结束】 =======================
             std::string new_gid = gid_mgr.new_gid(); // This is the pure GID
             gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "first"); // 默认 increment_n=true
@@ -2362,14 +2374,18 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 ng_state.count++;
                 if (ng_state.count >= NEW_GID_MIN_FRAMES) {
                     // ======================= 【MODIFIED: 新增高质量人脸检查点】 =======================
+                    int hq_val = agg.count_high_quality_faces(m_face_det_min_score_face_only);
                     if (is_face_only_mode) {
                         // 使用基于灵敏度计算出的动态检测阈值
-                        if (agg.count_high_quality_faces(m_face_det_min_score_face_only) < current_min_face_4_gid) {
+                        if (hq_val < current_min_face_4_gid) {
                             output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0,
                                                         std::nullopt}; // hq: high quality
                             continue;
                         }
                     }
+                    std::cout << "[NewGID Reason2] Creating new GID (Dissimilar). Score: " << score
+                              << " (< " << THR_NEW_GID << "), HQ Faces: " << hq_val
+                              << " (Threshold: " << current_min_face_4_gid << ")" << std::endl;
                     // ======================= 【修改结束】 =======================
                     std::string new_gid = gid_mgr.new_gid(); // Pure GID
                     gid_mgr.bind(new_gid, tid_str, now_stamp, now_stamp_gst, agg, this,
