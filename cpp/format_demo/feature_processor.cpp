@@ -719,11 +719,11 @@ nlohmann::json FeatureProcessor::_load_or_create_config() {
         default_config["alarm_dup_thr"] = 1.0f;
 
         // 新增: 将姿态和人脸检测阈值参数化
-        default_config["face_det_min_score_face_only"] = 0.80f;
-        default_config["pose_yaw_th"] = 50.0;
-        default_config["pose_roll_th"] = 50.0;
-        default_config["pose_pitch_ratio_lower_th"] = 0.4;
-        default_config["pose_pitch_ratio_upper_th"] = 1.5;
+        default_config["face_det_min_score_face_only"] = 0.85f;
+        default_config["pose_yaw_th"] = 30.0;
+        default_config["pose_roll_th"] = 30.0;
+        default_config["pose_pitch_ratio_lower_th"] = 0.8;
+        default_config["pose_pitch_ratio_upper_th"] = 1.2;
         // 新增: 全局配置，同一GID两次有效识别之间的最小间隔 (秒)。值为0表示禁用。
         default_config["gid_recognition_cooldown_s"] = 0;
         default_config["use_face_fp16"] = false; // 新增：人脸模型的FP16开关
