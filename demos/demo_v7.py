@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import multiprocessing as mp
 import multiprocessing.queues as mpq
+from collections import deque
 import queue
 import signal
 import subprocess
@@ -228,6 +229,7 @@ def draw_boundaries(frame: np.ndarray, stream_id: str, simple_display: bool = Fa
 def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps_exp, simple_display=False):
     gst, first = None, True
     tid2info = {}
+    trails = {}
     while not stop_evt.is_set():
         try:
             m = q_map2disp.get_nowait()
@@ -241,9 +243,18 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
         stream_id, fid, frame, dets, all_faces = pkt
         draw_boundaries(frame, my_stream_id, simple_display=simple_display)
 
+        active_tids = set()
         for d in dets:
             x_orig, y_orig, w_orig, h_orig = d["tlwh"]
             x, y, w, h = [int(c * SHOW_SCALE) for c in (x_orig, y_orig, w_orig, h_orig)]
+
+            tid = d['id']
+            active_tids.add(tid)
+            if tid not in trails: trails[tid] = deque(maxlen=30)
+            trails[tid].append((int(x + w / 2), int(y + h)))
+            if len(trails[tid]) > 1:
+                cv2.polylines(frame, [np.array(trails[tid], dtype=np.int32)], False, (0, 128, 255), 2)
+
             tid, class_name = d['id'], d.get('class_name', 'UNK')
             if d.get('class_id') == 0:
                 default_info = (f"{my_stream_id}_{tid}_-1", -1.0, 0, None)
@@ -356,6 +367,8 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
                 for kx, ky in face['kps']:
                     cv2.circle(frame, (int(kx * SHOW_SCALE), int(ky * SHOW_SCALE)), 1, (0, 0, 255), 2)
 
+        trails = {t: pts for t, pts in trails.items() if t in active_tids}
+
         if first:
             H, W = frame.shape[:2]
             gst = init_gst(W, H, fps_exp, host, port, use_nvenc=False)
@@ -398,6 +411,7 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
     save_path = f"/home/manu/tmp/output_{my_stream_id}.mp4"
 
     _n = 2
+    trails = {}
 
     while not stop_evt.is_set():
         try:
@@ -414,9 +428,18 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
         stream_id, fid, frame, dets, all_faces = pkt
         # draw_boundaries(frame, my_stream_id, simple_display=simple_display)
 
+        active_tids = set()
         for d in dets:
             x_orig, y_orig, w_orig, h_orig = d["tlwh"]
             x, y, w, h = [int(c * SHOW_SCALE) for c in (x_orig, y_orig, w_orig, h_orig)]
+
+            tid = d['id']
+            active_tids.add(tid)
+            if tid not in trails: trails[tid] = deque(maxlen=30)
+            trails[tid].append((int(x + w / 2), int(y + h)))
+            if len(trails[tid]) > 1:
+                cv2.polylines(frame, [np.array(trails[tid], dtype=np.int32)], False, (0, 128, 255), 2)
+
             tid, class_name = d['id'], d.get('class_name', 'UNK')
             if d.get('class_id') == 0:
                 default_info = (f"{my_stream_id}_{tid}_-1", -1.0, 0, None)
@@ -538,6 +561,8 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
             # if "kps" in face and face["kps"]:
             #     for kx, ky in face['kps']:
             #         cv2.circle(frame, (int(kx * SHOW_SCALE), int(ky * SHOW_SCALE)), 1, (0, 0, 255), 2)
+
+        trails = {t: pts for t, pts in trails.items() if t in active_tids}
 
         # if not is_fullscreen:
         #     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
