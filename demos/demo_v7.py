@@ -143,18 +143,18 @@ BOUNDARY_CONFIG = {
         #     (50, 1400), (1200, 1400), (1100, 500), (50, 500)  # Example: bottom-left area
         # ],
         "crossing_lines": [
+            # {
+            #     "name": "Line_1",
+            #     "start": (1200, 60),  # Example: a vertical line in the middle
+            #     "end": (1400, 1280),
+            #     "direction": "any",
+            #     "projection_depth": PROJECTION_DEPTH,  # 沿法线方向延伸的深度（像素）
+            #     "min_intersection_area": MIN_INTERSECTION_AREA  # 新增：触发报警所需的最小相交像素面积
+            # },
             {
                 "name": "Line_1",
-                "start": (1200, 60),  # Example: a vertical line in the middle
-                "end": (1400, 1280),
-                "direction": "any",
-                "projection_depth": PROJECTION_DEPTH,  # 沿法线方向延伸的深度（像素）
-                "min_intersection_area": MIN_INTERSECTION_AREA  # 新增：触发报警所需的最小相交像素面积
-            },
-            {
-                "name": "Line_2",
-                "start": (1000, 700),
-                "end": (2000, 700),
+                "start": (1000, 1500),
+                "end": (3000, 1200),
                 "direction": "any",
                 "projection_depth": PROJECTION_DEPTH,
                 "min_intersection_area": MIN_INTERSECTION_AREA  # 新增：触发报警所需的最小相交像素面积
@@ -375,6 +375,8 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
     window_name = f"Display - {my_stream_id}"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
     is_fullscreen = False
+    video_writer = None
+    save_path = f"/home/manu/tmp/output_{my_stream_id}.mp4"
 
     while not stop_evt.is_set():
         try:
@@ -389,7 +391,7 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
         pkt = q_det2disp.get()
         if pkt is SENTINEL: break
         stream_id, fid, frame, dets, all_faces = pkt
-        draw_boundaries(frame, my_stream_id, simple_display=simple_display)
+        # draw_boundaries(frame, my_stream_id, simple_display=simple_display)
 
         for d in dets:
             x_orig, y_orig, w_orig, h_orig = d["tlwh"]
@@ -401,43 +403,43 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
 
                 # Color logic for alarms and matches
                 if "_AL" in info_str:
-                    color = (0, 255, 255)  # Yellow for line crossing alarm
+                    color = (0, 0, 255)  # Yellow for line crossing alarm
                 elif n_tid >= 2:
-                    color = (0, 0, 255)  # Red for multi-cam match
+                    color = (0, 255, 255)  # Red for multi-cam match
                 else:
                     color = (0, 255, 0)  # Green for normal
 
-                # --- 新增：绘制报警几何图形 ---
-                if alarm_geometry and "_AL" in info_str:
-                    overlay = frame.copy()
-                    alpha_blend = 0.3
-
-                    # 绘制报警时计算的投射区域
-                    zone_poly_orig = alarm_geometry.get("crossing_zone_poly")
-                    if zone_poly_orig:
-                        zone_poly_scaled = (np.array(zone_poly_orig) * SHOW_SCALE).astype(np.int32)
-                        cv2.fillPoly(overlay, [zone_poly_scaled], color=(0, 255, 255), lineType=cv2.LINE_AA)
-
-                    # 新增：绘制实际相交区域
-                    intersection_poly_orig = alarm_geometry.get("intersection_poly")
-                    if intersection_poly_orig:
-                        # 使用更醒目的红色来高亮相交区域
-                        intersection_poly_scaled = (np.array(intersection_poly_orig) * SHOW_SCALE).astype(np.int32)
-                        cv2.fillPoly(overlay, [intersection_poly_scaled], color=(0, 0, 255), lineType=cv2.LINE_AA)
-
-                    cv2.addWeighted(overlay, alpha_blend, frame, 1 - alpha_blend, 0, frame)
-
-                    # 绘制报警时的投射方向向量（法向量）
-                    line_start_orig = alarm_geometry.get("line_start")
-                    line_end_orig = alarm_geometry.get("line_end")
-                    proj_vec_orig = alarm_geometry.get("projection_vector")
-
-                    if line_start_orig and line_end_orig and proj_vec_orig:
-                        line_center_orig = (np.array(line_start_orig) + np.array(line_end_orig)) / 2
-                        proj_vec = np.array(proj_vec_orig)
-                        arrow_start_pt = tuple((line_center_orig * SHOW_SCALE).astype(int))
-                        arrow_end_pt = tuple(((line_center_orig + proj_vec * 50) * SHOW_SCALE).astype(int))
-                        cv2.arrowedLine(frame, arrow_start_pt, arrow_end_pt, (255, 255, 0), 2, tipLength=0.3)
+                # # --- 新增：绘制报警几何图形 ---
+                # if alarm_geometry and "_AL" in info_str:
+                #     overlay = frame.copy()
+                #     alpha_blend = 0.3
+                #
+                #     # 绘制报警时计算的投射区域
+                #     zone_poly_orig = alarm_geometry.get("crossing_zone_poly")
+                #     if zone_poly_orig:
+                #         zone_poly_scaled = (np.array(zone_poly_orig) * SHOW_SCALE).astype(np.int32)
+                #         cv2.fillPoly(overlay, [zone_poly_scaled], color=(0, 255, 255), lineType=cv2.LINE_AA)
+                #
+                #     # 新增：绘制实际相交区域
+                #     intersection_poly_orig = alarm_geometry.get("intersection_poly")
+                #     if intersection_poly_orig:
+                #         # 使用更醒目的红色来高亮相交区域
+                #         intersection_poly_scaled = (np.array(intersection_poly_orig) * SHOW_SCALE).astype(np.int32)
+                #         cv2.fillPoly(overlay, [intersection_poly_scaled], color=(0, 0, 255), lineType=cv2.LINE_AA)
+                #
+                #     cv2.addWeighted(overlay, alpha_blend, frame, 1 - alpha_blend, 0, frame)
+                #
+                #     # 绘制报警时的投射方向向量（法向量）
+                #     line_start_orig = alarm_geometry.get("line_start")
+                #     line_end_orig = alarm_geometry.get("line_end")
+                #     proj_vec_orig = alarm_geometry.get("projection_vector")
+                #
+                #     if line_start_orig and line_end_orig and proj_vec_orig:
+                #         line_center_orig = (np.array(line_start_orig) + np.array(line_end_orig)) / 2
+                #         proj_vec = np.array(proj_vec_orig)
+                #         arrow_start_pt = tuple((line_center_orig * SHOW_SCALE).astype(int))
+                #         arrow_end_pt = tuple(((line_center_orig + proj_vec * 50) * SHOW_SCALE).astype(int))
+                #         cv2.arrowedLine(frame, arrow_start_pt, arrow_end_pt, (255, 255, 0), 2, tipLength=0.3)
 
                 # --- Text display logic ---
                 gid_part = None
@@ -510,11 +512,18 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
         #     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
         #     is_fullscreen = True
 
+        if video_writer is None:
+            h, w = frame.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            video_writer = cv2.VideoWriter(save_path, fourcc, 25, (w, h))
+        video_writer.write(frame)
         cv2.imshow(window_name, frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             stop_evt.set()
             break
 
+    if video_writer is not None:
+        video_writer.release()
     cv2.destroyWindow(window_name)
     logger.info(f"[Display-{my_stream_id}] finished")
 
@@ -522,9 +531,9 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
 def main():
     mp.set_start_method("spawn", force=True)
     pa = argparse.ArgumentParser()
-    pa.add_argument("--video1", default="rtsp://admin:1qaz2wsx@172.20.20.64")
+    pa.add_argument("--video1", default="/media/manu/ST8000DM004-2U91/tmp/智慧周界算法画框/越界算法.mp4")
     pa.add_argument("--video2", default="")
-    pa.add_argument("--skip", type=int, default=2)
+    pa.add_argument("--skip", type=int, default=1)
     pa.add_argument("--display_mode", default="local", choices=["gst", "local"],
                     help="显示模式: 'gst' 推流 或 'local' 本地窗口")
     pa.add_argument("--simple_display", default=False)
