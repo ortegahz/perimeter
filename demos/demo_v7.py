@@ -265,6 +265,8 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
                     color = (0, 255, 255)  # Yellow for line crossing alarm
                 elif n_tid >= 2:
                     color = (0, 0, 255)  # Red for multi-cam match
+                elif len(trails[tid]) >= 30:
+                    color = (0, 0, 255)  # Red for long duration track
                 else:
                     color = (0, 255, 0)  # Green for normal
 
@@ -450,6 +452,8 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
                     color = (0, 255, 0)  # Yellow for line crossing alarm
                 elif n_tid >= _n:
                     color = (0, 0, 255)  # Red for multi-cam match
+                elif len(trails[tid]) >= 30:
+                    color = (0, 0, 255)  # Red for long duration track
                 elif n_tid >= 1:
                     color = (0, 255, 255)  # Red for multi-cam match
                 else:
@@ -587,8 +591,8 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
 def main():
     mp.set_start_method("spawn", force=True)
     pa = argparse.ArgumentParser()
-    pa.add_argument("--video1", default="/media/manu/ST8000DM004-2U91/tmp/智慧周界算法画框/多次逗留检测.mp4")
-    pa.add_argument("--video2", default="/media/manu/ST8000DM004-2U91/tmp/智慧周界算法画框/多次逗留检测1.mp4")
+    pa.add_argument("--video1", default="/media/manu/ST8000DM004-2U91/tmp/智慧周界算法画框/徘徊检测算法.mp4")
+    pa.add_argument("--video2", default="")
     pa.add_argument("--skip", type=int, default=1)
     pa.add_argument("--display_mode", default="local", choices=["gst", "local"],
                     help="显示模式: 'gst' 推流 或 'local' 本地窗口")
