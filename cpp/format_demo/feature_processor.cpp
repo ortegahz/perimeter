@@ -2363,7 +2363,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     // ======================= 【MODIFIED: 新增高质量人脸检查点】 =======================
                     if (is_face_only_mode) {
                         // 使用基于灵敏度计算出的动态检测阈值
-                        if (agg.count_high_quality_faces(current_det_thr) < current_min_face_4_gid) {
+                        if (agg.count_high_quality_faces(0.85) < current_min_face_4_gid) {
                             output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0,
                                                         std::nullopt}; // hq: high quality
                             continue;
