@@ -1906,17 +1906,18 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     // ======================= 【修改结束】 =======================
     
     // 2. 允许使用具体的浮点数值覆盖基于灵敏度的设置，提供更精细的控制
-    float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id)
-                                                                       : base_match_thr;
+//    float current_match_thr = config.match_thr_by_cam.count(stream_id) ? config.match_thr_by_cam.at(stream_id)
+//                                                                       : base_match_thr;
+    float current_match_thr = base_match_thr;
 
-    if (sensitivity == 5 && mode_ == "realtime") {
-        current_match_thr = 0.35;
-        current_det_thr = 0.8;
-        current_yaw_th = 50.0;
-        current_roll_th = 50.0;
-        current_pitch_low = 0.6;
-        current_pitch_high = 1.0;
-    }
+//    if (sensitivity == 5 && mode_ == "realtime") {
+//        current_match_thr = 0.35;
+//        current_det_thr = 0.8;
+//        current_yaw_th = 50.0;
+//        current_roll_th = 50.0;
+//        current_pitch_low = 0.6;
+//        current_pitch_high = 1.0;
+//    }
 
     if (intrusion_detectors.count(stream_id)) {
         for (int tid: intrusion_detectors.at(stream_id)->check(dets, stream_id))
@@ -2363,7 +2364,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     // ======================= 【MODIFIED: 新增高质量人脸检查点】 =======================
                     if (is_face_only_mode) {
                         // 使用基于灵敏度计算出的动态检测阈值
-                        if (agg.count_high_quality_faces(current_det_thr) < current_min_face_4_gid) {
+                        if (agg.count_high_quality_faces(m_face_det_min_score_face_only) < current_min_face_4_gid) {
                             output.mp[s_id][tid_num] = {tid_str + "_-1_f_hq", -1.0f, 0,
                                                         std::nullopt}; // hq: high quality
                             continue;
