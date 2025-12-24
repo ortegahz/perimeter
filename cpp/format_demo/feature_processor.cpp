@@ -2087,9 +2087,9 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         // 阶段一：使用宽松的分数阈值收集人脸，为后续严格检查做准备
                         if (face_global_coords.det_score < RELAXED_FACE_SCORE_THR) continue;
                         // 获取姿态标志，但在此阶段不进行过滤
-                        is_frontal = is_frontal_face_pnp(face_global_coords.kps, cpu_frame.size(), m_pose_yaw_th,
-                                                         m_pose_roll_th, m_pose_pitch_ratio_lower_th,
-                                                         m_pose_pitch_ratio_upper_th);
+                        is_frontal = is_frontal_face_pnp(face_global_coords.kps, cpu_frame.size(), current_yaw_th,
+                                                         current_roll_th, current_pitch_low,
+                                                         current_pitch_high);
                     } else {
                         // 在混合模式下，保持原有的分数检查逻辑
                         if (face_global_coords.det_score < current_face_det_min_score) continue;
