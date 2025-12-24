@@ -397,6 +397,8 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
     video_writer = None
     save_path = f"/home/manu/tmp/output_{my_stream_id}.mp4"
 
+    _n = 2
+
     while not stop_evt.is_set():
         try:
             m = q_map2disp.get_nowait()
@@ -422,8 +424,10 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
 
                 # Color logic for alarms and matches
                 if "_AL" in info_str:
-                    color = (0, 0, 255)  # Yellow for line crossing alarm
-                elif n_tid >= 2:
+                    color = (0, 255, 0)  # Yellow for line crossing alarm
+                elif n_tid >= _n:
+                    color = (0, 0, 255)  # Red for multi-cam match
+                elif n_tid >= 1:
                     color = (0, 255, 255)  # Red for multi-cam match
                 else:
                     color = (0, 255, 0)  # Green for normal
@@ -475,13 +479,17 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
                 else:
                     display_text = f"{info_str}"
 
-                display_text = "人员"
+                if n_tid >= 1:
+                    display_text = f"目标{gid_part} - {n_tid}次"
+                else:
+                    display_text = "人员"
 
+                display_text_tid = f"tid: {tid}"
                 cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
                 if display_text:
-                    # cv2.putText(frame, display_text, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    cv2.putText(frame, display_text_tid, (x, max(y-8, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                     # 使用 PIL 绘制中文，注意颜色需要从 BGR 转为 RGB (tuple(color[::-1]))
-                    frame = cv2_add_chinese_text(frame, display_text, (x, max(y - 30, 5)), tuple(color[::-1]), 20)
+                    frame = cv2_add_chinese_text(frame, display_text, (x, max(y, 5)), tuple(color[::-1]), 20)
                 # if (simple_display and gid_part) or not simple_display:
                 #     cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 40)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                 #                 color, 1)
@@ -554,8 +562,8 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
 def main():
     mp.set_start_method("spawn", force=True)
     pa = argparse.ArgumentParser()
-    pa.add_argument("--video1", default="/media/manu/ST8000DM004-2U91/tmp/智慧周界算法画框/越界算法.mp4")
-    pa.add_argument("--video2", default="")
+    pa.add_argument("--video1", default="/media/manu/ST8000DM004-2U91/tmp/智慧周界算法画框/多次逗留检测.mp4")
+    pa.add_argument("--video2", default="/media/manu/ST8000DM004-2U91/tmp/智慧周界算法画框/多次逗留检测1.mp4")
     pa.add_argument("--skip", type=int, default=1)
     pa.add_argument("--display_mode", default="local", choices=["gst", "local"],
                     help="显示模式: 'gst' 推流 或 'local' 本地窗口")
