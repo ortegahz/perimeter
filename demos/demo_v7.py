@@ -23,6 +23,7 @@ import subprocess
 
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from tools.test_frontal_face_3d import estimate_pose, YAW_TH, ROLL_TH, PITCH_RATIO_LOWER_TH, PITCH_RATIO_UPPER_TH
 
@@ -368,6 +369,24 @@ def display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, host, port, fps
     if gst: gst.stdin.close(); gst.wait()
     logger.info(f"[Display-{my_stream_id}] finished")
 
+def cv2_add_chinese_text(img, text, position, textColor=(0, 255, 0), textSize=30):
+    if (isinstance(img, np.ndarray)):
+        img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(img)
+    # 尝试加载常见的中文字体，按优先级查找
+    font_paths = ["simhei.ttf", "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"]
+    fontStyle = None
+    for path in font_paths:
+        try:
+            fontStyle = ImageFont.truetype(path, textSize, encoding="utf-8")
+            break
+        except:
+            continue
+    if fontStyle is None:
+        fontStyle = ImageFont.load_default()
+
+    draw.text(position, text, fill=textColor, font=fontStyle)
+    return cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
 
 def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_display=False):
     """使用 cv2.imshow 在本地窗口中显示结果，并自动全屏"""
@@ -456,12 +475,16 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
                 else:
                     display_text = f"{info_str}"
 
+                display_text = "人员"
+
                 cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
                 if display_text:
-                    cv2.putText(frame, display_text, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                if (simple_display and gid_part) or not simple_display:
-                    cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 40)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                                color, 1)
+                    # cv2.putText(frame, display_text, (x, max(y - 10, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    # 使用 PIL 绘制中文，注意颜色需要从 BGR 转为 RGB (tuple(color[::-1]))
+                    frame = cv2_add_chinese_text(frame, display_text, (x, max(y - 30, 5)), tuple(color[::-1]), 20)
+                # if (simple_display and gid_part) or not simple_display:
+                #     cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 40)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                #                 color, 1)
             else:
                 color = (255, 182, 0)
                 cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
@@ -498,15 +521,15 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
                         box_color = (0, 0, 255)  # Red for side face
 
             # --- Drawing ---
-            cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+            # cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
             # Display pose text if available
-            if pose_text:
-                cv2.putText(frame, pose_text, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
-            # Always display score below the box
-            cv2.putText(frame, f"S:{score:.2f}", (x1, y2 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
-            if "kps" in face and face["kps"]:
-                for kx, ky in face['kps']:
-                    cv2.circle(frame, (int(kx * SHOW_SCALE), int(ky * SHOW_SCALE)), 1, (0, 0, 255), 2)
+            # if pose_text:
+            #     cv2.putText(frame, pose_text, (x1, max(y1 - 10, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
+            # # Always display score below the box
+            # cv2.putText(frame, f"S:{score:.2f}", (x1, y2 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, box_color, 1)
+            # if "kps" in face and face["kps"]:
+            #     for kx, ky in face['kps']:
+            #         cv2.circle(frame, (int(kx * SHOW_SCALE), int(ky * SHOW_SCALE)), 1, (0, 0, 255), 2)
 
         # if not is_fullscreen:
         #     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
