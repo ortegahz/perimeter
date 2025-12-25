@@ -727,6 +727,7 @@ nlohmann::json FeatureProcessor::_load_or_create_config() {
         // 新增: 全局配置，同一GID两次有效识别之间的最小间隔 (秒)。值为0表示禁用。
         default_config["gid_recognition_cooldown_s"] = 0;
         default_config["use_face_fp16"] = false; // 新增：人脸模型的FP16开关
+        default_config["thr_new_gid"] = (float)THR_NEW_GID; // 新增：新GID判定阈值，默认使用宏定义值
 
         // 将默认配置写入文件
         try {
@@ -778,6 +779,7 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     long long cooldown_s = boundary_config.value("gid_recognition_cooldown_s", 0LL);
     m_gid_recognition_cooldown_ms = cooldown_s * 1000;
     m_use_face_fp16 = boundary_config.value("use_face_fp16", false); // 新增：从配置加载FP16开关
+    m_thr_new_gid = boundary_config.value("thr_new_gid", (float)THR_NEW_GID);
 
     std::cout << "FeatureProcessor initialized in '" << mode_ << "' mode. Alarm saving is "
               << (m_enable_alarm_saving ? "ENABLED" : "DISABLED") << "." << std::endl;
@@ -788,6 +790,8 @@ FeatureProcessor::FeatureProcessor(const std::string &reid_model_path,
     std::cout << ">>> Pose Pitch Ratio threshold set to: [" << m_pose_pitch_ratio_lower_th << ", "
               << m_pose_pitch_ratio_upper_th << "]" << std::endl;
     std::cout << ">>> GID Recognition Cooldown set to: " << cooldown_s << " s" << std::endl;
+    std::cout << ">>> New GID Threshold (thr_new_gid) set to: " << m_thr_new_gid << std::endl;
+    std::cout << ">>> m_use_face_fp16 set to: " << m_use_face_fp16 << std::endl;
 
 
     if (mode_ == "realtime") {
@@ -2369,7 +2373,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             } else {
                 output.mp[s_id][tid_num] = {tid_str + "_-7", score, 0, std::nullopt};
             }
-        } else if (score < THR_NEW_GID) { // score < THR_NEW_GID (Reason 2: Clearly dissimilar)
+        } else if (score < m_thr_new_gid) { // score < m_thr_new_gid (Reason 2: Clearly dissimilar)
             ng_state.ambig_count = 0;
             if (time_since_last_new >= NEW_GID_TIME_WINDOW) {
                 ng_state.count++;
@@ -2385,7 +2389,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         }
                     }
                     std::cout << "[NewGID Reason2] Creating new GID (Dissimilar). Score: " << score
-                              << " (< " << THR_NEW_GID << "), HQ Faces: " << hq_val
+                              << " (< " << m_thr_new_gid << "), HQ Faces: " << hq_val
                               << " (Threshold: " << current_min_face_4_gid << ")" << std::endl;
                     // ======================= 【修改结束】 =======================
                     std::string new_gid = gid_mgr.new_gid(); // Pure GID

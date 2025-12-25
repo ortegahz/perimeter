@@ -517,6 +517,7 @@ private:
     bool m_use_face_fp16;              // 新增：人脸分析器FP16开关
     float m_alarm_dup_thr;             // 新增：重复报警过滤阈值
     long long m_gid_recognition_cooldown_ms; // 新增: GID识别冷却时间 (毫秒)
+    float m_thr_new_gid;
 
     // 新增: 从配置文件加载的参数
     float m_face_det_min_score_face_only;
