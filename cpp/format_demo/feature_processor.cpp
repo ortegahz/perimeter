@@ -1875,7 +1875,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
     // 新增: 当仅使用人脸比对时(w_face=1.0)，提高人脸检测的置信度阈值
     const bool is_face_only_mode = (w_face >= 0.999f); // 使用小公差进行浮点数比较
     float current_face_det_min_score = is_face_only_mode ? m_face_det_min_score_face_only : FACE_DET_MIN_SCORE;
-    int current_min_face_4_gid = is_face_only_mode ? 2 : MIN_FACE4GID;
+    int current_min_face_4_gid = is_face_only_mode ? 8 : MIN_FACE4GID;
 
     ProcessOutput output;
     std::vector<std::tuple<std::string, std::string, std::string, int, bool>> triggered_alarms_this_frame; // <gid, tid_str, timestamp, n, was_newly_saved>
