@@ -1,4 +1,6 @@
-#!/usr/bin/env python3
+# FILE: compare_gid_faces.py
+
+# !/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
@@ -19,7 +21,7 @@ from insightface.app import FaceAnalysis
 #              在这里改要比对的两个 gid
 # =========================================================
 GID_A = "G00105"
-GID_B = "G00036"
+GID_B = "G00109"
 # =========================================================
 
 SAVE_DIR = "/home/manu/mnt/perimeter_201/perimeter_cpp/"  # 图片存储根目录
@@ -133,7 +135,22 @@ def compare(gid1: str, gid2: str):
 
     print("\n" + "=" * 40)
     print(f"比对结果: {gid1}  vs  {gid2}")
-    print(f"人脸相似度 (Cosine): {sim_score:.4f}")
+    print(f"平均特征相似度 (Cosine): {sim_score:.4f}")
+    print("-" * 40)
+    print("两两相似度矩阵 (Rows: GID_A, Cols: GID_B):")
+
+    # 打印列头
+    print("      ", end="")
+    for j in range(len(feats2)):
+        print(f"   B{j:<3}", end="")
+    print()
+
+    for i, f1_vec in enumerate(feats1):
+        print(f" A{i:<3} |", end="")
+        for f2_vec in feats2:
+            s = np.dot(f1_vec, f2_vec)
+            print(f" {s:.4f}", end="")
+        print()
     print("=" * 40)
 
 
