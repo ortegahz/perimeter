@@ -2389,6 +2389,7 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                         }
                     }
                     std::cout << "[NewGID Reason2] Creating new GID (Dissimilar). Score: " << score
+                              << " (< " << NEW_GID_MIN_FRAMES << "), count: " << ng_state.count
                               << " (< " << m_thr_new_gid << "), HQ Faces: " << hq_val
                               << " (Threshold: " << current_min_face_4_gid << ")" << std::endl;
                     // ======================= 【修改结束】 =======================
