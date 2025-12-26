@@ -459,6 +459,8 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
                 else:
                     color = (0, 255, 0)  # Green for normal
 
+                color = (0, 0, 255)
+
                 # # --- 新增：绘制报警几何图形 ---
                 # if alarm_geometry and "_AL" in info_str:
                 #     overlay = frame.copy()
@@ -514,9 +516,9 @@ def local_display_proc(my_stream_id, q_det2disp, q_map2disp, stop_evt, simple_di
                 display_text_tid = f"tid: {tid}"
                 cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
                 if display_text:
-                    cv2.putText(frame, display_text_tid, (x, max(y-8, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                    # 使用 PIL 绘制中文，注意颜色需要从 BGR 转为 RGB (tuple(color[::-1]))
-                    frame = cv2_add_chinese_text(frame, display_text, (x, max(y, 5)), tuple(color[::-1]), 20)
+                    # cv2.putText(frame, display_text_tid, (x, max(y-8, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                    # # 使用 PIL 绘制中文，注意颜色需要从 BGR 转为 RGB (tuple(color[::-1]))
+                    frame = cv2_add_chinese_text(frame, display_text, (int(x+w/2-20), max(y-32, 20)), tuple(color[::-1]), 20)
                 # if (simple_display and gid_part) or not simple_display:
                 #     cv2.putText(frame, f"n={n_tid} s={score:.2f}", (x, max(y + 30, 40)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                 #                 color, 1)
