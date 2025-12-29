@@ -650,15 +650,18 @@ GlobalID::can_update_proto(const std::string &gid, const std::vector<float> &fac
 }
 
 void GlobalID::bind(const std::string &gid, const std::string &tid, double current_ts, GstClockTime current_ts_gst,
-                    const TrackAgg &agg, FeatureProcessor *fp, const std::string &creation_reason, bool increment_n) {
+                    const TrackAgg &agg, FeatureProcessor *fp, const std::string &creation_reason, bool increment_n, bool update_db) {
     // 【修改】如果 GID 已被标记为删除，则不再进行任何更新操作
     if (deleted_gids.count(gid)) return;
 
-    auto [face_f, face_p] = agg.main_face_feat_and_patch();
-    auto [body_f, body_p] = agg.main_body_feat_and_patch();
+    // 只有当 update_db 为 true 时，才尝试更新原型库和数据库
+    if (update_db) {
+        auto [face_f, face_p] = agg.main_face_feat_and_patch();
+        auto [body_f, body_p] = agg.main_body_feat_and_patch();
 
-    _add_or_update_prototype(bank_faces[gid], face_f, face_p, gid, "faces", fp, creation_reason);
-    _add_or_update_prototype(bank_bodies[gid], body_f, body_p, gid, "bodies", fp, creation_reason);
+        _add_or_update_prototype(bank_faces[gid], face_f, face_p, gid, "faces", fp, creation_reason);
+        _add_or_update_prototype(bank_bodies[gid], body_f, body_p, gid, "bodies", fp, creation_reason);
+    }
 
     if (increment_n) {
         auto &v = tid_hist[gid];
@@ -2276,8 +2279,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
             ng_state.ambig_count = 0;
             state.count = (state.cand_gid == cand_gid) ? state.count + 1 : 1;
             state.cand_gid = cand_gid;
+
             int flag_code = gid_mgr.can_update_proto(cand_gid, face_f, body_f, is_face_only_mode);
-            if (state.count >= CANDIDATE_FRAMES && flag_code == 0) {
+
+            // 【修改】如果是 realtime 模式，忽略 flag_code 强制绑定；如果是 load 模式，保持严格检查
+            bool force_bind = (mode_ == "realtime");
+            if (state.count >= CANDIDATE_FRAMES && (flag_code == 0 || force_bind)) {
 #ifdef ENABLE_COOLDOWN_DEBUG_PRINTS
                 if (gid_cooldown_threshold > 0) {
                     std::cout << "\n[COOLDOWN_DEBUG] TID: " << tid_str << ", GID: " << cand_gid
@@ -2315,9 +2322,12 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                 // 这会持续刷新冷却计时器，直到目标消失超过冷却时间为止。
                 gids_recognized_this_frame.insert(cand_gid);
 
+                // 决定是否更新数据库：只有 flag_code == 0 (质量好且一致) 时才更新
+                bool should_update_db = (flag_code == 0);
+
                 // 调用 bind 更新原型，但根据冷却状态决定是否增加 n
                 gid_mgr.bind(cand_gid, tid_str, now_stamp, now_stamp_gst, agg, this, "",
-                             !on_cooldown); // creation_reason is empty, increment_n is conditional
+                             !on_cooldown, should_update_db); // creation_reason is empty, increment_n is conditional
                 tid2gid[tid_str] = cand_gid;
                 state.last_bind_fid = fid;
                 int n = gid_mgr.tid_hist.count(cand_gid) ? (int) gid_mgr.tid_hist[cand_gid].size() : 0;
