@@ -2097,14 +2097,14 @@ ProcessOutput FeatureProcessor::process_packet(const ProcessInput &input) {
                     // ======================= 【MODIFIED: 分阶段人脸质量检查】 =======================
                     bool is_frontal = true; // 在非 face_only 模式下，默认所有脸都合格
                     if (is_face_only_mode) {
-//                        const float RELAXED_FACE_SCORE_THR = 0.75f;
-//                        // 阶段一：使用宽松的分数阈值收集人脸，为后续严格检查做准备
-//                        if (face_global_coords.det_score < RELAXED_FACE_SCORE_THR) continue;
+                        const float RELAXED_FACE_SCORE_THR = 0.75f;
+                        // 阶段一：使用宽松的分数阈值收集人脸，为后续严格检查做准备
+                        if (face_global_coords.det_score < RELAXED_FACE_SCORE_THR) continue;
                         // 获取姿态标志，但在此阶段不进行过滤
                         is_frontal = is_frontal_face_pnp(face_global_coords.kps, cpu_frame.size(), m_pose_yaw_th,
                                                          m_pose_roll_th, m_pose_pitch_ratio_lower_th,
                                                          m_pose_pitch_ratio_upper_th);
-                        if (face_global_coords.det_score < m_face_det_min_score_face_only || !is_frontal) continue;
+//                        if (face_global_coords.det_score < m_face_det_min_score_face_only || !is_frontal) continue;
                     } else {
                         // 在混合模式下，保持原有的分数检查逻辑
                         if (face_global_coords.det_score < current_face_det_min_score) continue;
