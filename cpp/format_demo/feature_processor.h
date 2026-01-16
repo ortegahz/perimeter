@@ -247,6 +247,7 @@ private:
     struct TrackHistory {
         cv::Point2f last_point = {0, 0};
         int last_side = 0;
+        cv::Point2f last_point_aux = {0, 0}; // Aux point for realtime continuous motion detection
         bool has_alarmed = false;
     };
     std::map<uint64, TrackHistory> _track_history;

@@ -400,11 +400,27 @@ LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::s
         int crossing_direction_sign = 0;
         if (trajectory_crossed) {
             crossing_direction_sign = current_side;
-        } else if (bbox_intersects && cv::norm(history.last_point) > 0) {
-            cv::Point2f motion_vector = current_point - history.last_point;
-            if (cv::norm(motion_vector) > 1e-6) {
-                float direction_sign_dot = motion_vector.ddot(_normal_vector);
-                if (std::abs(direction_sign_dot) > 1e-6) crossing_direction_sign = (direction_sign_dot > 0) ? 1 : -1;
+        } else if (bbox_intersects) {
+            if (mode == "realtime") {
+                // Realtime模式：使用 aux 变量进行高灵敏度检测
+                if (cv::norm(history.last_point_aux) <= 1e-6) {
+                    // 情况A：首帧(aux未初始化)，直接根据当前侧判定方向
+                    crossing_direction_sign = (current_side != 0) ? current_side : 1;
+                } else {
+                    // 情况B：有aux历史点，计算瞬时运动向量
+                    cv::Point2f motion_vector = current_point - history.last_point_aux;
+                    if (cv::norm(motion_vector) > 1e-6) {
+                        float direction_sign_dot = motion_vector.ddot(_normal_vector);
+                        if (std::abs(direction_sign_dot) > 1e-6) crossing_direction_sign = (direction_sign_dot > 0) ? 1 : -1;
+                    }
+                }
+            } else if (cv::norm(history.last_point) > 0) {
+                // Load模式：保持原有逻辑，使用受保护的 last_point
+                cv::Point2f motion_vector = current_point - history.last_point;
+                if (cv::norm(motion_vector) > 1e-6) {
+                    float direction_sign_dot = motion_vector.ddot(_normal_vector);
+                    if (std::abs(direction_sign_dot) > 1e-6) crossing_direction_sign = (direction_sign_dot > 0) ? 1 : -1;
+                }
             }
         }
 
@@ -435,6 +451,9 @@ LineCrossingDetectorPlus::check(const std::vector<Detection> &dets, const std::s
         }
         history.last_point = current_point;
         history.last_side = current_side;
+
+        // 新增：Aux变量每帧强制更新，确保下一帧能计算瞬时速度
+        if (mode == "realtime") history.last_point_aux = current_point;
     }
 
     for (auto it = _track_history.cbegin(); it != _track_history.cend();) {
